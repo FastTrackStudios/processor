@@ -20,6 +20,12 @@
       # or use the built-in presets exposed as packages.
 
       defaultConfig = {
+        # REAPER extensions (from nixpkgs)
+        extensions = {
+          sws = true;
+          reapack = true;
+        };
+
         # Audio plugins to include in the FHS environment
         plugins = {
           lv2 = false;
@@ -74,6 +80,7 @@
               defaultConfig.${section};
         in
         {
+          extensions = merge "extensions";
           plugins = merge "plugins";
           audio = merge "audio";
           codecs = merge "codecs";
@@ -97,6 +104,8 @@
           };
 
           reaper = pkgs.reaper;
+          sws = pkgs.reaper-sws-extension;
+          reapack = pkgs.reaper-reapack-extension;
 
           # ── Conditional dependency lists ────────────────────
 
@@ -159,6 +168,11 @@
               # CLAP plugins — add as they become available in nixpkgs
             ];
 
+          extensionPackages =
+            [ ]
+            ++ pkgs.lib.optionals cfg.extensions.sws [ sws ]
+            ++ pkgs.lib.optionals cfg.extensions.reapack [ reapack ];
+
           miscLibs = with pkgs; [
             fontconfig
             freetype
@@ -182,6 +196,7 @@
               gnugrep
               findutils
             ]
+            ++ extensionPackages
             ++ pkgs.lib.optionals cfg.headless.enable [
               xvfb-run
               xdotool
@@ -189,6 +204,30 @@
               xset
             ]
             ++ pluginPackages;
+
+          # ── Extension setup script ──────────────────────────
+          # Symlinks SWS/ReaPack .so files into REAPER's UserPlugins
+          # directory, matching the pattern from the system flake.
+
+          extensionSetup =
+            let
+              swsSetup = pkgs.lib.optionalString cfg.extensions.sws ''
+                ln -sf "${sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
+                ln -sf "${sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
+                ln -sf "${sws}/Scripts/sws_python64.py" "$REAPER_CONFIG/Scripts/"
+                echo "[fts] SWS extension linked"
+              '';
+              reapackSetup = pkgs.lib.optionalString cfg.extensions.reapack ''
+                ln -sf "${reapack}/UserPlugins/reaper_reapack-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
+                echo "[fts] ReaPack extension linked"
+              '';
+            in
+            ''
+              REAPER_CONFIG="''${HOME}/.config/REAPER"
+              mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
+              ${swsSetup}
+              ${reapackSetup}
+            '';
 
           # ── Derivations ─────────────────────────────────────
 
@@ -201,6 +240,14 @@
               export REAPER_RESOURCE_DIR="${reaper}/opt/REAPER"
               export FTS_REAPER_EXECUTABLE="${reaper}/opt/REAPER/reaper"
               export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
+
+              # Set up plugin search paths
+              export LV2_PATH="''${LV2_PATH:+$LV2_PATH:}/usr/lib/lv2"
+              export CLAP_PATH="''${CLAP_PATH:+$CLAP_PATH:}/usr/lib/clap"
+              export VST_PATH="''${VST_PATH:+$VST_PATH:}/usr/lib/vst"
+              export VST3_PATH="''${VST3_PATH:+$VST3_PATH:}/usr/lib/vst3"
+              export LADSPA_PATH="''${LADSPA_PATH:+$LADSPA_PATH:}/usr/lib/ladspa"
+              export DSSI_PATH="''${DSSI_PATH:+$DSSI_PATH:}/usr/lib/dssi"
             '';
             runScript = "bash";
           };
@@ -213,6 +260,9 @@
 
             REAPER_HOME="''${FTS_HOME:-$HOME/.config/fts-test}"
             mkdir -p "$REAPER_HOME"
+
+            # Link extensions into REAPER config
+            ${extensionSetup}
 
             echo "[fts] Starting Xvfb on $DISPLAY..."
             ${pkgs.xorg-server}/bin/Xvfb "$DISPLAY" -screen 0 ${cfg.headless.resolution} -nolisten tcp &
@@ -248,6 +298,8 @@
           '';
 
           reaper-gui = pkgs.writeShellScriptBin "fts-gui" ''
+            # Link extensions before launching GUI
+            ${extensionSetup}
             exec ${reaper-fhs}/bin/reaper-env ${reaper}/opt/REAPER/reaper "$@"
           '';
 
@@ -278,7 +330,9 @@
               echo "  fts-gui         — launch REAPER with GUI"
               echo "  reaper-env      — drop into bare FHS shell"
               echo ""
-              echo "  REAPER: ${reaper}/opt/REAPER/reaper"
+              echo "  REAPER:  ${reaper}/opt/REAPER/reaper"
+              echo "  SWS:     ${if cfg.extensions.sws then "enabled" else "disabled"}"
+              echo "  ReaPack: ${if cfg.extensions.reapack then "enabled" else "disabled"}"
               echo ""
             '';
           };
@@ -299,8 +353,12 @@
       # self.lib.mkFtsEnv with a custom config.
 
       presets = {
-        # CI: minimal, no plugins, no debug tools, headless only
+        # CI: minimal — no plugins, no extensions, headless only
         ci = {
+          extensions = {
+            sws = false;
+            reapack = false;
+          };
           plugins = {
             lv2 = false;
             vst = false;
@@ -334,8 +392,12 @@
           };
         };
 
-        # Dev: full environment with plugins and debug tools
+        # Dev: full environment with extensions, plugins, and debug tools
         dev = {
+          extensions = {
+            sws = true;
+            reapack = true;
+          };
           plugins = {
             lv2 = true;
             vst = false;
@@ -369,8 +431,12 @@
           };
         };
 
-        # Production: full plugins, all codecs, no debug
+        # Production: full plugins + extensions, all codecs, no debug
         full = {
+          extensions = {
+            sws = true;
+            reapack = true;
+          };
           plugins = {
             lv2 = true;
             vst = false;
