@@ -236,9 +236,9 @@
             targetPkgs = _: fhsPackages;
             multiPkgs = _: fhsLibs;
             profile = ''
-              export REAPER_BIN="${reaper}/opt/REAPER/reaper"
+              export REAPER_BIN="${reaper}/bin/reaper"
               export REAPER_RESOURCE_DIR="${reaper}/opt/REAPER"
-              export FTS_REAPER_EXECUTABLE="${reaper}/opt/REAPER/reaper"
+              export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
               export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
 
               # Set up plugin search paths
@@ -255,7 +255,15 @@
           reaper-headless = pkgs.writeShellScriptBin "reaper-headless" ''
             set -euo pipefail
 
-            DISPLAY="${cfg.headless.display}"
+            # Find a free display number (avoids conflicts with existing X sessions)
+            PREFERRED="${cfg.headless.display}"
+            DISPLAY="$PREFERRED"
+            for n in $(seq ''${PREFERRED#:} 120); do
+              if [ ! -e "/tmp/.X''${n}-lock" ]; then
+                DISPLAY=":$n"
+                break
+              fi
+            done
             export DISPLAY
 
             REAPER_HOME="''${FTS_HOME:-$HOME/.config/fts-test}"
@@ -281,9 +289,12 @@
             }
             trap cleanup EXIT
 
-            echo "[fts] Xvfb ready"
-            echo "[fts] FTS_REAPER_EXECUTABLE=${reaper}/opt/REAPER/reaper"
+            echo "[fts] Xvfb ready on $DISPLAY"
+            echo "[fts] FTS_REAPER_EXECUTABLE=${reaper}/bin/reaper"
             echo "[fts] FTS_REAPER_RESOURCES=${reaper}/opt/REAPER"
+
+            # Override to use the nixpkgs wrapper (sets LD_LIBRARY_PATH correctly)
+            export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
 
             if [ $# -gt 0 ]; then
               exec "$@"
@@ -300,7 +311,7 @@
           reaper-gui = pkgs.writeShellScriptBin "fts-gui" ''
             # Link extensions before launching GUI
             ${extensionSetup}
-            exec ${reaper-fhs}/bin/reaper-env ${reaper}/opt/REAPER/reaper "$@"
+            exec ${reaper-fhs}/bin/reaper-env ${reaper}/bin/reaper "$@"
           '';
 
           devShell = pkgs.mkShell {
@@ -321,7 +332,7 @@
               ];
 
             shellHook = ''
-              export FTS_REAPER_EXECUTABLE="${reaper}/opt/REAPER/reaper"
+              export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
               export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
               echo ""
               echo "  fts-flake dev shell"
@@ -330,7 +341,7 @@
               echo "  fts-gui         — launch REAPER with GUI"
               echo "  reaper-env      — drop into bare FHS shell"
               echo ""
-              echo "  REAPER:  ${reaper}/opt/REAPER/reaper"
+              echo "  REAPER:  ${reaper}/bin/reaper"
               echo "  SWS:     ${if cfg.extensions.sws then "enabled" else "disabled"}"
               echo "  ReaPack: ${if cfg.extensions.reapack then "enabled" else "disabled"}"
               echo ""
