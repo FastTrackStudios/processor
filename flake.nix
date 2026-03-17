@@ -2,112 +2,43 @@
   description = "FastTrackStudio — reproducible music production & testing environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:cachix/devenv-nixpkgs/rolling";
+    devenv.url = "github:cachix/devenv";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  nixConfig = {
+    extra-trusted-public-keys = [
+      "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+      "fasttrackstudio.cachix.org-1:r7v7WXBeSZ7m5meL6w0wttnvsOltRvTpXeVNItcy9f4="
+    ];
+    extra-substituters = [
+      "https://devenv.cachix.org"
+      "https://fasttrackstudio.cachix.org"
+    ];
   };
 
   outputs =
     {
       self,
       nixpkgs,
+      devenv,
       flake-utils,
-    }:
+      rust-overlay,
+    } @ inputs:
     let
-      # ── Configuration presets ──────────────────────────────────
-      #
-      # mkFtsEnv takes an option set and returns packages/shells.
-      # Consumers can call self.lib.mkFtsEnv { plugins.lv2 = true; }
-      # or use the built-in presets exposed as packages.
+      # ── FTS environment builder ────────────────────────────────
+      # Builds the REAPER FHS sandbox, headless runner, and scripts.
+      # Used by both devenv modules and standalone package outputs.
 
-      defaultConfig = {
-        # REAPER extensions (from nixpkgs)
-        extensions = {
-          sws = true;
-          reapack = true;
-        };
-
-        # Audio plugins to include in the FHS environment
-        plugins = {
-          lv2 = false;
-          vst = false;
-          vst3 = false;
-          clap = false;
-          ladspa = false;
-        };
-
-        # Audio backend libraries
-        audio = {
-          pipewire = true;
-          pulseaudio = true;
-          alsa = true;
-          jack = true;
-        };
-
-        # Media codec libraries
-        codecs = {
-          ffmpeg = false;
-          lame = true;
-          vorbis = true;
-          ogg = true;
-          flac = true;
-          opus = true;
-          sndfile = true;
-        };
-
-        # Developer / debugging tools in the dev shell
-        dev = {
-          rust = true;
-          debug = false; # strace, gdb
-        };
-
-        # Headless display
-        headless = {
-          enable = true;
-          resolution = "1920x1080x24";
-          display = ":99";
-        };
-      };
-
-      # Merge user config over defaults (one level deep per section)
-      mergeConfig =
-        user:
+      mkFtsPackages =
+        { pkgs, cfg }:
         let
-          merge =
-            section:
-            if builtins.hasAttr section user then
-              (defaultConfig.${section} // user.${section})
-            else
-              defaultConfig.${section};
-        in
-        {
-          extensions = merge "extensions";
-          plugins = merge "plugins";
-          audio = merge "audio";
-          codecs = merge "codecs";
-          dev = merge "dev";
-          headless = merge "headless";
-        };
-    in
-    {
-      # ── Library: build a custom FTS environment ──────────────
-      lib.mkFtsEnv =
-        userConfig: system:
-        let
-          cfg = mergeConfig userConfig;
-          pkgs = import nixpkgs {
-            inherit system;
-            config.allowUnfreePredicate =
-              pkg:
-              builtins.elem (pkgs.lib.getName pkg) [
-                "reaper"
-              ];
-          };
-
           reaper = pkgs.reaper;
           sws = pkgs.reaper-sws-extension;
           reapack = pkgs.reaper-reapack-extension;
-
-          # ── Conditional dependency lists ────────────────────
 
           graphicsLibs = with pkgs; [
             libx11
@@ -161,12 +92,8 @@
               x42-plugins
               zam-plugins
             ]
-            ++ pkgs.lib.optionals cfg.plugins.ladspa [
-              ladspa-sdk
-            ]
-            ++ pkgs.lib.optionals cfg.plugins.clap [
-              # CLAP plugins — add as they become available in nixpkgs
-            ];
+            ++ pkgs.lib.optionals cfg.plugins.ladspa [ ladspa-sdk ]
+            ++ pkgs.lib.optionals cfg.plugins.clap [ ];
 
           extensionPackages =
             [ ]
@@ -205,10 +132,6 @@
             ]
             ++ pluginPackages;
 
-          # ── Extension setup script ──────────────────────────
-          # Symlinks SWS/ReaPack .so files into REAPER's UserPlugins
-          # directory, matching the pattern from the system flake.
-
           extensionSetup =
             let
               swsSetup = pkgs.lib.optionalString cfg.extensions.sws ''
@@ -229,8 +152,6 @@
               ${reapackSetup}
             '';
 
-          # ── Derivations ─────────────────────────────────────
-
           reaper-fhs = pkgs.buildFHSEnv {
             name = "reaper-env";
             targetPkgs = _: fhsPackages;
@@ -240,8 +161,6 @@
               export REAPER_RESOURCE_DIR="${reaper}/opt/REAPER"
               export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
               export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
-
-              # Set up plugin search paths
               export LV2_PATH="''${LV2_PATH:+$LV2_PATH:}/usr/lib/lv2"
               export CLAP_PATH="''${CLAP_PATH:+$CLAP_PATH:}/usr/lib/clap"
               export VST_PATH="''${VST_PATH:+$VST_PATH:}/usr/lib/vst"
@@ -254,8 +173,6 @@
 
           reaper-headless = pkgs.writeShellScriptBin "reaper-headless" ''
             set -euo pipefail
-
-            # Find a free display number (avoids conflicts with existing X sessions)
             PREFERRED="${cfg.headless.display}"
             DISPLAY="$PREFERRED"
             for n in $(seq ''${PREFERRED#:} 120); do
@@ -268,17 +185,13 @@
 
             REAPER_HOME="''${FTS_HOME:-$HOME/.config/fts-test}"
             mkdir -p "$REAPER_HOME"
-
-            # Link extensions into REAPER config
             ${extensionSetup}
 
             echo "[fts] Starting Xvfb on $DISPLAY..."
             ${pkgs.xorg-server}/bin/Xvfb "$DISPLAY" -screen 0 ${cfg.headless.resolution} -nolisten tcp &
             XVFB_PID=$!
             for i in $(seq 1 20); do
-              if ${pkgs.xset}/bin/xset q &>/dev/null 2>&1; then
-                break
-              fi
+              if ${pkgs.xset}/bin/xset q &>/dev/null 2>&1; then break; fi
               sleep 0.1
             done
 
@@ -290,92 +203,74 @@
             trap cleanup EXIT
 
             echo "[fts] Xvfb ready on $DISPLAY"
-            echo "[fts] FTS_REAPER_EXECUTABLE=${reaper}/bin/reaper"
-            echo "[fts] FTS_REAPER_RESOURCES=${reaper}/opt/REAPER"
-
-            # Override to use the nixpkgs wrapper (sets LD_LIBRARY_PATH correctly)
             export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
 
-            if [ $# -gt 0 ]; then
-              exec "$@"
-            else
-              echo "[fts] No command given — dropping into shell."
-              exec bash
-            fi
+            if [ $# -gt 0 ]; then exec "$@";
+            else echo "[fts] No command given — dropping into shell."; exec bash; fi
           '';
 
-          reaper-test-env = pkgs.writeShellScriptBin "fts-test" ''
+          fts-test = pkgs.writeShellScriptBin "fts-test" ''
             exec ${reaper-fhs}/bin/reaper-env ${reaper-headless}/bin/reaper-headless "$@"
           '';
 
-          reaper-gui = pkgs.writeShellScriptBin "fts-gui" ''
-            # Link extensions before launching GUI
+          fts-gui = pkgs.writeShellScriptBin "fts-gui" ''
             ${extensionSetup}
             exec ${reaper-fhs}/bin/reaper-env ${reaper}/bin/reaper "$@"
           '';
-
-          devShell = pkgs.mkShell {
-            name = "fts-dev";
-            packages =
-              with pkgs;
-              [
-                reaper-test-env
-                reaper-gui
-                reaper-fhs
-                pkg-config
-                openssl
-              ]
-              ++ pkgs.lib.optionals cfg.dev.rust [ pkgs.rustup ]
-              ++ pkgs.lib.optionals cfg.dev.debug [
-                pkgs.strace
-                pkgs.gdb
-              ];
-
-            shellHook = ''
-              export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
-              export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
-              echo ""
-              echo "  fts-flake dev shell"
-              echo "  ────────────────────────────────────────"
-              echo "  fts-test [cmd]  — headless FHS env (CI-ready)"
-              echo "  fts-gui         — launch REAPER with GUI"
-              echo "  reaper-env      — drop into bare FHS shell"
-              echo ""
-              echo "  REAPER:  ${reaper}/bin/reaper"
-              echo "  SWS:     ${if cfg.extensions.sws then "enabled" else "disabled"}"
-              echo "  ReaPack: ${if cfg.extensions.reapack then "enabled" else "disabled"}"
-              echo ""
-            '';
-          };
         in
         {
-          packages = {
-            inherit reaper-fhs reaper-headless;
-            fts-test = reaper-test-env;
-            fts-gui = reaper-gui;
-          };
-          inherit devShell;
+          inherit
+            reaper-fhs
+            reaper-headless
+            fts-test
+            fts-gui
+            reaper
+            sws
+            reapack
+            ;
         };
 
-      # ── Presets ──────────────────────────────────────────────
-      #
-      # These are the ready-to-use configurations exposed as
-      # standard flake outputs. Consumers can also call
-      # self.lib.mkFtsEnv with a custom config.
+      # ── Preset configs ─────────────────────────────────────────
+
+      defaultConfig = {
+        extensions = {
+          sws = true;
+          reapack = true;
+        };
+        plugins = {
+          lv2 = false;
+          vst = false;
+          vst3 = false;
+          clap = false;
+          ladspa = false;
+        };
+        audio = {
+          pipewire = true;
+          pulseaudio = true;
+          alsa = true;
+          jack = true;
+        };
+        codecs = {
+          ffmpeg = false;
+          lame = true;
+          vorbis = true;
+          ogg = true;
+          flac = true;
+          opus = true;
+          sndfile = true;
+        };
+        headless = {
+          enable = true;
+          resolution = "1920x1080x24";
+          display = ":99";
+        };
+      };
 
       presets = {
-        # CI: minimal — no plugins, no extensions, headless only
-        ci = {
+        ci = defaultConfig // {
           extensions = {
             sws = false;
             reapack = false;
-          };
-          plugins = {
-            lv2 = false;
-            vst = false;
-            vst3 = false;
-            clap = false;
-            ladspa = false;
           };
           audio = {
             pipewire = false;
@@ -392,10 +287,6 @@
             opus = false;
             sndfile = true;
           };
-          dev = {
-            rust = true;
-            debug = false;
-          };
           headless = {
             enable = true;
             resolution = "1280x720x16";
@@ -403,12 +294,7 @@
           };
         };
 
-        # Dev: full environment with extensions, plugins, and debug tools
-        dev = {
-          extensions = {
-            sws = true;
-            reapack = true;
-          };
+        dev = defaultConfig // {
           plugins = {
             lv2 = true;
             vst = false;
@@ -416,12 +302,6 @@
             clap = true;
             ladspa = false;
           };
-          audio = {
-            pipewire = true;
-            pulseaudio = true;
-            alsa = true;
-            jack = true;
-          };
           codecs = {
             ffmpeg = true;
             lame = true;
@@ -431,23 +311,9 @@
             opus = true;
             sndfile = true;
           };
-          dev = {
-            rust = true;
-            debug = true;
-          };
-          headless = {
-            enable = true;
-            resolution = "1920x1080x24";
-            display = ":99";
-          };
         };
 
-        # Production: full plugins + extensions, all codecs, no debug
-        full = {
-          extensions = {
-            sws = true;
-            reapack = true;
-          };
+        full = defaultConfig // {
           plugins = {
             lv2 = true;
             vst = false;
@@ -455,12 +321,6 @@
             clap = true;
             ladspa = true;
           };
-          audio = {
-            pipewire = true;
-            pulseaudio = true;
-            alsa = true;
-            jack = true;
-          };
           codecs = {
             ffmpeg = true;
             lame = true;
@@ -469,10 +329,6 @@
             flac = true;
             opus = true;
             sndfile = true;
-          };
-          dev = {
-            rust = false;
-            debug = false;
           };
           headless = {
             enable = false;
@@ -481,15 +337,15 @@
           };
         };
       };
+    in
+    {
+      # Expose for consumers
+      inherit presets;
+      lib.mkFtsPackages = mkFtsPackages;
     }
     // flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
       system:
       let
-        defaultEnv = self.lib.mkFtsEnv { } system;
-        ciEnv = self.lib.mkFtsEnv self.presets.ci system;
-        devEnv = self.lib.mkFtsEnv self.presets.dev system;
-        fullEnv = self.lib.mkFtsEnv self.presets.full system;
-
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfreePredicate =
@@ -498,25 +354,145 @@
               "reaper"
             ];
         };
+
+        ciPkgs = mkFtsPackages {
+          inherit pkgs;
+          cfg = presets.ci;
+        };
+        devPkgs = mkFtsPackages {
+          inherit pkgs;
+          cfg = presets.dev;
+        };
+        defaultPkgs = mkFtsPackages {
+          inherit pkgs;
+          cfg = defaultConfig;
+        };
+        fullPkgs = mkFtsPackages {
+          inherit pkgs;
+          cfg = presets.full;
+        };
       in
       {
+        # ── Packages (unchanged from before) ────────────────────
         packages = {
-          default = defaultEnv.packages.fts-test;
-
-          # Preset packages
-          fts-test = defaultEnv.packages.fts-test;
-          fts-test-ci = ciEnv.packages.fts-test;
-          fts-test-dev = devEnv.packages.fts-test;
-          fts-gui = defaultEnv.packages.fts-gui;
-          fts-gui-dev = devEnv.packages.fts-gui;
-          reaper-fhs = defaultEnv.packages.reaper-fhs;
+          default = defaultPkgs.fts-test;
+          fts-test = defaultPkgs.fts-test;
+          fts-test-ci = ciPkgs.fts-test;
+          fts-test-dev = devPkgs.fts-test;
+          fts-gui = defaultPkgs.fts-gui;
+          fts-gui-dev = devPkgs.fts-gui;
+          reaper-fhs = defaultPkgs.reaper-fhs;
         };
 
+        # ── devenv-powered dev shells ───────────────────────────
         devShells = {
-          default = devEnv.devShell;
-          ci = ciEnv.devShell;
-          minimal = defaultEnv.devShell;
-          full = fullEnv.devShell;
+          default = devenv.lib.mkShell {
+            inherit inputs pkgs;
+            modules = [
+              (
+                { pkgs, config, ... }:
+                {
+                  cachix.pull = [ "fasttrackstudio" ];
+
+                  packages = [
+                    devPkgs.fts-test
+                    devPkgs.fts-gui
+                    devPkgs.reaper-fhs
+                    pkgs.pkg-config
+                    pkgs.openssl
+                  ];
+
+                  languages.rust = {
+                    enable = true;
+                    channel = "stable";
+                  };
+
+                  env = {
+                    FTS_REAPER_EXECUTABLE = "${devPkgs.reaper}/bin/reaper";
+                    FTS_REAPER_RESOURCES = "${devPkgs.reaper}/opt/REAPER";
+                  };
+
+                  scripts = {
+                    fts-smoke.exec = ''
+                      echo "[fts] Smoke test: starting REAPER..."
+                      fts-test bash -c '"$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors & RPID=$!; sleep 3; kill -0 $RPID && echo "PASSED" && kill $RPID || (echo "FAILED"; exit 1)'
+                    '';
+                  };
+
+                  enterShell = ''
+                    echo ""
+                    echo "  fts-flake dev shell (devenv)"
+                    echo "  ────────────────────────────────────────"
+                    echo "  fts-test [cmd]  — headless FHS env (CI-ready)"
+                    echo "  fts-gui         — launch REAPER with GUI"
+                    echo "  reaper-env      — drop into bare FHS shell"
+                    echo "  fts-smoke       — quick REAPER smoke test"
+                    echo ""
+                    echo "  REAPER:  ${devPkgs.reaper}/bin/reaper"
+                    echo "  SWS:     enabled"
+                    echo "  ReaPack: enabled"
+                    echo ""
+                  '';
+
+                  git-hooks.hooks = {
+                    nixfmt.enable = true;
+                  };
+                }
+              )
+            ];
+          };
+
+          ci = devenv.lib.mkShell {
+            inherit inputs pkgs;
+            modules = [
+              (
+                { pkgs, ... }:
+                {
+                  cachix.pull = [ "fasttrackstudio" ];
+
+                  packages = [
+                    ciPkgs.fts-test
+                    ciPkgs.reaper-fhs
+                    pkgs.pkg-config
+                    pkgs.openssl
+                  ];
+
+                  languages.rust = {
+                    enable = true;
+                    channel = "stable";
+                  };
+
+                  env = {
+                    FTS_REAPER_EXECUTABLE = "${ciPkgs.reaper}/bin/reaper";
+                    FTS_REAPER_RESOURCES = "${ciPkgs.reaper}/opt/REAPER";
+                  };
+                }
+              )
+            ];
+          };
+
+          minimal = devenv.lib.mkShell {
+            inherit inputs pkgs;
+            modules = [
+              (
+                { pkgs, ... }:
+                {
+                  cachix.pull = [ "fasttrackstudio" ];
+
+                  packages = [
+                    defaultPkgs.fts-test
+                    defaultPkgs.fts-gui
+                    defaultPkgs.reaper-fhs
+                  ];
+
+                  env = {
+                    FTS_REAPER_EXECUTABLE = "${defaultPkgs.reaper}/bin/reaper";
+                    FTS_REAPER_RESOURCES = "${defaultPkgs.reaper}/opt/REAPER";
+                  };
+                }
+              )
+            ];
+          };
         };
 
         checks.reaper-starts = pkgs.runCommand "reaper-starts" { } ''
