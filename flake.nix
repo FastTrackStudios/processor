@@ -412,27 +412,203 @@
                     FTS_REAPER_RESOURCES = "${devPkgs.reaper}/opt/REAPER";
                   };
 
-                  scripts = {
-                    fts-smoke.exec = ''
-                      echo "[fts] Smoke test: starting REAPER..."
-                      fts-test bash -c '"$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors & RPID=$!; sleep 3; kill -0 $RPID && echo "PASSED" && kill $RPID || (echo "FAILED"; exit 1)'
-                    '';
+                  # ── Tasks ───────────────────────────────────────
+                  tasks = {
+                    # Link SWS + ReaPack extensions into REAPER config
+                    "reaper:setup-extensions" = {
+                      exec = ''
+                        REAPER_CONFIG="$HOME/.config/REAPER"
+                        mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
+                        ln -sf "${devPkgs.sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
+                        ln -sf "${devPkgs.sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
+                        ln -sf "${devPkgs.sws}/Scripts/sws_python64.py" "$REAPER_CONFIG/Scripts/"
+                        ln -sf "${devPkgs.reapack}/UserPlugins/reaper_reapack-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
+                        echo "Extensions linked"
+                      '';
+                      status = ''
+                        test -L "$HOME/.config/REAPER/UserPlugins/reaper_sws-x86_64.so" && \
+                        test -L "$HOME/.config/REAPER/UserPlugins/reaper_reapack-x86_64.so"
+                      '';
+                      before = [ "devenv:enterShell" ];
+                    };
+
+                    # Smoke test: verify REAPER starts in headless FHS
+                    "reaper:smoke" = {
+                      exec = ''
+                        fts-test bash -c '
+                          "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                          RPID=$!
+                          sleep 3
+                          if kill -0 $RPID 2>/dev/null; then
+                            echo "REAPER running (PID $RPID)"
+                            kill $RPID
+                          else
+                            echo "REAPER failed to start"
+                            exit 1
+                          fi
+                        '
+                      '';
+                    };
+
+                    # Build the daw workspace (when working on it)
+                    "daw:build" = {
+                      exec = "cargo build --workspace";
+                      execIfModified = [
+                        "Cargo.toml"
+                        "Cargo.lock"
+                        "crates/**/*.rs"
+                        "apps/**/*.rs"
+                      ];
+                    };
+
+                    # Run daw unit tests (no REAPER needed)
+                    "daw:test" = {
+                      exec = "cargo test --workspace";
+                      after = [ "daw:build" ];
+                    };
+
+                    # Run REAPER integration tests (needs headless REAPER)
+                    "daw:integration" = {
+                      exec = ''
+                        fts-test bash -c '
+                          "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                          RPID=$!
+                          echo "Waiting for REAPER socket..."
+                          for i in $(seq 1 30); do
+                            SOCK=$(ls /tmp/fts-daw-*.sock 2>/dev/null | head -1)
+                            if [ -n "$SOCK" ]; then break; fi
+                            sleep 1
+                          done
+                          if [ -z "$SOCK" ]; then
+                            echo "No socket found after 30s"
+                            kill $RPID 2>/dev/null
+                            exit 1
+                          fi
+                          echo "Socket ready: $SOCK"
+                          cargo test -p daw-reaper -- --ignored --nocapture
+                          STATUS=$?
+                          kill $RPID 2>/dev/null
+                          exit $STATUS
+                        '
+                      '';
+                      after = [ "daw:build" ];
+                    };
+
+                    # Run all tests
+                    "daw:ci" = {
+                      exec = "echo 'All daw tests passed'";
+                      after = [
+                        "daw:test"
+                        "daw:integration"
+                      ];
+                    };
                   };
 
                   enterShell = ''
                     echo ""
                     echo "  fts-flake dev shell (devenv)"
                     echo "  ────────────────────────────────────────"
-                    echo "  fts-test [cmd]  — headless FHS env (CI-ready)"
-                    echo "  fts-gui         — launch REAPER with GUI"
-                    echo "  reaper-env      — drop into bare FHS shell"
-                    echo "  fts-smoke       — quick REAPER smoke test"
+                    echo "  fts-test [cmd]     — headless FHS env (CI-ready)"
+                    echo "  fts-gui            — launch REAPER with GUI"
+                    echo "  reaper-env         — drop into bare FHS shell"
+                    echo "  fts-smoke          — REAPER headless smoke test"
+                    echo "  fts-setup          — link extensions into REAPER config"
+                    echo "  fts-integration    — run daw REAPER integration tests"
                     echo ""
                     echo "  REAPER:  ${devPkgs.reaper}/bin/reaper"
-                    echo "  SWS:     enabled"
-                    echo "  ReaPack: enabled"
+                    echo "  SWS:     enabled  |  ReaPack: enabled"
                     echo ""
                   '';
+
+                  # ── Scripts ─────────────────────────────────────
+                  scripts = {
+                    fts-smoke.exec = ''
+                      fts-test bash -c '
+                        "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                        RPID=$!
+                        sleep 3
+                        if kill -0 $RPID 2>/dev/null; then
+                          echo "REAPER running (PID $RPID) — smoke test passed"
+                          kill $RPID
+                        else
+                          echo "REAPER failed to start"
+                          exit 1
+                        fi
+                      '
+                    '';
+                    fts-smoke.description = "Quick REAPER headless smoke test";
+
+                    fts-integration.exec = ''
+                      fts-test bash -c '
+                        "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                        RPID=$!
+                        echo "Waiting for REAPER socket..."
+                        SOCK=""
+                        for i in $(seq 1 30); do
+                          SOCK=$(ls /tmp/fts-daw-*.sock 2>/dev/null | head -1)
+                          if [ -n "$SOCK" ]; then break; fi
+                          sleep 1
+                        done
+                        if [ -z "$SOCK" ]; then
+                          echo "No socket found after 30s"
+                          kill $RPID 2>/dev/null
+                          exit 1
+                        fi
+                        echo "Socket ready: $SOCK"
+                        cargo test -p daw-reaper -- --ignored --nocapture
+                        STATUS=$?
+                        kill $RPID 2>/dev/null
+                        exit $STATUS
+                      '
+                    '';
+                    fts-integration.description = "Run daw REAPER integration tests";
+
+                    fts-setup.exec = ''
+                      REAPER_CONFIG="$HOME/.config/REAPER"
+                      mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
+                      ln -sf "${devPkgs.sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
+                      ln -sf "${devPkgs.sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
+                      ln -sf "${devPkgs.sws}/Scripts/sws_python64.py" "$REAPER_CONFIG/Scripts/"
+                      ln -sf "${devPkgs.reapack}/UserPlugins/reaper_reapack-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
+                      echo "Extensions linked into $REAPER_CONFIG"
+                    '';
+                    fts-setup.description = "Link SWS + ReaPack extensions into REAPER config";
+                  };
+
+                  # ── Claude Code integration ──────────────────────
+                  claude.code = {
+                    enable = true;
+                    commands = {
+                      smoke = ''
+                        Run the REAPER headless smoke test
+
+                        ```bash
+                        fts-smoke
+                        ```
+                      '';
+                      integration = ''
+                        Run the full daw REAPER integration test suite
+
+                        ```bash
+                        fts-integration
+                        ```
+                      '';
+                      build = ''
+                        Build the daw workspace
+
+                        ```bash
+                        cargo build --workspace
+                        ```
+                      '';
+                      test = ''
+                        Run daw unit tests
+
+                        ```bash
+                        cargo test --workspace
+                        ```
+                      '';
+                    };
+                  };
 
                   git-hooks.hooks = {
                     nixfmt.enable = true;
