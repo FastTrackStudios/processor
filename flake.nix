@@ -199,36 +199,58 @@
             # Start PipeWire audio stack if available (provides JACK-compatible audio)
             PIPEWIRE_PID=""
             WIREPLUMBER_PID=""
-            PIPEWIRE_PULSE_PID=""
             if command -v pipewire &>/dev/null; then
               echo "[fts] Starting PipeWire audio stack..."
-              export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/tmp/fts-runtime-$$}"
-              mkdir -p "$XDG_RUNTIME_DIR"
 
-              # 1. PipeWire core daemon
-              pipewire &
+              # XDG_RUNTIME_DIR must exist and be writable — create inside /run/user
+              # or /tmp since we're in an FHS sandbox. PipeWire creates its sockets here.
+              export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+              mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || {
+                export XDG_RUNTIME_DIR="/tmp/fts-runtime-$$"
+                mkdir -p "$XDG_RUNTIME_DIR"
+              }
+              chmod 700 "$XDG_RUNTIME_DIR"
+
+              # Write a minimal PipeWire config that only loads core modules.
+              # This avoids the default config auto-loading protocol-pulse
+              # (which causes "Address already in use" in CI).
+              mkdir -p "$XDG_RUNTIME_DIR/pipewire"
+              cat > "$XDG_RUNTIME_DIR/pipewire/pipewire.conf" << 'PWEOF'
+            context.properties = {
+              support.dbus = false
+            }
+            context.modules = [
+              { name = libpipewire-module-protocol-native }
+              { name = libpipewire-module-client-node }
+              { name = libpipewire-module-adapter }
+              { name = libpipewire-module-link-factory }
+              { name = libpipewire-module-session-manager }
+            ]
+            PWEOF
+
+              # 1. PipeWire core daemon with custom config
+              pipewire -c "$XDG_RUNTIME_DIR/pipewire/pipewire.conf" &
               PIPEWIRE_PID=$!
-              sleep 0.3
+              sleep 0.5
 
               # 2. WirePlumber session manager (sets up JACK graph)
               if command -v wireplumber &>/dev/null; then
                 wireplumber &
                 WIREPLUMBER_PID=$!
-                sleep 0.3
+                sleep 0.5
               fi
 
-              # 3. PulseAudio compatibility (optional)
-              if command -v pipewire-pulse &>/dev/null; then
-                pipewire-pulse &
-                PIPEWIRE_PULSE_PID=$!
+              # Verify PipeWire is running
+              if kill -0 "$PIPEWIRE_PID" 2>/dev/null; then
+                echo "[fts] PipeWire audio stack ready (pipewire=$PIPEWIRE_PID wireplumber=$WIREPLUMBER_PID)"
+                echo "[fts] XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+              else
+                echo "[fts] WARNING: PipeWire failed to start"
               fi
-
-              echo "[fts] PipeWire audio stack ready (pipewire=$PIPEWIRE_PID wireplumber=$WIREPLUMBER_PID)"
             fi
 
             cleanup() {
               echo "[fts] Cleaning up..."
-              [ -n "$PIPEWIRE_PULSE_PID" ] && kill "$PIPEWIRE_PULSE_PID" 2>/dev/null || true
               [ -n "$WIREPLUMBER_PID" ] && kill "$WIREPLUMBER_PID" 2>/dev/null || true
               [ -n "$PIPEWIRE_PID" ] && kill "$PIPEWIRE_PID" 2>/dev/null || true
               kill "$XVFB_PID" 2>/dev/null || true
