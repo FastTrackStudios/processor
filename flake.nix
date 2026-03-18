@@ -68,7 +68,7 @@
             with pkgs;
             [ ]
             ++ pkgs.lib.optionals cfg.audio.alsa [ alsa-lib ]
-            ++ pkgs.lib.optionals cfg.audio.pipewire [ pipewire ]
+            ++ pkgs.lib.optionals cfg.audio.pipewire [ pipewire wireplumber ]
             ++ pkgs.lib.optionals cfg.audio.jack [ pipewire.jack ]
             ++ pkgs.lib.optionals cfg.audio.pulseaudio [ pulseaudio ];
 
@@ -196,26 +196,40 @@
               sleep 0.1
             done
 
-            # Start PipeWire if available (provides JACK-compatible audio clock)
+            # Start PipeWire audio stack if available (provides JACK-compatible audio)
             PIPEWIRE_PID=""
+            WIREPLUMBER_PID=""
             PIPEWIRE_PULSE_PID=""
             if command -v pipewire &>/dev/null; then
-              echo "[fts] Starting PipeWire..."
+              echo "[fts] Starting PipeWire audio stack..."
               export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/tmp/fts-runtime-$$}"
               mkdir -p "$XDG_RUNTIME_DIR"
+
+              # 1. PipeWire core daemon
               pipewire &
               PIPEWIRE_PID=$!
               sleep 0.3
+
+              # 2. WirePlumber session manager (sets up JACK graph)
+              if command -v wireplumber &>/dev/null; then
+                wireplumber &
+                WIREPLUMBER_PID=$!
+                sleep 0.3
+              fi
+
+              # 3. PulseAudio compatibility (optional)
               if command -v pipewire-pulse &>/dev/null; then
                 pipewire-pulse &
                 PIPEWIRE_PULSE_PID=$!
               fi
-              echo "[fts] PipeWire ready (PID $PIPEWIRE_PID)"
+
+              echo "[fts] PipeWire audio stack ready (pipewire=$PIPEWIRE_PID wireplumber=$WIREPLUMBER_PID)"
             fi
 
             cleanup() {
               echo "[fts] Cleaning up..."
               [ -n "$PIPEWIRE_PULSE_PID" ] && kill "$PIPEWIRE_PULSE_PID" 2>/dev/null || true
+              [ -n "$WIREPLUMBER_PID" ] && kill "$WIREPLUMBER_PID" 2>/dev/null || true
               [ -n "$PIPEWIRE_PID" ] && kill "$PIPEWIRE_PID" 2>/dev/null || true
               kill "$XVFB_PID" 2>/dev/null || true
               pkill -f "reaper.*-newinst" 2>/dev/null || true
