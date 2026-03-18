@@ -263,7 +263,14 @@
             echo "[fts] Xvfb ready on $DISPLAY"
             export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
 
-            if [ $# -gt 0 ]; then exec "$@";
+            if [ $# -gt 0 ]; then
+              # If pw-jack is available and the command looks like REAPER, wrap it
+              if [ -n "$FTS_REAPER_LAUNCHER" ] && command -v "$FTS_REAPER_LAUNCHER" &>/dev/null; then
+                echo "[fts] Launching via $FTS_REAPER_LAUNCHER: $*"
+                exec "$FTS_REAPER_LAUNCHER" "$@"
+              else
+                exec "$@"
+              fi
             else echo "[fts] No command given — dropping into shell."; exec bash; fi
           '';
 
