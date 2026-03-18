@@ -146,7 +146,7 @@
               '';
             in
             ''
-              REAPER_CONFIG="''${HOME}/.config/REAPER"
+              REAPER_CONFIG="${cfg.reaper.configDir}"
               mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
               ${swsSetup}
               ${reapackSetup}
@@ -161,6 +161,7 @@
               export REAPER_RESOURCE_DIR="${reaper}/opt/REAPER"
               export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
               export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
+              export FTS_REAPER_CONFIG="${cfg.reaper.configDir}"
               export LV2_PATH="''${LV2_PATH:+$LV2_PATH:}/usr/lib/lv2"
               export CLAP_PATH="''${CLAP_PATH:+$CLAP_PATH:}/usr/lib/clap"
               export VST_PATH="''${VST_PATH:+$VST_PATH:}/usr/lib/vst"
@@ -183,7 +184,7 @@
             done
             export DISPLAY
 
-            REAPER_HOME="''${FTS_HOME:-$HOME/.config/fts-test}"
+            REAPER_HOME="${cfg.reaper.configDir}"
             mkdir -p "$REAPER_HOME"
             ${extensionSetup}
 
@@ -233,6 +234,10 @@
       # ── Preset configs ─────────────────────────────────────────
 
       defaultConfig = {
+        # Canonical REAPER config directory. All rigs share this path.
+        # Extensions, UserPlugins, Scripts, and reaper.ini live here.
+        # Never touches ~/.config/REAPER/.
+        reaper.configDir = "$HOME/.config/REAPER";
         extensions = {
           sws = true;
           reapack = true;
@@ -410,6 +415,7 @@
                   env = {
                     FTS_REAPER_EXECUTABLE = "${devPkgs.reaper}/bin/reaper";
                     FTS_REAPER_RESOURCES = "${devPkgs.reaper}/opt/REAPER";
+                    FTS_REAPER_CONFIG = presets.dev.reaper.configDir;
                   };
 
                   # ── Tasks ───────────────────────────────────────
@@ -417,7 +423,7 @@
                     # Link SWS + ReaPack extensions into REAPER config
                     "reaper:setup-extensions" = {
                       exec = ''
-                        REAPER_CONFIG="$HOME/.config/REAPER"
+                        REAPER_CONFIG="${presets.dev.reaper.configDir}"
                         mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
                         ln -sf "${devPkgs.sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
                         ln -sf "${devPkgs.sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
@@ -426,8 +432,8 @@
                         echo "Extensions linked"
                       '';
                       status = ''
-                        test -L "$HOME/.config/REAPER/UserPlugins/reaper_sws-x86_64.so" && \
-                        test -L "$HOME/.config/REAPER/UserPlugins/reaper_reapack-x86_64.so"
+                        test -L "${presets.dev.reaper.configDir}/UserPlugins/reaper_sws-x86_64.so" && \
+                        test -L "${presets.dev.reaper.configDir}/UserPlugins/reaper_reapack-x86_64.so"
                       '';
                       before = [ "devenv:enterShell" ];
                     };
@@ -564,7 +570,7 @@
                     fts-integration.description = "Run daw REAPER integration tests";
 
                     fts-setup.exec = ''
-                      REAPER_CONFIG="$HOME/.config/REAPER"
+                      REAPER_CONFIG="${presets.dev.reaper.configDir}"
                       mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
                       ln -sf "${devPkgs.sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
                       ln -sf "${devPkgs.sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
@@ -641,6 +647,7 @@
                   env = {
                     FTS_REAPER_EXECUTABLE = "${ciPkgs.reaper}/bin/reaper";
                     FTS_REAPER_RESOURCES = "${ciPkgs.reaper}/opt/REAPER";
+                    FTS_REAPER_CONFIG = presets.ci.reaper.configDir;
                   };
                 }
               )
@@ -664,6 +671,7 @@
                   env = {
                     FTS_REAPER_EXECUTABLE = "${defaultPkgs.reaper}/bin/reaper";
                     FTS_REAPER_RESOURCES = "${defaultPkgs.reaper}/opt/REAPER";
+                    FTS_REAPER_CONFIG = defaultConfig.reaper.configDir;
                   };
                 }
               )
