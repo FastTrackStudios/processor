@@ -36,7 +36,12 @@
       mkFtsPackages =
         { pkgs, cfg }:
         let
-          reaper = pkgs.reaper;
+          # Use our custom REAPER derivation with headless support
+          reaper = pkgs.callPackage ./pkgs/reaper.nix {
+            headless = cfg.headless.enable or false;
+            jackLibrary = pkgs.pipewire.jack;
+            libxml2 = pkgs.libxml2;
+          };
           sws = pkgs.reaper-sws-extension;
           reapack = pkgs.reaper-reapack-extension;
 
@@ -174,103 +179,23 @@
 
           reaper-headless = pkgs.writeShellScriptBin "reaper-headless" ''
             set -euo pipefail
-            PREFERRED="${cfg.headless.display}"
-            DISPLAY="$PREFERRED"
-            for n in $(seq ''${PREFERRED#:} 120); do
-              if [ ! -e "/tmp/.X''${n}-lock" ]; then
-                DISPLAY=":$n"
-                break
-              fi
-            done
-            export DISPLAY
 
             REAPER_HOME="${cfg.reaper.configDir}"
             mkdir -p "$REAPER_HOME"
             ${extensionSetup}
 
-            echo "[fts] Starting Xvfb on $DISPLAY..."
-            ${pkgs.xorg-server}/bin/Xvfb "$DISPLAY" -screen 0 ${cfg.headless.resolution} -nolisten tcp &
-            XVFB_PID=$!
-            for i in $(seq 1 20); do
-              if ${pkgs.xset}/bin/xset q &>/dev/null 2>&1; then break; fi
-              sleep 0.1
-            done
-
-            # Start PipeWire audio stack if available (provides JACK-compatible audio)
-            PIPEWIRE_PID=""
-            WIREPLUMBER_PID=""
-            if command -v pipewire &>/dev/null; then
-              echo "[fts] Starting PipeWire audio stack..."
-
-              # XDG_RUNTIME_DIR must exist and be writable — create inside /run/user
-              # or /tmp since we're in an FHS sandbox. PipeWire creates its sockets here.
-              export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-              mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || {
-                export XDG_RUNTIME_DIR="/tmp/fts-runtime-$$"
-                mkdir -p "$XDG_RUNTIME_DIR"
-              }
-              chmod 700 "$XDG_RUNTIME_DIR"
-
-              # Use a drop-in config to disable protocol-pulse (avoids
-              # "Address already in use" when pipewire-pulse is also loaded).
-              # Also disable dbus since we're headless.
-              export XDG_CONFIG_HOME="$XDG_RUNTIME_DIR/config"
-              mkdir -p "$XDG_CONFIG_HOME/pipewire/pipewire.conf.d"
-              cat > "$XDG_CONFIG_HOME/pipewire/pipewire.conf.d/99-headless.conf" << 'PWEOF'
-            # Headless CI overrides
-            context.properties = {
-              support.dbus = false
-            }
-            PWEOF
-
-              # 1. PipeWire core daemon (uses default config + our drop-in)
-              pipewire &
-              PIPEWIRE_PID=$!
-              sleep 0.5
-
-              # 2. WirePlumber session manager (sets up JACK graph)
-              if command -v wireplumber &>/dev/null; then
-                wireplumber &
-                WIREPLUMBER_PID=$!
-                sleep 0.5
-              fi
-
-              # Verify PipeWire is running
-              if kill -0 "$PIPEWIRE_PID" 2>/dev/null; then
-                echo "[fts] PipeWire audio stack ready (pipewire=$PIPEWIRE_PID wireplumber=$WIREPLUMBER_PID)"
-                echo "[fts] XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
-
-                # Export FTS_REAPER_LAUNCHER so callers can prefix REAPER with pw-jack.
-                # pw-jack sets LD_LIBRARY_PATH so JACK clients connect to PipeWire.
-                if command -v pw-jack &>/dev/null; then
-                  export FTS_REAPER_LAUNCHER="pw-jack"
-                  echo "[fts] pw-jack available — set FTS_REAPER_LAUNCHER=pw-jack"
-                fi
-              else
-                echo "[fts] WARNING: PipeWire failed to start"
-              fi
-            fi
-
             cleanup() {
               echo "[fts] Cleaning up..."
-              [ -n "$WIREPLUMBER_PID" ] && kill "$WIREPLUMBER_PID" 2>/dev/null || true
-              [ -n "$PIPEWIRE_PID" ] && kill "$PIPEWIRE_PID" 2>/dev/null || true
-              kill "$XVFB_PID" 2>/dev/null || true
               pkill -f "reaper.*-newinst" 2>/dev/null || true
             }
             trap cleanup EXIT
 
-            echo "[fts] Xvfb ready on $DISPLAY"
+            echo "[fts] Headless mode ready (NOGDK libSwell — no X11 required)"
             export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
+            export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
 
             if [ $# -gt 0 ]; then
-              # If pw-jack is available and the command looks like REAPER, wrap it
-              if [ -n "$FTS_REAPER_LAUNCHER" ] && command -v "$FTS_REAPER_LAUNCHER" &>/dev/null; then
-                echo "[fts] Launching via $FTS_REAPER_LAUNCHER: $*"
-                exec "$FTS_REAPER_LAUNCHER" "$@"
-              else
-                exec "$@"
-              fi
+              exec "$@"
             else echo "[fts] No command given — dropping into shell."; exec bash; fi
           '';
 
