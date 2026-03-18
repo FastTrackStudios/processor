@@ -239,6 +239,13 @@
               if kill -0 "$PIPEWIRE_PID" 2>/dev/null; then
                 echo "[fts] PipeWire audio stack ready (pipewire=$PIPEWIRE_PID wireplumber=$WIREPLUMBER_PID)"
                 echo "[fts] XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+
+                # Export FTS_REAPER_LAUNCHER so callers can prefix REAPER with pw-jack.
+                # pw-jack sets LD_LIBRARY_PATH so JACK clients connect to PipeWire.
+                if command -v pw-jack &>/dev/null; then
+                  export FTS_REAPER_LAUNCHER="pw-jack"
+                  echo "[fts] pw-jack available — set FTS_REAPER_LAUNCHER=pw-jack"
+                fi
               else
                 echo "[fts] WARNING: PipeWire failed to start"
               fi
