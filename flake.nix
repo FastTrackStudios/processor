@@ -184,25 +184,22 @@
             mkdir -p "$REAPER_HOME"
             ${extensionSetup}
 
-            # Ensure a PipeWire daemon is running so REAPER has a JACK backend.
+            # Start a dedicated PipeWire instance so REAPER has a JACK backend.
             # Without an active audio server, REAPER's main loop goes idle and
-            # timer callbacks stop firing.
-            if ! [ -e "''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pipewire-0" ]; then
-              export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/tmp/fts-runtime-$$}"
-              mkdir -p "$XDG_RUNTIME_DIR"
-              echo "[fts] No PipeWire detected — starting minimal instance"
-              pipewire &
-              _FTS_PW_PID=$!
-              # Wait for socket to appear
-              for i in $(seq 1 20); do
-                [ -e "$XDG_RUNTIME_DIR/pipewire-0" ] && break
-                sleep 0.1
-              done
-              if [ -e "$XDG_RUNTIME_DIR/pipewire-0" ]; then
-                echo "[fts] PipeWire started (PID $_FTS_PW_PID)"
-              else
-                echo "[fts] WARNING: PipeWire socket not found after 2s"
-              fi
+            # timer callbacks stop firing. Each invocation gets its own instance
+            # to avoid cross-contamination between CI steps.
+            export XDG_RUNTIME_DIR="/tmp/fts-runtime-$$"
+            mkdir -p "$XDG_RUNTIME_DIR"
+            pipewire &
+            _FTS_PW_PID=$!
+            for i in $(seq 1 20); do
+              [ -e "$XDG_RUNTIME_DIR/pipewire-0" ] && break
+              sleep 0.1
+            done
+            if [ -e "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+              echo "[fts] PipeWire started (PID $_FTS_PW_PID, runtime=$XDG_RUNTIME_DIR)"
+            else
+              echo "[fts] WARNING: PipeWire socket not found after 2s"
             fi
 
             cleanup() {
