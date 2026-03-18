@@ -196,8 +196,27 @@
               sleep 0.1
             done
 
+            # Start PipeWire if available (provides JACK-compatible audio clock)
+            PIPEWIRE_PID=""
+            PIPEWIRE_PULSE_PID=""
+            if command -v pipewire &>/dev/null; then
+              echo "[fts] Starting PipeWire..."
+              export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/tmp/fts-runtime-$$}"
+              mkdir -p "$XDG_RUNTIME_DIR"
+              pipewire &
+              PIPEWIRE_PID=$!
+              sleep 0.3
+              if command -v pipewire-pulse &>/dev/null; then
+                pipewire-pulse &
+                PIPEWIRE_PULSE_PID=$!
+              fi
+              echo "[fts] PipeWire ready (PID $PIPEWIRE_PID)"
+            fi
+
             cleanup() {
               echo "[fts] Cleaning up..."
+              [ -n "$PIPEWIRE_PULSE_PID" ] && kill "$PIPEWIRE_PULSE_PID" 2>/dev/null || true
+              [ -n "$PIPEWIRE_PID" ] && kill "$PIPEWIRE_PID" 2>/dev/null || true
               kill "$XVFB_PID" 2>/dev/null || true
               pkill -f "reaper.*-newinst" 2>/dev/null || true
             }
@@ -278,10 +297,10 @@
             reapack = false;
           };
           audio = {
-            pipewire = false;
+            pipewire = true;
             pulseaudio = false;
             alsa = true;
-            jack = false;
+            jack = true;
           };
           codecs = {
             ffmpeg = false;
