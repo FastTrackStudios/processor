@@ -211,31 +211,19 @@
               }
               chmod 700 "$XDG_RUNTIME_DIR"
 
-              # Write a minimal PipeWire config that only loads core modules.
-              # This avoids the default config auto-loading protocol-pulse
-              # (which causes "Address already in use" in CI).
-              # PipeWire reads configs from PIPEWIRE_CONFIG_DIR.
-              export PIPEWIRE_CONFIG_DIR="$XDG_RUNTIME_DIR/pipewire-conf"
-              mkdir -p "$PIPEWIRE_CONFIG_DIR"
-              cat > "$PIPEWIRE_CONFIG_DIR/pipewire.conf" << 'PWEOF'
+              # Use a drop-in config to disable protocol-pulse (avoids
+              # "Address already in use" when pipewire-pulse is also loaded).
+              # Also disable dbus since we're headless.
+              export XDG_CONFIG_HOME="$XDG_RUNTIME_DIR/config"
+              mkdir -p "$XDG_CONFIG_HOME/pipewire/pipewire.conf.d"
+              cat > "$XDG_CONFIG_HOME/pipewire/pipewire.conf.d/99-headless.conf" << 'PWEOF'
+            # Headless CI overrides
             context.properties = {
               support.dbus = false
-              log.level = 2
             }
-            context.spa-libs = {
-              audio.convert.* = audioconvert/libspa-audioconvert
-              support.*       = support/libspa-support
-            }
-            context.modules = [
-              { name = libpipewire-module-protocol-native }
-              { name = libpipewire-module-client-node }
-              { name = libpipewire-module-adapter }
-              { name = libpipewire-module-link-factory }
-              { name = libpipewire-module-session-manager }
-            ]
             PWEOF
 
-              # 1. PipeWire core daemon with custom config
+              # 1. PipeWire core daemon (uses default config + our drop-in)
               pipewire &
               PIPEWIRE_PID=$!
               sleep 0.5
