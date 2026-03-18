@@ -184,6 +184,22 @@
             mkdir -p "$REAPER_HOME"
             ${extensionSetup}
 
+            # Write a default reaper.ini if one doesn't exist.
+            # REAPER on Linux uses [reaper] (lowercase) section headers.
+            # audiodriver=1 selects JACK (provided by PipeWire below).
+            if [ ! -f "$REAPER_HOME/reaper.ini" ]; then
+              cat > "$REAPER_HOME/reaper.ini" << 'INI'
+[reaper]
+audiodriver=1
+lastproject=
+undomaxmem=0
+[verchk]
+audiocloseinactive=0
+audioclosestop=0
+INI
+              echo "[fts] Default reaper.ini written to $REAPER_HOME"
+            fi
+
             # Start a dedicated PipeWire instance so REAPER has a JACK backend.
             # Without an active audio server, REAPER's main loop goes idle and
             # timer callbacks stop firing. Each invocation gets its own instance
