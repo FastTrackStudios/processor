@@ -189,6 +189,7 @@
             # timer callbacks stop firing. Each invocation gets its own instance
             # to avoid cross-contamination between CI steps.
             export XDG_RUNTIME_DIR="/tmp/fts-runtime-$$"
+            export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
             mkdir -p "$XDG_RUNTIME_DIR"
             pipewire &
             _FTS_PW_PID=$!
@@ -198,6 +199,8 @@
             done
             if [ -e "$XDG_RUNTIME_DIR/pipewire-0" ]; then
               echo "[fts] PipeWire started (PID $_FTS_PW_PID, runtime=$XDG_RUNTIME_DIR)"
+              # Give PipeWire time to initialize its JACK module
+              sleep 1
             else
               echo "[fts] WARNING: PipeWire socket not found after 2s"
             fi
