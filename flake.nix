@@ -214,10 +214,17 @@
               # Write a minimal PipeWire config that only loads core modules.
               # This avoids the default config auto-loading protocol-pulse
               # (which causes "Address already in use" in CI).
-              mkdir -p "$XDG_RUNTIME_DIR/pipewire"
-              cat > "$XDG_RUNTIME_DIR/pipewire/pipewire.conf" << 'PWEOF'
+              # PipeWire reads configs from PIPEWIRE_CONFIG_DIR.
+              export PIPEWIRE_CONFIG_DIR="$XDG_RUNTIME_DIR/pipewire-conf"
+              mkdir -p "$PIPEWIRE_CONFIG_DIR"
+              cat > "$PIPEWIRE_CONFIG_DIR/pipewire.conf" << 'PWEOF'
             context.properties = {
               support.dbus = false
+              log.level = 2
+            }
+            context.spa-libs = {
+              audio.convert.* = audioconvert/libspa-audioconvert
+              support.*       = support/libspa-support
             }
             context.modules = [
               { name = libpipewire-module-protocol-native }
@@ -229,7 +236,7 @@
             PWEOF
 
               # 1. PipeWire core daemon with custom config
-              pipewire -c "$XDG_RUNTIME_DIR/pipewire/pipewire.conf" &
+              pipewire &
               PIPEWIRE_PID=$!
               sleep 0.5
 
