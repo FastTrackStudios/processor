@@ -375,6 +375,54 @@ INI
       inherit presets;
       lib.mkFtsPackages = mkFtsPackages;
     }
+    # ── Cross-platform wrapper packages (Linux + macOS) ─────────
+    // flake-utils.lib.eachSystem [
+      "x86_64-linux"
+      "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ] (
+      system:
+      let
+        wrapperPkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate =
+            pkg:
+            builtins.elem (nixpkgs.lib.getName pkg) [
+              "reaper"
+            ];
+        };
+
+        wrapperReaper = wrapperPkgs.callPackage ./wrapper/reaper/pkgs/reaper.nix {
+          jackLibrary = wrapperPkgs.pipewire.jack or null;
+        };
+        wrapperSws = wrapperPkgs.callPackage ./wrapper/reaper/pkgs/sws.nix { };
+        wrapperReapack = wrapperPkgs.callPackage ./wrapper/reaper/pkgs/reapack.nix { };
+        wrapperIcon = nixpkgs.lib.optionalAttrs wrapperPkgs.stdenv.hostPlatform.isDarwin (
+          wrapperPkgs.callPackage ./wrapper/reaper/pkgs/icon.nix { }
+        );
+        wrapperDmg = nixpkgs.lib.optionalAttrs wrapperPkgs.stdenv.hostPlatform.isDarwin (
+          wrapperPkgs.callPackage ./wrapper/reaper/pkgs/dmg.nix {
+            reaper = wrapperReaper;
+            sws = wrapperSws;
+            reapack = wrapperReapack;
+            icon = wrapperIcon;
+          }
+        );
+      in
+      {
+        # Wrapper packages — available on all platforms
+        wrapperPackages = {
+          reaper = wrapperReaper;
+          sws = wrapperSws;
+          reapack = wrapperReapack;
+        } // nixpkgs.lib.optionalAttrs wrapperPkgs.stdenv.hostPlatform.isDarwin {
+          icon = wrapperIcon;
+          dmg = wrapperDmg;
+        };
+      }
+    )
+    # ── Linux-only packages (FHS, headless, devenv) ─────────────
     // flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
       system:
       let
