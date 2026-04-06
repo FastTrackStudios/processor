@@ -830,11 +830,25 @@
         "type": "github"
       }
     },
+    "reaper-file": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1774933370,
+        "narHash": "sha256-jsHFRCSiRILx2bGWPmZ67HZTOp7+4M30w/YM+PPcWVU=",
+        "path": "/home/cody/Development/FastTrackStudio/reaper-file",
+        "type": "path"
+      },
+      "original": {
+        "path": "/home/cody/Development/FastTrackStudio/reaper-file",
+        "type": "path"
+      }
+    },
     "root": {
       "inputs": {
         "devenv": "devenv",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs_5",
+        "reaper-file": "reaper-file",
         "rust-overlay": "rust-overlay_2"
       }
     },

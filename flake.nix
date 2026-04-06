@@ -1,5 +1,5 @@
 {
-  description = "FastTrackStudio — reproducible music production & testing environment";
+  description = "reaper-flake — reproducible, declarative REAPER DAW environment";
 
   inputs = {
     nixpkgs.url = "github:cachix/devenv-nixpkgs/rolling";
@@ -7,6 +7,14 @@
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+
+    # reaper-file: typed Rust mappings for REAPER config / project / kbd files.
+    # Used as the canonical reference for INI key names exposed by the
+    # programs.reaper NixOS module in modules/reaper/default.nix.
+    reaper-file = {
+      url = "path:/home/cody/Development/FastTrackStudio/reaper-file";
+      flake = false;
+    };
   };
 
   nixConfig = {
@@ -27,16 +35,16 @@
       devenv,
       flake-utils,
       rust-overlay,
+      reaper-file,
     } @ inputs:
     let
-      # ── FTS environment builder ────────────────────────────────
+      # ── REAPER environment builder ─────────────────────────────────────────
       # Builds the REAPER FHS sandbox, headless runner, and scripts.
       # Used by both devenv modules and standalone package outputs.
 
-      mkFtsPackages =
+      mkReaperPackages =
         { pkgs, cfg }:
         let
-          # Use our custom REAPER derivation with headless support
           reaper = pkgs.callPackage ./pkgs/reaper.nix {
             headless = cfg.headless.enable or false;
             jackLibrary = pkgs.pipewire.jack;
@@ -143,11 +151,11 @@
                 ln -sf "${sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
                 ln -sf "${sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
                 ln -sf "${sws}/Scripts/sws_python64.py" "$REAPER_CONFIG/Scripts/"
-                echo "[fts] SWS extension linked"
+                echo "[reaper-flake] SWS extension linked"
               '';
               reapackSetup = pkgs.lib.optionalString cfg.extensions.reapack ''
                 ln -sf "${reapack}/UserPlugins/reaper_reapack-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
-                echo "[fts] ReaPack extension linked"
+                echo "[reaper-flake] ReaPack extension linked"
               '';
             in
             ''
@@ -164,9 +172,9 @@
             profile = ''
               export REAPER_BIN="${reaper}/bin/reaper"
               export REAPER_RESOURCE_DIR="${reaper}/opt/REAPER"
-              export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
-              export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
-              export FTS_REAPER_CONFIG="${cfg.reaper.configDir}"
+              export REAPER_FLAKE_EXECUTABLE="${reaper}/bin/reaper"
+              export REAPER_FLAKE_RESOURCES="${reaper}/opt/REAPER"
+              export REAPER_FLAKE_CONFIG="${cfg.reaper.configDir}"
               export LV2_PATH="''${LV2_PATH:+$LV2_PATH:}/usr/lib/lv2"
               export CLAP_PATH="''${CLAP_PATH:+$CLAP_PATH:}/usr/lib/clap"
               export VST_PATH="''${VST_PATH:+$VST_PATH:}/usr/lib/vst"
@@ -197,51 +205,47 @@ undomaxmem=0
 audiocloseinactive=0
 audioclosestop=0
 INI
-              echo "[fts] Default reaper.ini written to $REAPER_HOME"
+              echo "[reaper-flake] Default reaper.ini written to $REAPER_HOME"
             fi
 
             # Start a dedicated PipeWire instance so REAPER has a JACK backend.
-            # Without an active audio server, REAPER's main loop goes idle and
-            # timer callbacks stop firing. Each invocation gets its own instance
-            # to avoid cross-contamination between CI steps.
-            export XDG_RUNTIME_DIR="/tmp/fts-runtime-$$"
+            export XDG_RUNTIME_DIR="/tmp/reaper-flake-runtime-$$"
             export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
             mkdir -p "$XDG_RUNTIME_DIR"
             pipewire &
-            _FTS_PW_PID=$!
+            _REAPER_PW_PID=$!
             for i in $(seq 1 20); do
               [ -e "$XDG_RUNTIME_DIR/pipewire-0" ] && break
               sleep 0.1
             done
             if [ -e "$XDG_RUNTIME_DIR/pipewire-0" ]; then
-              echo "[fts] PipeWire started (PID $_FTS_PW_PID, runtime=$XDG_RUNTIME_DIR)"
-              # Give PipeWire time to initialize its JACK module
+              echo "[reaper-flake] PipeWire started (PID $_REAPER_PW_PID, runtime=$XDG_RUNTIME_DIR)"
               sleep 1
             else
-              echo "[fts] WARNING: PipeWire socket not found after 2s"
+              echo "[reaper-flake] WARNING: PipeWire socket not found after 2s"
             fi
 
             cleanup() {
-              echo "[fts] Cleaning up..."
+              echo "[reaper-flake] Cleaning up..."
               pkill -f "reaper.*-newinst" 2>/dev/null || true
-              [ -n "''${_FTS_PW_PID:-}" ] && kill "$_FTS_PW_PID" 2>/dev/null || true
+              [ -n "''${_REAPER_PW_PID:-}" ] && kill "$_REAPER_PW_PID" 2>/dev/null || true
             }
             trap cleanup EXIT
 
-            echo "[fts] Headless mode ready (NOGDK libSwell — no X11 required)"
-            export FTS_REAPER_EXECUTABLE="${reaper}/bin/reaper"
-            export FTS_REAPER_RESOURCES="${reaper}/opt/REAPER"
+            echo "[reaper-flake] Headless mode ready (NOGDK libSwell — no X11 required)"
+            export REAPER_FLAKE_EXECUTABLE="${reaper}/bin/reaper"
+            export REAPER_FLAKE_RESOURCES="${reaper}/opt/REAPER"
 
             if [ $# -gt 0 ]; then
               exec "$@"
-            else echo "[fts] No command given — dropping into shell."; exec bash; fi
+            else echo "[reaper-flake] No command given — dropping into shell."; exec bash; fi
           '';
 
-          fts-test = pkgs.writeShellScriptBin "fts-test" ''
+          reaper-test = pkgs.writeShellScriptBin "reaper-test" ''
             exec ${reaper-fhs}/bin/reaper-env ${reaper-headless}/bin/reaper-headless "$@"
           '';
 
-          fts-gui = pkgs.writeShellScriptBin "fts-gui" ''
+          reaper-gui = pkgs.writeShellScriptBin "reaper-gui" ''
             ${extensionSetup}
             exec ${reaper-fhs}/bin/reaper-env ${reaper}/bin/reaper "$@"
           '';
@@ -250,20 +254,17 @@ INI
           inherit
             reaper-fhs
             reaper-headless
-            fts-test
-            fts-gui
+            reaper-test
+            reaper-gui
             reaper
             sws
             reapack
             ;
         };
 
-      # ── Preset configs ─────────────────────────────────────────
+      # ── Preset configs ──────────────────────────────────────────────────────
 
       defaultConfig = {
-        # Canonical REAPER config directory. All rigs share this path.
-        # Extensions, UserPlugins, Scripts, and reaper.ini live here.
-        # Never touches ~/.config/REAPER/.
         reaper.configDir = "$HOME/.config/REAPER";
         extensions = {
           sws = true;
@@ -373,9 +374,15 @@ INI
     {
       # Expose for consumers
       inherit presets;
-      lib.mkFtsPackages = mkFtsPackages;
+      lib.mkReaperPackages = mkReaperPackages;
+
+      # ── NixOS / home-manager modules ─────────────────────────────────────
+      # programs.reaper — dendritic option tree for reaper.ini configuration.
+      # Keys mirror the typed structs in reaper-file/crates/reaper-config/.
+      nixosModules.default = ./modules/reaper;
+      nixosModules.reaper = ./modules/reaper;
     }
-    # ── Cross-platform wrapper packages (Linux + macOS) ─────────
+    # ── Cross-platform wrapper packages (Linux + macOS) ───────────────────
     // flake-utils.lib.eachSystem [
       "x86_64-linux"
       "aarch64-linux"
@@ -411,7 +418,6 @@ INI
         );
       in
       {
-        # Wrapper packages — available on all platforms
         wrapperPackages = {
           reaper = wrapperReaper;
           sws = wrapperSws;
@@ -422,7 +428,7 @@ INI
         };
       }
     )
-    # ── Linux-only packages (FHS, headless, devenv) ─────────────
+    # ── Linux-only packages (FHS, headless, devenv) ───────────────────────
     // flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
       system:
       let
@@ -435,36 +441,34 @@ INI
             ];
         };
 
-        ciPkgs = mkFtsPackages {
+        ciPkgs = mkReaperPackages {
           inherit pkgs;
           cfg = presets.ci;
         };
-        devPkgs = mkFtsPackages {
+        devPkgs = mkReaperPackages {
           inherit pkgs;
           cfg = presets.dev;
         };
-        defaultPkgs = mkFtsPackages {
+        defaultPkgs = mkReaperPackages {
           inherit pkgs;
           cfg = defaultConfig;
         };
-        fullPkgs = mkFtsPackages {
+        fullPkgs = mkReaperPackages {
           inherit pkgs;
           cfg = presets.full;
         };
       in
       {
-        # ── Packages (unchanged from before) ────────────────────
         packages = {
-          default = defaultPkgs.fts-test;
-          fts-test = defaultPkgs.fts-test;
-          fts-test-ci = ciPkgs.fts-test;
-          fts-test-dev = devPkgs.fts-test;
-          fts-gui = defaultPkgs.fts-gui;
-          fts-gui-dev = devPkgs.fts-gui;
+          default = defaultPkgs.reaper-test;
+          reaper-test = defaultPkgs.reaper-test;
+          reaper-test-ci = ciPkgs.reaper-test;
+          reaper-test-dev = devPkgs.reaper-test;
+          reaper-gui = defaultPkgs.reaper-gui;
+          reaper-gui-dev = devPkgs.reaper-gui;
           reaper-fhs = defaultPkgs.reaper-fhs;
         };
 
-        # ── devenv-powered dev shells ───────────────────────────
         devShells = {
           default = devenv.lib.mkShell {
             inherit inputs pkgs;
@@ -475,8 +479,8 @@ INI
                   cachix.pull = [ "fasttrackstudio" ];
 
                   packages = [
-                    devPkgs.fts-test
-                    devPkgs.fts-gui
+                    devPkgs.reaper-test
+                    devPkgs.reaper-gui
                     devPkgs.reaper-fhs
                     pkgs.pkg-config
                     pkgs.openssl
@@ -488,14 +492,12 @@ INI
                   };
 
                   env = {
-                    FTS_REAPER_EXECUTABLE = "${devPkgs.reaper}/bin/reaper";
-                    FTS_REAPER_RESOURCES = "${devPkgs.reaper}/opt/REAPER";
-                    FTS_REAPER_CONFIG = presets.dev.reaper.configDir;
+                    REAPER_FLAKE_EXECUTABLE = "${devPkgs.reaper}/bin/reaper";
+                    REAPER_FLAKE_RESOURCES = "${devPkgs.reaper}/opt/REAPER";
+                    REAPER_FLAKE_CONFIG = presets.dev.reaper.configDir;
                   };
 
-                  # ── Tasks ───────────────────────────────────────
                   tasks = {
-                    # Link SWS + ReaPack extensions into REAPER config
                     "reaper:setup-extensions" = {
                       exec = ''
                         REAPER_CONFIG="${presets.dev.reaper.configDir}"
@@ -513,11 +515,10 @@ INI
                       before = [ "devenv:enterShell" ];
                     };
 
-                    # Smoke test: verify REAPER starts in headless FHS
                     "reaper:smoke" = {
                       exec = ''
-                        fts-test bash -c '
-                          "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                        reaper-test bash -c '
+                          "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
                           RPID=$!
                           sleep 3
                           if kill -0 $RPID 2>/dev/null; then
@@ -531,7 +532,6 @@ INI
                       '';
                     };
 
-                    # Build the daw workspace (when working on it)
                     "daw:build" = {
                       exec = "cargo build --workspace";
                       execIfModified = [
@@ -542,21 +542,19 @@ INI
                       ];
                     };
 
-                    # Run daw unit tests (no REAPER needed)
                     "daw:test" = {
                       exec = "cargo test --workspace";
                       after = [ "daw:build" ];
                     };
 
-                    # Run REAPER integration tests (needs headless REAPER)
                     "daw:integration" = {
                       exec = ''
-                        fts-test bash -c '
-                          "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                        reaper-test bash -c '
+                          "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
                           RPID=$!
                           echo "Waiting for REAPER socket..."
                           for i in $(seq 1 30); do
-                            SOCK=$(ls /tmp/fts-daw-*.sock 2>/dev/null | head -1)
+                            SOCK=$(ls /tmp/reaper-flake-*.sock 2>/dev/null | head -1)
                             if [ -n "$SOCK" ]; then break; fi
                             sleep 1
                           done
@@ -575,7 +573,6 @@ INI
                       after = [ "daw:build" ];
                     };
 
-                    # Run all tests
                     "daw:ci" = {
                       exec = "echo 'All daw tests passed'";
                       after = [
@@ -587,25 +584,24 @@ INI
 
                   enterShell = ''
                     echo ""
-                    echo "  fts-flake dev shell (devenv)"
+                    echo "  reaper-flake dev shell (devenv)"
                     echo "  ────────────────────────────────────────"
-                    echo "  fts-test [cmd]     — headless FHS env (CI-ready)"
-                    echo "  fts-gui            — launch REAPER with GUI"
+                    echo "  reaper-test [cmd]  — headless FHS env (CI-ready)"
+                    echo "  reaper-gui         — launch REAPER with GUI"
                     echo "  reaper-env         — drop into bare FHS shell"
-                    echo "  fts-smoke          — REAPER headless smoke test"
-                    echo "  fts-setup          — link extensions into REAPER config"
-                    echo "  fts-integration    — run daw REAPER integration tests"
+                    echo "  reaper-smoke       — REAPER headless smoke test"
+                    echo "  reaper-setup       — link extensions into REAPER config"
+                    echo "  reaper-integration — run daw REAPER integration tests"
                     echo ""
                     echo "  REAPER:  ${devPkgs.reaper}/bin/reaper"
                     echo "  SWS:     enabled  |  ReaPack: enabled"
                     echo ""
                   '';
 
-                  # ── Scripts ─────────────────────────────────────
                   scripts = {
-                    fts-smoke.exec = ''
-                      fts-test bash -c '
-                        "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                    reaper-smoke.exec = ''
+                      reaper-test bash -c '
+                        "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
                         RPID=$!
                         sleep 3
                         if kill -0 $RPID 2>/dev/null; then
@@ -617,16 +613,16 @@ INI
                         fi
                       '
                     '';
-                    fts-smoke.description = "Quick REAPER headless smoke test";
+                    reaper-smoke.description = "Quick REAPER headless smoke test";
 
-                    fts-integration.exec = ''
-                      fts-test bash -c '
-                        "$FTS_REAPER_EXECUTABLE" -newinst -nosplash -ignoreerrors &
+                    reaper-integration.exec = ''
+                      reaper-test bash -c '
+                        "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
                         RPID=$!
                         echo "Waiting for REAPER socket..."
                         SOCK=""
                         for i in $(seq 1 30); do
-                          SOCK=$(ls /tmp/fts-daw-*.sock 2>/dev/null | head -1)
+                          SOCK=$(ls /tmp/reaper-flake-*.sock 2>/dev/null | head -1)
                           if [ -n "$SOCK" ]; then break; fi
                           sleep 1
                         done
@@ -642,9 +638,9 @@ INI
                         exit $STATUS
                       '
                     '';
-                    fts-integration.description = "Run daw REAPER integration tests";
+                    reaper-integration.description = "Run daw REAPER integration tests";
 
-                    fts-setup.exec = ''
+                    reaper-setup.exec = ''
                       REAPER_CONFIG="${presets.dev.reaper.configDir}"
                       mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
                       ln -sf "${devPkgs.sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
@@ -653,10 +649,9 @@ INI
                       ln -sf "${devPkgs.reapack}/UserPlugins/reaper_reapack-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
                       echo "Extensions linked into $REAPER_CONFIG"
                     '';
-                    fts-setup.description = "Link SWS + ReaPack extensions into REAPER config";
+                    reaper-setup.description = "Link SWS + ReaPack extensions into REAPER config";
                   };
 
-                  # ── Claude Code integration ──────────────────────
                   claude.code = {
                     enable = true;
                     commands = {
@@ -664,14 +659,14 @@ INI
                         Run the REAPER headless smoke test
 
                         ```bash
-                        fts-smoke
+                        reaper-smoke
                         ```
                       '';
                       integration = ''
                         Run the full daw REAPER integration test suite
 
                         ```bash
-                        fts-integration
+                        reaper-integration
                         ```
                       '';
                       build = ''
@@ -708,7 +703,7 @@ INI
                   cachix.pull = [ "fasttrackstudio" ];
 
                   packages = [
-                    ciPkgs.fts-test
+                    ciPkgs.reaper-test
                     ciPkgs.reaper-fhs
                     pkgs.pkg-config
                     pkgs.openssl
@@ -720,9 +715,9 @@ INI
                   };
 
                   env = {
-                    FTS_REAPER_EXECUTABLE = "${ciPkgs.reaper}/bin/reaper";
-                    FTS_REAPER_RESOURCES = "${ciPkgs.reaper}/opt/REAPER";
-                    FTS_REAPER_CONFIG = presets.ci.reaper.configDir;
+                    REAPER_FLAKE_EXECUTABLE = "${ciPkgs.reaper}/bin/reaper";
+                    REAPER_FLAKE_RESOURCES = "${ciPkgs.reaper}/opt/REAPER";
+                    REAPER_FLAKE_CONFIG = presets.ci.reaper.configDir;
                   };
                 }
               )
@@ -738,15 +733,15 @@ INI
                   cachix.pull = [ "fasttrackstudio" ];
 
                   packages = [
-                    defaultPkgs.fts-test
-                    defaultPkgs.fts-gui
+                    defaultPkgs.reaper-test
+                    defaultPkgs.reaper-gui
                     defaultPkgs.reaper-fhs
                   ];
 
                   env = {
-                    FTS_REAPER_EXECUTABLE = "${defaultPkgs.reaper}/bin/reaper";
-                    FTS_REAPER_RESOURCES = "${defaultPkgs.reaper}/opt/REAPER";
-                    FTS_REAPER_CONFIG = defaultConfig.reaper.configDir;
+                    REAPER_FLAKE_EXECUTABLE = "${defaultPkgs.reaper}/bin/reaper";
+                    REAPER_FLAKE_RESOURCES = "${defaultPkgs.reaper}/opt/REAPER";
+                    REAPER_FLAKE_CONFIG = defaultConfig.reaper.configDir;
                   };
                 }
               )
