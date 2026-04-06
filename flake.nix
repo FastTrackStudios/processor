@@ -18,9 +18,31 @@
       perSystem = { self', pkgs, lib, system, ... }:
         let
           # ── Rust toolchain ───────────────────────────────────────────
+          # Android targets included so cross-compilation works when
+          # ANDROID_NDK_HOME is set on the host system.
           rustToolchain = pkgs.rust-bin.stable.latest.default.override {
             extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
-            targets = [ "wasm32-unknown-unknown" ];
+            targets = [
+              "wasm32-unknown-unknown"
+              "aarch64-linux-android"
+              "armv7-linux-androideabi"
+              "x86_64-linux-android"
+              "i686-linux-android"
+            ];
+          };
+
+          # ── wasm-bindgen-cli (must match Cargo.lock version) ────────
+          wasm-bindgen-cli = pkgs.buildWasmBindgenCli rec {
+            src = pkgs.fetchCrate {
+              pname = "wasm-bindgen-cli";
+              version = "0.2.117";
+              hash = "sha256-vtDQXL8FSgdutqXG7/rBUWgrYCtzdmeVQQkWkjasvZU=";
+            };
+            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+              inherit src;
+              inherit (src) pname version;
+              hash = "sha256-eKe7uwneUYxejSbG/1hKqg6bSmtL0KQ9ojlazeqTi88=";
+            };
           };
 
           # ── Crane ────────────────────────────────────────────────────
@@ -71,12 +93,12 @@
           # Stub codesign for Nix sandbox — dx tries to invoke codesign on macOS
           fakeCodesign = pkgs.writeShellScriptBin "codesign" ''exec true'';
 
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            rustPlatform.bindgenHook
-            dioxus-cli
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.rustPlatform.bindgenHook
+            pkgs.dioxus-cli
             wasm-bindgen-cli
-            tailwindcss_4
+            pkgs.tailwindcss_4
           ] ++ lib.optionals pkgs.stdenv.isDarwin [
             fakeCodesign
           ];
@@ -196,15 +218,15 @@
           devShells.default = pkgs.mkShell {
             inputsFrom = [ (craneLib.buildDepsOnly commonArgs) ];
 
-            packages = with pkgs; [
+            packages = [
               rustToolchain
-              dioxus-cli
               wasm-bindgen-cli
-              tailwindcss_4
-              cargo-watch
-              cargo-nextest
-              bacon
-              nodejs_22
+              pkgs.dioxus-cli
+              pkgs.tailwindcss_4
+              pkgs.cargo-watch
+              pkgs.cargo-nextest
+              pkgs.bacon
+              pkgs.nodejs_22
             ]
             ++ buildInputs
             ++ nativeBuildInputs;
