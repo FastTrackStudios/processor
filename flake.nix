@@ -216,8 +216,6 @@
           # Dev Shell
           # ============================================================
           devShells.default = pkgs.mkShell {
-            inputsFrom = [ (craneLib.buildDepsOnly commonArgs) ];
-
             packages = [
               rustToolchain
               wasm-bindgen-cli
