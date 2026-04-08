@@ -245,8 +245,8 @@ INI
             exec ${reaper-fhs}/bin/reaper-env ${reaper-headless-script}/bin/reaper-headless "$@"
           '';
 
-          # reaper: FHS sandbox + GUI binary (full GDK/X11)
-          reaper-gui = pkgs.writeShellScriptBin "reaper-gui" ''
+          # reaper-wrapped: FHS sandbox + GUI binary (full GDK/X11)
+          reaper-wrapped = pkgs.writeShellScriptBin "reaper" ''
             ${extensionSetup}
             exec ${reaper-fhs}/bin/reaper-env ${reaper}/bin/reaper "$@"
           '';
@@ -257,7 +257,7 @@ INI
             reaper-fhs
             reaper-headless-bin
             reaper-headless-pkg
-            reaper-gui
+            reaper-wrapped
             reaper
             sws
             reapack
@@ -455,8 +455,8 @@ INI
       in
       {
         packages = {
-          default = defaultPkgs.reaper-gui;
-          reaper = defaultPkgs.reaper-gui;
+          default = defaultPkgs.reaper-wrapped;
+          reaper = defaultPkgs.reaper-wrapped;
           reaper-headless = defaultPkgs.reaper-headless-pkg;
           reaper-fhs = defaultPkgs.reaper-fhs;
         };
@@ -464,7 +464,7 @@ INI
         devShells.default = pkgs.mkShell {
           packages = [
             devPkgs.reaper-headless-pkg
-            devPkgs.reaper-gui
+            devPkgs.reaper-wrapped
             devPkgs.reaper-fhs
             rustToolchain
             pkgs.pkg-config
@@ -481,7 +481,7 @@ INI
             echo ""
             echo "  reaper-flake dev shell"
             echo "  ────────────────────────────────────────"
-            echo "  reaper-gui         — launch REAPER with GUI"
+            echo "  reaper             — launch REAPER with GUI"
             echo "  reaper-headless    — headless FHS env (CI-ready)"
             echo "  reaper-env         — drop into bare FHS shell"
             echo ""
