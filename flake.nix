@@ -12,7 +12,7 @@
     # Used as the canonical reference for INI key names exposed by the
     # programs.reaper NixOS module in modules/reaper/default.nix.
     reaper-file = {
-      url = "path:/home/cody/Development/FastTrackStudio/reaper-file";
+      url = "github:FastTrackStudios/reaper-file";
       flake = false;
     };
   };

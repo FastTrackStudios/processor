@@ -833,14 +833,17 @@
     "reaper-file": {
       "flake": false,
       "locked": {
-        "lastModified": 1774933370,
-        "narHash": "sha256-jsHFRCSiRILx2bGWPmZ67HZTOp7+4M30w/YM+PPcWVU=",
-        "path": "/home/cody/Development/FastTrackStudio/reaper-file",
-        "type": "path"
+        "lastModified": 1774561114,
+        "narHash": "sha256-yM1doLNZZAlXMud9hZTlYk8aJmb7FwzWR84IbWet7Po=",
+        "owner": "FastTrackStudios",
+        "repo": "reaper-file",
+        "rev": "eb830ae78e79156d57f8bffb562768f9d5bd89cf",
+        "type": "github"
       },
       "original": {
-        "path": "/home/cody/Development/FastTrackStudio/reaper-file",
-        "type": "path"
+        "owner": "FastTrackStudios",
+        "repo": "reaper-file",
+        "type": "github"
       }
     },
     "root": {
