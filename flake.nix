@@ -2,8 +2,7 @@
   description = "reaper-flake — reproducible, declarative REAPER DAW environment";
 
   inputs = {
-    nixpkgs.url = "github:cachix/devenv-nixpkgs/rolling";
-    devenv.url = "github:cachix/devenv";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
@@ -19,11 +18,9 @@
 
   nixConfig = {
     extra-trusted-public-keys = [
-      "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
       "fasttrackstudio.cachix.org-1:r7v7WXBeSZ7m5meL6w0wttnvsOltRvTpXeVNItcy9f4="
     ];
     extra-substituters = [
-      "https://devenv.cachix.org"
       "https://fasttrackstudio.cachix.org"
     ];
   };
@@ -32,21 +29,24 @@
     {
       self,
       nixpkgs,
-      devenv,
       flake-utils,
       rust-overlay,
       reaper-file,
     } @ inputs:
     let
       # ── REAPER environment builder ─────────────────────────────────────────
-      # Builds the REAPER FHS sandbox, headless runner, and scripts.
-      # Used by both devenv modules and standalone package outputs.
-
       mkReaperPackages =
         { pkgs, cfg }:
         let
+          # GUI build: standard libSwell with full GDK/X11 support
           reaper = pkgs.callPackage ./pkgs/reaper.nix {
-            headless = cfg.headless.enable or false;
+            headless = false;
+            jackLibrary = pkgs.pipewire.jack;
+            libxml2 = pkgs.libxml2;
+          };
+          # Headless build: custom NOGDK libSwell — no display server required
+          reaper-headless-bin = pkgs.callPackage ./pkgs/reaper.nix {
+            headless = true;
             jackLibrary = pkgs.pipewire.jack;
             libxml2 = pkgs.libxml2;
           };
@@ -186,7 +186,7 @@
             runScript = "bash";
           };
 
-          reaper-headless = pkgs.writeShellScriptBin "reaper-headless" ''
+          reaper-headless-script = pkgs.writeShellScriptBin "reaper-headless" ''
             set -euo pipefail
 
             REAPER_HOME="${cfg.reaper.configDir}"
@@ -194,8 +194,6 @@
             ${extensionSetup}
 
             # Write a default reaper.ini if one doesn't exist.
-            # REAPER on Linux uses [reaper] (lowercase) section headers.
-            # audiodriver=1 selects JACK (provided by PipeWire below).
             if [ ! -f "$REAPER_HOME/reaper.ini" ]; then
               cat > "$REAPER_HOME/reaper.ini" << 'INI'
 [reaper]
@@ -234,44 +232,32 @@ INI
             trap cleanup EXIT
 
             echo "[reaper-flake] Headless mode ready (NOGDK libSwell — no X11 required)"
-            export REAPER_FLAKE_EXECUTABLE="${reaper}/bin/reaper"
-            export REAPER_FLAKE_RESOURCES="${reaper}/opt/REAPER"
+            export REAPER_FLAKE_EXECUTABLE="${reaper-headless-bin}/bin/reaper"
+            export REAPER_FLAKE_RESOURCES="${reaper-headless-bin}/opt/REAPER"
 
             if [ $# -gt 0 ]; then
               exec "$@"
             else echo "[reaper-flake] No command given — dropping into shell."; exec bash; fi
           '';
 
-          reaper-test = pkgs.writeShellScriptBin "reaper-test" ''
-            exec ${reaper-fhs}/bin/reaper-env ${reaper-headless}/bin/reaper-headless "$@"
+          # reaper-headless: FHS sandbox + headless script + NOGDK binary
+          reaper-headless-pkg = pkgs.writeShellScriptBin "reaper-headless" ''
+            exec ${reaper-fhs}/bin/reaper-env ${reaper-headless-script}/bin/reaper-headless "$@"
           '';
 
+          # reaper: FHS sandbox + GUI binary (full GDK/X11)
           reaper-gui = pkgs.writeShellScriptBin "reaper-gui" ''
             ${extensionSetup}
             exec ${reaper-fhs}/bin/reaper-env ${reaper}/bin/reaper "$@"
           '';
 
-          reaper-native-gui = pkgs.writeShellScriptBin "reaper-native-gui" ''
-            set -euo pipefail
-            ${extensionSetup}
-
-            # Run REAPER directly (no FHS sandbox) for native Wayland support
-            export PATH="${reaper}/bin:$PATH"
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
-              pkgs.libGL pkgs.libepoxy pkgs.gtk3 pkgs.glib pkgs.cairo
-              pkgs.pipewire pkgs.alsa-lib
-            ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-            exec ${reaper}/bin/reaper "$@"
-          '';
         in
         {
           inherit
             reaper-fhs
-            reaper-headless
-            reaper-test
+            reaper-headless-bin
+            reaper-headless-pkg
             reaper-gui
-            reaper-native-gui
             reaper
             sws
             reapack
@@ -393,8 +379,6 @@ INI
       lib.mkReaperPackages = mkReaperPackages;
 
       # ── NixOS / home-manager modules ─────────────────────────────────────
-      # programs.reaper — dendritic option tree for reaper.ini configuration.
-      # Keys mirror the typed structs in reaper-file/crates/reaper-config/.
       nixosModules.default = ./modules/reaper;
       nixosModules.reaper = ./modules/reaper;
     }
@@ -444,12 +428,13 @@ INI
         };
       }
     )
-    # ── Linux-only packages (FHS, headless, devenv) ───────────────────────
+    # ── Linux-only packages and devShells ─────────────────────────────────
     // flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [ rust-overlay.overlays.default ];
           config.allowUnfreePredicate =
             pkg:
             builtins.elem (pkgs.lib.getName pkg) [
@@ -457,313 +442,53 @@ INI
             ];
         };
 
-        ciPkgs = mkReaperPackages {
+        defaultPkgs = mkReaperPackages {
           inherit pkgs;
-          cfg = presets.ci;
+          cfg = defaultConfig;
         };
         devPkgs = mkReaperPackages {
           inherit pkgs;
           cfg = presets.dev;
         };
-        defaultPkgs = mkReaperPackages {
-          inherit pkgs;
-          cfg = defaultConfig;
-        };
-        fullPkgs = mkReaperPackages {
-          inherit pkgs;
-          cfg = presets.full;
-        };
+
+        rustToolchain = pkgs.rust-bin.stable.latest.default;
       in
       {
         packages = {
-          default = defaultPkgs.reaper-test;
-          reaper-test = defaultPkgs.reaper-test;
-          reaper-test-ci = ciPkgs.reaper-test;
-          reaper-test-dev = devPkgs.reaper-test;
-          reaper-gui = defaultPkgs.reaper-gui;
-          reaper-gui-dev = devPkgs.reaper-gui;
-          reaper-native-gui = defaultPkgs.reaper-native-gui;
+          default = defaultPkgs.reaper-gui;
+          reaper = defaultPkgs.reaper-gui;
+          reaper-headless = defaultPkgs.reaper-headless-pkg;
           reaper-fhs = defaultPkgs.reaper-fhs;
         };
 
-        devShells = {
-          default = devenv.lib.mkShell {
-            inherit inputs pkgs;
-            modules = [
-              (
-                { pkgs, config, ... }:
-                {
-                  cachix.pull = [ "fasttrackstudio" ];
+        devShells.default = pkgs.mkShell {
+          packages = [
+            devPkgs.reaper-headless-pkg
+            devPkgs.reaper-gui
+            devPkgs.reaper-fhs
+            rustToolchain
+            pkgs.pkg-config
+            pkgs.openssl
+          ];
 
-                  packages = [
-                    devPkgs.reaper-test
-                    devPkgs.reaper-gui
-                    devPkgs.reaper-fhs
-                    pkgs.pkg-config
-                    pkgs.openssl
-                  ];
-
-                  languages.rust = {
-                    enable = true;
-                    channel = "stable";
-                  };
-
-                  env = {
-                    REAPER_FLAKE_EXECUTABLE = "${devPkgs.reaper}/bin/reaper";
-                    REAPER_FLAKE_RESOURCES = "${devPkgs.reaper}/opt/REAPER";
-                    REAPER_FLAKE_CONFIG = presets.dev.reaper.configDir;
-                  };
-
-                  tasks = {
-                    "reaper:setup-extensions" = {
-                      exec = ''
-                        REAPER_CONFIG="${presets.dev.reaper.configDir}"
-                        mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
-                        ln -sf "${devPkgs.sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
-                        ln -sf "${devPkgs.sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
-                        ln -sf "${devPkgs.sws}/Scripts/sws_python64.py" "$REAPER_CONFIG/Scripts/"
-                        ln -sf "${devPkgs.reapack}/UserPlugins/reaper_reapack-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
-                        echo "Extensions linked"
-                      '';
-                      status = ''
-                        test -L "${presets.dev.reaper.configDir}/UserPlugins/reaper_sws-x86_64.so" && \
-                        test -L "${presets.dev.reaper.configDir}/UserPlugins/reaper_reapack-x86_64.so"
-                      '';
-                      before = [ "devenv:enterShell" ];
-                    };
-
-                    "reaper:smoke" = {
-                      exec = ''
-                        reaper-test bash -c '
-                          "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
-                          RPID=$!
-                          sleep 3
-                          if kill -0 $RPID 2>/dev/null; then
-                            echo "REAPER running (PID $RPID)"
-                            kill $RPID
-                          else
-                            echo "REAPER failed to start"
-                            exit 1
-                          fi
-                        '
-                      '';
-                    };
-
-                    "daw:build" = {
-                      exec = "cargo build --workspace";
-                      execIfModified = [
-                        "Cargo.toml"
-                        "Cargo.lock"
-                        "crates/**/*.rs"
-                        "apps/**/*.rs"
-                      ];
-                    };
-
-                    "daw:test" = {
-                      exec = "cargo test --workspace";
-                      after = [ "daw:build" ];
-                    };
-
-                    "daw:integration" = {
-                      exec = ''
-                        reaper-test bash -c '
-                          "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
-                          RPID=$!
-                          echo "Waiting for REAPER socket..."
-                          for i in $(seq 1 30); do
-                            SOCK=$(ls /tmp/reaper-flake-*.sock 2>/dev/null | head -1)
-                            if [ -n "$SOCK" ]; then break; fi
-                            sleep 1
-                          done
-                          if [ -z "$SOCK" ]; then
-                            echo "No socket found after 30s"
-                            kill $RPID 2>/dev/null
-                            exit 1
-                          fi
-                          echo "Socket ready: $SOCK"
-                          cargo test -p daw-reaper -- --ignored --nocapture
-                          STATUS=$?
-                          kill $RPID 2>/dev/null
-                          exit $STATUS
-                        '
-                      '';
-                      after = [ "daw:build" ];
-                    };
-
-                    "daw:ci" = {
-                      exec = "echo 'All daw tests passed'";
-                      after = [
-                        "daw:test"
-                        "daw:integration"
-                      ];
-                    };
-                  };
-
-                  enterShell = ''
-                    echo ""
-                    echo "  reaper-flake dev shell (devenv)"
-                    echo "  ────────────────────────────────────────"
-                    echo "  reaper-test [cmd]  — headless FHS env (CI-ready)"
-                    echo "  reaper-gui         — launch REAPER with GUI"
-                    echo "  reaper-env         — drop into bare FHS shell"
-                    echo "  reaper-smoke       — REAPER headless smoke test"
-                    echo "  reaper-setup       — link extensions into REAPER config"
-                    echo "  reaper-integration — run daw REAPER integration tests"
-                    echo ""
-                    echo "  REAPER:  ${devPkgs.reaper}/bin/reaper"
-                    echo "  SWS:     enabled  |  ReaPack: enabled"
-                    echo ""
-                  '';
-
-                  scripts = {
-                    reaper-smoke.exec = ''
-                      reaper-test bash -c '
-                        "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
-                        RPID=$!
-                        sleep 3
-                        if kill -0 $RPID 2>/dev/null; then
-                          echo "REAPER running (PID $RPID) — smoke test passed"
-                          kill $RPID
-                        else
-                          echo "REAPER failed to start"
-                          exit 1
-                        fi
-                      '
-                    '';
-                    reaper-smoke.description = "Quick REAPER headless smoke test";
-
-                    reaper-integration.exec = ''
-                      reaper-test bash -c '
-                        "$REAPER_FLAKE_EXECUTABLE" -newinst -nosplash -ignoreerrors &
-                        RPID=$!
-                        echo "Waiting for REAPER socket..."
-                        SOCK=""
-                        for i in $(seq 1 30); do
-                          SOCK=$(ls /tmp/reaper-flake-*.sock 2>/dev/null | head -1)
-                          if [ -n "$SOCK" ]; then break; fi
-                          sleep 1
-                        done
-                        if [ -z "$SOCK" ]; then
-                          echo "No socket found after 30s"
-                          kill $RPID 2>/dev/null
-                          exit 1
-                        fi
-                        echo "Socket ready: $SOCK"
-                        cargo test -p daw-reaper -- --ignored --nocapture
-                        STATUS=$?
-                        kill $RPID 2>/dev/null
-                        exit $STATUS
-                      '
-                    '';
-                    reaper-integration.description = "Run daw REAPER integration tests";
-
-                    reaper-setup.exec = ''
-                      REAPER_CONFIG="${presets.dev.reaper.configDir}"
-                      mkdir -p "$REAPER_CONFIG/UserPlugins" "$REAPER_CONFIG/Scripts"
-                      ln -sf "${devPkgs.sws}/UserPlugins/reaper_sws-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
-                      ln -sf "${devPkgs.sws}/Scripts/sws_python.py" "$REAPER_CONFIG/Scripts/"
-                      ln -sf "${devPkgs.sws}/Scripts/sws_python64.py" "$REAPER_CONFIG/Scripts/"
-                      ln -sf "${devPkgs.reapack}/UserPlugins/reaper_reapack-x86_64.so" "$REAPER_CONFIG/UserPlugins/"
-                      echo "Extensions linked into $REAPER_CONFIG"
-                    '';
-                    reaper-setup.description = "Link SWS + ReaPack extensions into REAPER config";
-                  };
-
-                  claude.code = {
-                    enable = true;
-                    commands = {
-                      smoke = ''
-                        Run the REAPER headless smoke test
-
-                        ```bash
-                        reaper-smoke
-                        ```
-                      '';
-                      integration = ''
-                        Run the full daw REAPER integration test suite
-
-                        ```bash
-                        reaper-integration
-                        ```
-                      '';
-                      build = ''
-                        Build the daw workspace
-
-                        ```bash
-                        cargo build --workspace
-                        ```
-                      '';
-                      test = ''
-                        Run daw unit tests
-
-                        ```bash
-                        cargo test --workspace
-                        ```
-                      '';
-                    };
-                  };
-
-                  git-hooks.hooks = {
-                    nixfmt.enable = true;
-                  };
-                }
-              )
-            ];
+          env = {
+            REAPER_FLAKE_EXECUTABLE = "${devPkgs.reaper}/bin/reaper";
+            REAPER_FLAKE_RESOURCES = "${devPkgs.reaper}/opt/REAPER";
+            REAPER_FLAKE_CONFIG = presets.dev.reaper.configDir;
           };
 
-          ci = devenv.lib.mkShell {
-            inherit inputs pkgs;
-            modules = [
-              (
-                { pkgs, ... }:
-                {
-                  cachix.pull = [ "fasttrackstudio" ];
-
-                  packages = [
-                    ciPkgs.reaper-test
-                    ciPkgs.reaper-fhs
-                    pkgs.pkg-config
-                    pkgs.openssl
-                  ];
-
-                  languages.rust = {
-                    enable = true;
-                    channel = "stable";
-                  };
-
-                  env = {
-                    REAPER_FLAKE_EXECUTABLE = "${ciPkgs.reaper}/bin/reaper";
-                    REAPER_FLAKE_RESOURCES = "${ciPkgs.reaper}/opt/REAPER";
-                    REAPER_FLAKE_CONFIG = presets.ci.reaper.configDir;
-                  };
-                }
-              )
-            ];
-          };
-
-          minimal = devenv.lib.mkShell {
-            inherit inputs pkgs;
-            modules = [
-              (
-                { pkgs, ... }:
-                {
-                  cachix.pull = [ "fasttrackstudio" ];
-
-                  packages = [
-                    defaultPkgs.reaper-test
-                    defaultPkgs.reaper-gui
-                    defaultPkgs.reaper-fhs
-                  ];
-
-                  env = {
-                    REAPER_FLAKE_EXECUTABLE = "${defaultPkgs.reaper}/bin/reaper";
-                    REAPER_FLAKE_RESOURCES = "${defaultPkgs.reaper}/opt/REAPER";
-                    REAPER_FLAKE_CONFIG = defaultConfig.reaper.configDir;
-                  };
-                }
-              )
-            ];
-          };
+          shellHook = ''
+            echo ""
+            echo "  reaper-flake dev shell"
+            echo "  ────────────────────────────────────────"
+            echo "  reaper-gui         — launch REAPER with GUI"
+            echo "  reaper-headless    — headless FHS env (CI-ready)"
+            echo "  reaper-env         — drop into bare FHS shell"
+            echo ""
+            echo "  REAPER:  ${devPkgs.reaper}/bin/reaper"
+            echo "  SWS:     enabled  |  ReaPack: enabled"
+            echo ""
+          '';
         };
 
         checks.reaper-starts = pkgs.runCommand "reaper-starts" { } ''
