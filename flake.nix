@@ -74,6 +74,7 @@
             atk
             libGL
             libGLU
+            libepoxy
             mesa
           ];
 
@@ -249,6 +250,20 @@ INI
             ${extensionSetup}
             exec ${reaper-fhs}/bin/reaper-env ${reaper}/bin/reaper "$@"
           '';
+
+          reaper-native-gui = pkgs.writeShellScriptBin "reaper-native-gui" ''
+            set -euo pipefail
+            ${extensionSetup}
+
+            # Run REAPER directly (no FHS sandbox) for native Wayland support
+            export PATH="${reaper}/bin:$PATH"
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+              pkgs.libGL pkgs.libepoxy pkgs.gtk3 pkgs.glib pkgs.cairo
+              pkgs.pipewire pkgs.alsa-lib
+            ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+            exec ${reaper}/bin/reaper "$@"
+          '';
         in
         {
           inherit
@@ -256,6 +271,7 @@ INI
             reaper-headless
             reaper-test
             reaper-gui
+            reaper-native-gui
             reaper
             sws
             reapack
@@ -466,6 +482,7 @@ INI
           reaper-test-dev = devPkgs.reaper-test;
           reaper-gui = defaultPkgs.reaper-gui;
           reaper-gui-dev = devPkgs.reaper-gui;
+          reaper-native-gui = defaultPkgs.reaper-native-gui;
           reaper-fhs = defaultPkgs.reaper-fhs;
         };
 
