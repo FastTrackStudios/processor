@@ -1,4 +1,29 @@
 
-# Dolt database files (added by bd init)
+# Build
+target/
+result
+.direnv/
+
+# Dependencies
+node_modules/
+obsidian-plugin/node_modules/
+obsidian-plugin/package-lock.json
+
+# Generated
+obsidian-plugin/main.js
+obsidian-plugin/pkg/
+obsidian-plugin/generated/
+obsidian-plugin/js/
+
+# IDE
+.cargo/
+.config/
+
+# Secrets / local config
+.envrc
+.env
+
+# Beads / Dolt
 .dolt/
 *.db
+.beads/.beads-credential-key
