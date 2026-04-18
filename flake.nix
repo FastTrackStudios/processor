@@ -33,6 +33,7 @@
       flake = {
         nixosModules.default = ./nix/module.nix;
         nixosModules.task-server = ./nix/module.nix;
+        nixosModules.task-email-watcher = ./nix/task-email-watcher.nix;
       };
 
       perSystem = { system, lib, self', ... }:
