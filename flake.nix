@@ -98,6 +98,7 @@
             pkgs.rustPlatform.bindgenHook
             pkgs.dioxus-cli
             wasm-bindgen-cli
+            pkgs.binaryen
             pkgs.tailwindcss_4
           ] ++ lib.optionals pkgs.stdenv.isDarwin [
             fakeCodesign
@@ -219,6 +220,7 @@
             packages = [
               rustToolchain
               wasm-bindgen-cli
+              pkgs.binaryen
               pkgs.dioxus-cli
               pkgs.tailwindcss_4
               pkgs.cargo-watch
@@ -241,10 +243,16 @@
               "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
 
             shellHook = ''
+              DX_VERSION=$(dx --version 2>/dev/null | grep -oP 'dioxus \K[0-9.]+' || echo "0")
+              if [ "$DX_VERSION" != "0.7.6" ]; then
+                echo "  Installing dx 0.7.6..."
+                cargo install dioxus-cli --locked --version "=0.7.6" 2>/dev/null || \
+                  cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli --locked
+              fi
               echo ""
               echo "  Dioxus dev shell"
               echo "  Rust: $(rustc --version)"
-              echo "  dx:   $(dx --version 2>/dev/null || echo 'not available')"
+              echo "  dx:   $(dx --version 2>/dev/null)"
               echo ""
             '';
           };
