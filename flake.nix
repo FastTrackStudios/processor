@@ -12,6 +12,31 @@
 
     crane.url = "github:ipetkov/crane";
 
+    vox = {
+      flake = false;
+      url = "github:Codys-Wright/vox";
+    };
+
+    ftsUi = {
+      flake = false;
+      url = "github:FastTrackStudios/fts-ui";
+    };
+
+    betterAuth = {
+      flake = false;
+      url = "github:better-auth-rs/better-auth-rs";
+    };
+
+    seaOrm = {
+      flake = false;
+      url = "github:SeaQL/sea-orm";
+    };
+
+    crudcrate = {
+      flake = false;
+      url = "github:evanjt/crudcrate";
+    };
+
     dioxus-flake = {
       url = "github:FastTrackStudios/Dioxus-Flake";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -49,26 +74,6 @@
           craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
 
           # ── Source layout ───────────────────────────────────────────────
-          voxSrc = builtins.path {
-            path = /home/cody/Development/FastTrackStudio/vox;
-            name = "vox-src";
-          };
-
-          ftsUiSrc = builtins.path {
-            path = /home/cody/Development/FastTrackStudio/Plugins/fts-ui;
-            name = "fts-ui-src";
-          };
-
-          injectDeps = ''
-            mkdir -p "$NIX_BUILD_TOP/FastTrackStudio/vox"
-            cp -rL ${voxSrc}/. "$NIX_BUILD_TOP/FastTrackStudio/vox/"
-            chmod -R u+w "$NIX_BUILD_TOP/FastTrackStudio/vox"
-
-            mkdir -p "$NIX_BUILD_TOP/FastTrackStudio/Plugins/fts-ui"
-            cp -rL ${ftsUiSrc}/. "$NIX_BUILD_TOP/FastTrackStudio/Plugins/fts-ui/"
-            chmod -R u+w "$NIX_BUILD_TOP/FastTrackStudio/Plugins/fts-ui"
-          '';
-
           taskSrc = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: type:
@@ -76,17 +81,120 @@
               !(builtins.elem name [ "target" "node_modules" ".git" ".beads" "result" ]);
           };
 
+          taskCliSrc = pkgs.runCommand "task-cli-src" { } ''
+            set -euo pipefail
+
+            mkdir -p "$out/crates"
+            cp -r ${taskSrc}/Cargo.lock "$out/Cargo.lock"
+            cp -r ${taskSrc}/rust-toolchain.toml "$out/rust-toolchain.toml"
+            if [ -e ${taskSrc}/.cargo ]; then
+              cp -r ${taskSrc}/.cargo "$out/.cargo"
+            fi
+            cp -r ${taskSrc}/crates/task-core "$out/crates/task-core"
+            cp -r ${taskSrc}/crates/task-cli "$out/crates/task-cli"
+
+            cat > "$out/Cargo.toml" <<'EOF'
+[workspace]
+members = [
+    "crates/task-core",
+    "crates/task-cli",
+]
+resolver = "2"
+
+[workspace.metadata.crane]
+name = "task"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Cody Wright"]
+edition = "2021"
+
+[workspace.dependencies]
+chrono = "0.4"
+eyre = "0.6"
+rrule = "0.11"
+thiserror = "2.0"
+tracing = "0.1"
+
+[workspace.dependencies.facet]
+version = "0.44.1"
+features = [
+    "reflect",
+    "chrono",
+    "uuid",
+]
+
+[workspace.dependencies.facet-core]
+version = "0.44.1"
+
+[workspace.dependencies.facet-json]
+version = "0.44.1"
+
+[workspace.dependencies.facet-pretty]
+version = "0.44.1"
+
+[workspace.dependencies.facet-reflect]
+version = "0.44.1"
+
+[workspace.dependencies.facet-yaml]
+version = "0.44.1"
+
+[workspace.dependencies.moire]
+git = "https://github.com/bearcove/moire"
+rev = "13eac79"
+
+[workspace.dependencies.moire-types]
+git = "https://github.com/bearcove/moire"
+rev = "13eac79"
+
+[workspace.dependencies.vox]
+git = "https://github.com/Codys-Wright/vox"
+rev = "4103658f29c88ffd913314903f16e327c5248cdb"
+
+[workspace.dependencies.vox-core]
+git = "https://github.com/Codys-Wright/vox"
+rev = "4103658f29c88ffd913314903f16e327c5248cdb"
+
+[workspace.dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[workspace.dependencies.serde_json]
+version = "1"
+
+[workspace.dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[workspace.dependencies.uuid]
+version = "1"
+features = [
+    "v4",
+    "v7",
+]
+EOF
+
+            chmod -R u+w "$out"
+          '';
+
           cargoVendorDir = craneLib.vendorCargoDeps { src = taskSrc; };
+          cargoVendorDirCli = craneLib.vendorCargoDeps { src = taskCliSrc; };
 
           commonArgs = {
             src = taskSrc;
             inherit cargoVendorDir;
             strictDeps = true;
-            postPatch = injectDeps;
           };
 
           # Server-only args (no GUI deps needed)
           serverArgs = commonArgs // {
+            nativeBuildInputs = with pkgs; [ pkg-config ];
+            buildInputs = with pkgs; [ openssl ];
+          };
+
+          cliArgs = commonArgs // {
+            src = taskCliSrc;
+            cargoVendorDir = cargoVendorDirCli;
             nativeBuildInputs = with pkgs; [ pkg-config ];
             buildInputs = with pkgs; [ openssl ];
           };
@@ -115,7 +223,7 @@
             doCheck = false;
           });
 
-          task-cli = craneLib.buildPackage (serverArgs // {
+          task-cli = craneLib.buildPackage (cliArgs // {
             pname = "task-cli";
             cargoExtraArgs = "--package task-cli";
             doCheck = false;

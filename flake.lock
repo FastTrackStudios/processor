@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "betterAuth": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776528131,
+        "narHash": "sha256-jWQ6YBBY8qmOTvl9ZKfRiJEWBW26b06nLeKzVuw750c=",
+        "owner": "better-auth-rs",
+        "repo": "better-auth-rs",
+        "rev": "ec6c94514ad0c5a3ce4ba250cff5910d992bfc24",
+        "type": "github"
+      },
+      "original": {
+        "owner": "better-auth-rs",
+        "repo": "better-auth-rs",
+        "type": "github"
+      }
+    },
     "crane": {
       "locked": {
         "lastModified": 1774313767,
@@ -12,6 +28,22 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "type": "github"
+      }
+    },
+    "crudcrate": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776420299,
+        "narHash": "sha256-vD5ZFdIhY+k+CGjcR2fl9OuGxRhzVac285xnJmj9iMM=",
+        "owner": "evanjt",
+        "repo": "crudcrate",
+        "rev": "e2cbd8d83477352040d726e27857b372cb76d739",
+        "type": "github"
+      },
+      "original": {
+        "owner": "evanjt",
+        "repo": "crudcrate",
         "type": "github"
       }
     },
@@ -78,6 +110,22 @@
         "type": "github"
       }
     },
+    "ftsUi": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776066794,
+        "narHash": "sha256-+HseNvJ5HKGkjBihh6J5dOJ86AYf7CWrR4+rVJatT/c=",
+        "owner": "FastTrackStudios",
+        "repo": "fts-ui",
+        "rev": "1e3abf761841359395d5d20cc7bda8123685f13b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "FastTrackStudios",
+        "repo": "fts-ui",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1774709303,
@@ -126,11 +174,16 @@
     },
     "root": {
       "inputs": {
+        "betterAuth": "betterAuth",
         "crane": "crane",
+        "crudcrate": "crudcrate",
         "dioxus-flake": "dioxus-flake",
         "flake-parts": "flake-parts_2",
+        "ftsUi": "ftsUi",
         "nixpkgs": "nixpkgs",
-        "rust-overlay": "rust-overlay"
+        "rust-overlay": "rust-overlay",
+        "seaOrm": "seaOrm",
+        "vox": "vox"
       }
     },
     "rust-overlay": {
@@ -150,6 +203,38 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "seaOrm": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776341368,
+        "narHash": "sha256-/2vDOUreGRREHe943AQgVxMNi1hoABI7v/VJpJtVUzI=",
+        "owner": "SeaQL",
+        "repo": "sea-orm",
+        "rev": "0677ee555a238df4ec2b5992748e2b45348b6027",
+        "type": "github"
+      },
+      "original": {
+        "owner": "SeaQL",
+        "repo": "sea-orm",
+        "type": "github"
+      }
+    },
+    "vox": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1775842313,
+        "narHash": "sha256-ySYvYgt5jChRK1d6EDtmzImxpQGaMSIVP6cQxqz7dD4=",
+        "owner": "Codys-Wright",
+        "repo": "vox",
+        "rev": "4103658f29c88ffd913314903f16e327c5248cdb",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Codys-Wright",
+        "repo": "vox",
         "type": "github"
       }
     }
