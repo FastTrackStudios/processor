@@ -35,13 +35,13 @@
           wasm-bindgen-cli = pkgs.buildWasmBindgenCli rec {
             src = pkgs.fetchCrate {
               pname = "wasm-bindgen-cli";
-              version = "0.2.117";
-              hash = "sha256-vtDQXL8FSgdutqXG7/rBUWgrYCtzdmeVQQkWkjasvZU=";
+              version = "0.2.118";
+              hash = "sha256:ve783oYH0TGv8Z8lIPdGjItzeLDQLOT5uv/jbFOlZpI=";
             };
             cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
               inherit src;
               inherit (src) pname version;
-              hash = "sha256-eKe7uwneUYxejSbG/1hKqg6bSmtL0KQ9ojlazeqTi88=";
+              hash = "sha256:EYDfuBlH3zmTxACBL+sjicRna84CvoesKSQVcYiG9P0=";
             };
           };
 
@@ -78,7 +78,7 @@
             glib gtk3 libsoup_3 webkitgtk_4_1 xdotool
             # X11 / Wayland
             libx11 libxcursor libxrandr libxi libxcb
-            libxkbcommon wayland
+            libxkbcommon wayland gsettings-desktop-schemas
             # Graphics
             libGL vulkan-loader
             # Multimedia (webkit2gtk media playback)
@@ -96,7 +96,7 @@
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.rustPlatform.bindgenHook
-            pkgs.dioxus-cli
+            pkgs.python3
             wasm-bindgen-cli
             pkgs.binaryen
             pkgs.tailwindcss_4
@@ -110,6 +110,12 @@
             pname = "dioxus-workspace";
             version = rev;
             strictDeps = true;
+            outputHashes = {
+              "git+https://github.com/DioxusLabs/blitz#782732fd80a4983ee71a1887f79762bb53f00388" =
+                "sha256-PyH1ULkp73g9YtzFlwisVoZFbdcopfwvK0l7gYi1VNw=";
+              "git+https://github.com/linebender/parley?rev=07980878fc9ea4b16ddc197ac789d01fb8ada7a3#07980878fc9ea4b16ddc197ac789d01fb8ada7a3" =
+                "sha256-dhczFDIFbcl2mMUtTIZaeaTtXWTHNw1fl2xgVcp93NE=";
+            };
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             OPENSSL_DIR = "${pkgs.openssl.dev}";
             OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
@@ -221,7 +227,6 @@
               rustToolchain
               wasm-bindgen-cli
               pkgs.binaryen
-              pkgs.dioxus-cli
               pkgs.tailwindcss_4
               pkgs.cargo-watch
               pkgs.cargo-nextest
@@ -239,18 +244,24 @@
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
 
             LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.isLinux libPath;
+            GDK_BACKEND = lib.optionalString pkgs.stdenv.isLinux "x11";
+            WEBKIT_DISABLE_COMPOSITING_MODE = lib.optionalString pkgs.stdenv.isLinux "1";
+            WEBKIT_ENABLE_WEBGPU = lib.optionalString pkgs.stdenv.isLinux "0";
+            GTK_USE_PORTAL = lib.optionalString pkgs.stdenv.isLinux "0";
             XDG_DATA_DIRS = lib.optionalString pkgs.stdenv.isLinux
               "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
 
             shellHook = ''
+              export PATH="$HOME/.cargo/bin:$PATH"
+              export LD_LIBRARY_PATH="${libPath}:$LD_LIBRARY_PATH"
               DX_VERSION=$(dx --version 2>/dev/null | grep -oP 'dioxus \K[0-9.]+' || echo "0")
               if [ "$DX_VERSION" != "0.7.6" ]; then
                 echo "  Installing dx 0.7.6..."
                 cargo install dioxus-cli --locked --version "=0.7.6" 2>/dev/null || \
                   cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli --locked
               fi
-              echo ""
               echo "  Dioxus dev shell"
+              echo "  Run desktop app: dbus-run-session dx serve"
               echo "  Rust: $(rustc --version)"
               echo "  dx:   $(dx --version 2>/dev/null)"
               echo ""
