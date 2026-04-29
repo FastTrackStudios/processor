@@ -48,6 +48,22 @@
           # ── Crane ────────────────────────────────────────────────────
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
+          # ── Android SDK ──────────────────────────────────────────────
+          # Kept out of the default shell because it is large and only
+          # needed for mobile builds/emulator workflows.
+          androidComposition = pkgs.androidenv.composeAndroidPackages {
+            platformVersions = [ "34" "35" ];
+            buildToolsVersions = [ "34.0.0" "35.0.0" ];
+            includeNDK = true;
+            ndkVersions = [ "27.2.12479018" ];
+            includeEmulator = true;
+            includeSystemImages = true;
+            systemImageTypes = [ "google_apis_playstore" ];
+            abiVersions = [ "x86_64" ];
+          };
+          androidSdk = androidComposition.androidsdk;
+          androidHome = "${androidSdk}/libexec/android-sdk";
+
           rev = toString (self.shortRev or self.dirtyShortRev or self.lastModified or "unknown");
 
           # ── Source filtering ─────────────────────────────────────────
@@ -141,6 +157,10 @@
         in {
           _module.args.pkgs = import inputs.nixpkgs {
             inherit system;
+            config = {
+              allowUnfree = true;
+              android_sdk.accept_license = true;
+            };
             overlays = [ inputs.rust-overlay.overlays.default ];
           };
 
@@ -262,6 +282,65 @@
               fi
               echo "  Dioxus dev shell"
               echo "  Run desktop app: dbus-run-session dx serve"
+              echo "  Rust: $(rustc --version)"
+              echo "  dx:   $(dx --version 2>/dev/null)"
+              echo ""
+            '';
+          };
+
+          devShells.mobile = pkgs.mkShell {
+            packages = [
+              rustToolchain
+              androidSdk
+              pkgs.jdk17
+              pkgs.gradle
+              pkgs.which
+              wasm-bindgen-cli
+              pkgs.binaryen
+              pkgs.tailwindcss_4
+              pkgs.cargo-watch
+              pkgs.cargo-nextest
+              pkgs.bacon
+              pkgs.nodejs_22
+            ]
+            ++ buildInputs
+            ++ nativeBuildInputs;
+
+            ANDROID_HOME = androidHome;
+            ANDROID_SDK_ROOT = androidHome;
+            ANDROID_NDK_HOME = "${androidHome}/ndk/27.2.12479018";
+            ANDROID_NDK_ROOT = "${androidHome}/ndk/27.2.12479018";
+            JAVA_HOME = "${pkgs.jdk17}";
+
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            OPENSSL_DIR = "${pkgs.openssl.dev}";
+            OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+            CC_wasm32_unknown_unknown = "${pkgs.llvmPackages_18.clang}/bin/clang";
+            AR_wasm32_unknown_unknown = "${pkgs.llvmPackages_18.bintools}/bin/llvm-ar";
+            RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+
+            LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.isLinux libPath;
+            GDK_BACKEND = lib.optionalString pkgs.stdenv.isLinux "x11";
+            WEBKIT_DISABLE_COMPOSITING_MODE = lib.optionalString pkgs.stdenv.isLinux "1";
+            WEBKIT_ENABLE_WEBGPU = lib.optionalString pkgs.stdenv.isLinux "0";
+            GTK_USE_PORTAL = lib.optionalString pkgs.stdenv.isLinux "0";
+            XDG_DATA_DIRS = lib.optionalString pkgs.stdenv.isLinux
+              "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
+
+            shellHook = ''
+              export PATH="$HOME/.cargo/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+              export LD_LIBRARY_PATH="${libPath}:$LD_LIBRARY_PATH"
+              DX_VERSION=$(dx --version 2>/dev/null | grep -oP 'dioxus \K[0-9.]+' || echo "0")
+              if [ "$DX_VERSION" != "0.7.6" ]; then
+                echo "  Installing dx 0.7.6..."
+                cargo install dioxus-cli --locked --version "=0.7.6" 2>/dev/null || \
+                  cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli --locked
+              fi
+              echo "  Dioxus mobile dev shell"
+              echo "  Android SDK: $ANDROID_SDK_ROOT"
+              echo "  Android NDK: $ANDROID_NDK_HOME"
+              echo "  Emulator: emulator -list-avds"
+              echo "  Build mobile app: cd packages/mobile && dx build --platform android"
               echo "  Rust: $(rustc --version)"
               echo "  dx:   $(dx --version 2>/dev/null)"
               echo ""
