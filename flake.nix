@@ -7,7 +7,7 @@
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
-    fts-flake.url = "github:FastTrackStudios/fts-flake";
+    fts-flake.url = "github:FastTrackStudios/fts-flake/600ffd1c779864b896ad2ba44e7107d7aa59e832";
     fts-flake.inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -121,6 +121,10 @@
                     alsa-lib
                     pipewire.jack
 
+                    # mDNS / network discovery (sync crate / avahi-sys)
+                    avahi
+                    avahi.dev
+
                     # C/C++ bindgen
                     llvmPackages.libclang
 
@@ -140,6 +144,8 @@
                     FTS_REAPER_RESOURCES = "${ftsDev.reaper}/opt/REAPER";
                     FTS_REAPER_CONFIG = ftsReaperConfig;
                     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+                    BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.avahi.dev}/include -isystem ${pkgs.glibc.dev}/include";
+                    LIBRARY_PATH = "${pkgs.lib.getLib pkgs.avahi}/lib";
                     LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
                       pkgs.vulkan-loader
                       pkgs.libGL
