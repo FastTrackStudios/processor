@@ -47,54 +47,9 @@
         "type": "github"
       }
     },
-    "dioxus-flake": {
-      "inputs": {
-        "crane": [
-          "crane"
-        ],
-        "flake-parts": "flake-parts",
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "rust-overlay": [
-          "rust-overlay"
-        ]
-      },
-      "locked": {
-        "lastModified": 1775457303,
-        "narHash": "sha256-JiCVb9fKCdlUGyEZ9u/8gRomaHbb92gKNKBAgZn1i/Y=",
-        "owner": "FastTrackStudios",
-        "repo": "Dioxus-Flake",
-        "rev": "d00802cc9acbc14edb4e36b7b842f8624417294e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "FastTrackStudios",
-        "repo": "Dioxus-Flake",
-        "type": "github"
-      }
-    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": "nixpkgs-lib"
-      },
-      "locked": {
-        "lastModified": 1775087534,
-        "narHash": "sha256-91qqW8lhL7TLwgQWijoGBbiD4t7/q75KTi8NxjVmSmA=",
-        "owner": "hercules-ci",
-        "repo": "flake-parts",
-        "rev": "3107b77cd68437b9a76194f0f7f9c55f2329ca5b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "hercules-ci",
-        "repo": "flake-parts",
-        "type": "github"
-      }
-    },
-    "flake-parts_2": {
-      "inputs": {
-        "nixpkgs-lib": "nixpkgs-lib_2"
       },
       "locked": {
         "lastModified": 1772408722,
@@ -107,22 +62,6 @@
       "original": {
         "owner": "hercules-ci",
         "repo": "flake-parts",
-        "type": "github"
-      }
-    },
-    "ftsUi": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1776066794,
-        "narHash": "sha256-+HseNvJ5HKGkjBihh6J5dOJ86AYf7CWrR4+rVJatT/c=",
-        "owner": "FastTrackStudios",
-        "repo": "fts-ui",
-        "rev": "1e3abf761841359395d5d20cc7bda8123685f13b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "FastTrackStudios",
-        "repo": "fts-ui",
         "type": "github"
       }
     },
@@ -144,21 +83,6 @@
     },
     "nixpkgs-lib": {
       "locked": {
-        "lastModified": 1774748309,
-        "narHash": "sha256-+U7gF3qxzwD5TZuANzZPeJTZRHS29OFQgkQ2kiTJBIQ=",
-        "owner": "nix-community",
-        "repo": "nixpkgs.lib",
-        "rev": "333c4e0545a6da976206c74db8773a1645b5870a",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-community",
-        "repo": "nixpkgs.lib",
-        "type": "github"
-      }
-    },
-    "nixpkgs-lib_2": {
-      "locked": {
         "lastModified": 1772328832,
         "narHash": "sha256-e+/T/pmEkLP6BHhYjx6GmwP5ivonQQn0bJdH9YrRB+Q=",
         "owner": "nix-community",
@@ -177,9 +101,7 @@
         "betterAuth": "betterAuth",
         "crane": "crane",
         "crudcrate": "crudcrate",
-        "dioxus-flake": "dioxus-flake",
-        "flake-parts": "flake-parts_2",
-        "ftsUi": "ftsUi",
+        "flake-parts": "flake-parts",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
         "seaOrm": "seaOrm",

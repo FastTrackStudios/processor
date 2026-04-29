@@ -17,11 +17,6 @@
       url = "github:Codys-Wright/vox";
     };
 
-    ftsUi = {
-      flake = false;
-      url = "github:FastTrackStudios/fts-ui";
-    };
-
     betterAuth = {
       flake = false;
       url = "github:better-auth-rs/better-auth-rs";
@@ -37,12 +32,6 @@
       url = "github:evanjt/crudcrate";
     };
 
-    dioxus-flake = {
-      url = "github:FastTrackStudios/Dioxus-Flake";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.rust-overlay.follows = "rust-overlay";
-      inputs.crane.follows = "crane";
-    };
   };
 
   outputs = inputs@{ flake-parts, nixpkgs, ... }:
@@ -247,6 +236,7 @@ EOF
 
           obsidian-wasm = craneLib.mkCargoDerivation (commonArgs // {
             pname = "obsidian-plugin-wasm";
+            inherit cargoArtifacts;
             CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
             buildPhaseCargoCommand = ''
               cargo build --release \
@@ -265,23 +255,6 @@ EOF
           packages = {
             default = task-cli;
             inherit task-server task-cli xtask vault-core obsidian-wasm wasm-bindgen-cli;
-          } // lib.optionalAttrs pkgs.stdenv.isLinux {
-            task-desktop = craneLib.buildPackage (commonArgs // {
-              pname = "task-desktop";
-              cargoExtraArgs = "--package task-desktop";
-              nativeBuildInputs = with pkgs; [
-                pkg-config
-                gobject-introspection
-                wrapGAppsHook4
-              ];
-              buildInputs = with pkgs; [
-                gtk4
-                webkitgtk_4_1
-                libsoup_3
-                openssl
-              ];
-              doCheck = false;
-            });
           };
 
           # ── Checks ──────────────────────────────────────────────────────
@@ -297,8 +270,6 @@ EOF
 
           # ── Dev shell ───────────────────────────────────────────────────
           devShells.default = pkgs.mkShell {
-            inputsFrom = [ inputs.dioxus-flake.devShells.${system}.default ];
-
             nativeBuildInputs = with pkgs; [
               rustToolchain
               cargo-watch
@@ -309,11 +280,8 @@ EOF
               nodejs_22
               nodePackages.npm
               pkg-config
-            ] ++ lib.optionals pkgs.stdenv.isLinux (with pkgs; [
-              gtk4.dev
-              gobject-introspection
               openssl.dev
-            ]);
+            ];
 
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
 
@@ -321,9 +289,8 @@ EOF
               echo ""
               echo "  task dev shell"
               echo "  ──────────────────────────────────────────────"
-              echo "  nix build .#task-server   HTTP API server"
+              echo "  nix build .#task-server   Vox/CRDT service"
               echo "  nix build .#task-cli      CLI tool"
-              echo "  nix build .#task-desktop   Desktop app (Linux)"
               echo "  nix build .#obsidian-wasm  Obsidian plugin WASM"
               echo "  nix flake check           tests, clippy, fmt"
               echo ""
