@@ -85,6 +85,9 @@ EOF
             alias fts-test='cargo test --workspace'
             alias fts-check='cargo check --workspace'
             alias fts-clippy='cargo clippy --workspace -- -D warnings'
+            alias fts-showcase-web='cd apps/web && dx serve --platform web'
+            alias fts-showcase-desktop='cd apps/desktop && dx serve --platform desktop'
+            alias fts-showcase-native='cd apps/native && dx serve --platform native'
 
             echo ""
             echo "  fts-ui dev shell"
@@ -93,6 +96,9 @@ EOF
             echo "  fts-test      cargo test --workspace"
             echo "  fts-check     cargo check --workspace"
             echo "  fts-clippy    cargo clippy --workspace -- -D warnings"
+            echo "  fts-showcase-web       cd apps/web && dx serve --platform web"
+            echo "  fts-showcase-desktop   cd apps/desktop && dx serve --platform desktop"
+            echo "  fts-showcase-native    cd apps/native && dx serve --platform native"
             echo ""
           '';
         };
@@ -100,12 +106,14 @@ EOF
         devShells.mobile = pkgs.mkShell {
           inputsFrom = [ dioxus-flake.devShells.${system}.mobile ];
           shellHook = ''
-            alias fts-build-mobile='cd crates/showcase && dx build --platform android'
+            alias fts-build-mobile='cd apps/mobile && dx build --platform android'
+            alias fts-showcase-mobile='cd apps/mobile && dx serve --platform android'
 
             echo ""
             echo "  fts-ui mobile shell"
             echo "  -------------------"
-            echo "  fts-build-mobile   cd crates/showcase && dx build --platform android"
+            echo "  fts-build-mobile      cd apps/mobile && dx build --platform android"
+            echo "  fts-showcase-mobile   cd apps/mobile && dx serve --platform android"
             echo ""
           '';
         };
