@@ -1,2 +1,8 @@
 /target
 /.direnv
+/.claude
+
+# fts-story snapshot/parity artefacts (regenerated on demand)
+**/parity_output/
+**/diff_output/
+**/snapshots/
