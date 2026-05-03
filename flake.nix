@@ -17,19 +17,13 @@
       url = "github:Codys-Wright/vox";
     };
 
-    betterAuth = {
-      flake = false;
-      url = "github:better-auth-rs/better-auth-rs";
-    };
-
-    seaOrm = {
-      flake = false;
-      url = "github:SeaQL/sea-orm";
-    };
-
-    crudcrate = {
-      flake = false;
-      url = "github:evanjt/crudcrate";
+    # Shared Dioxus toolchain (web/desktop/mobile/native) — re-exposed
+    # below as `devShells.ui` and `devShells.mobile`.
+    dioxus-flake = {
+      url = "path:/home/cody/Development/Dioxus/dioxus-flake";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.rust-overlay.follows = "rust-overlay";
+      inputs.crane.follows = "crane";
     };
 
   };
@@ -70,17 +64,61 @@
               !(builtins.elem name [ "target" "node_modules" ".git" ".beads" "result" ]);
           };
 
+          taskPackageSrc = pkgs.runCommand "task-package-src" { } ''
+            set -euo pipefail
+
+            cp -r ${taskSrc} "$out"
+            chmod -R u+w "$out"
+
+            mkdir -p "$out/nix-external/FastTrackStudio"
+            cp -r ${./nix/vendor/FastTrackStudio/sea-orm} "$out/nix-external/FastTrackStudio/sea-orm"
+            cp -r ${./nix/vendor/FastTrackStudio/crudcrate} "$out/nix-external/FastTrackStudio/crudcrate"
+            cp -r ${./nix/vendor/FastTrackStudio/better-auth} "$out/nix-external/FastTrackStudio/better-auth"
+            cp -r ${inputs.vox} "$out/nix-external/FastTrackStudio/vox"
+            chmod -R u+w "$out/nix-external"
+
+            substituteInPlace "$out/Cargo.toml" \
+              --replace-fail 'path = "../FastTrackStudio/sea-orm"' 'path = "nix-external/FastTrackStudio/sea-orm"' \
+              --replace-fail 'path = "../FastTrackStudio/sea-orm/sea-orm-migration"' 'path = "nix-external/FastTrackStudio/sea-orm/sea-orm-migration"' \
+              --replace-fail 'path = "../FastTrackStudio/crudcrate/crudcrate"' 'path = "nix-external/FastTrackStudio/crudcrate/crudcrate"' \
+              --replace-fail 'path = "../FastTrackStudio/better-auth/crates/core"' 'path = "nix-external/FastTrackStudio/better-auth/crates/core"' \
+              --replace-fail 'path = "../FastTrackStudio/better-auth/crates/api"' 'path = "nix-external/FastTrackStudio/better-auth/crates/api"' \
+              --replace-fail 'path = "../FastTrackStudio/better-auth/crates/derive"' 'path = "nix-external/FastTrackStudio/better-auth/crates/derive"'
+
+            substituteInPlace "$out/apps/server/Cargo.toml" \
+              --replace-fail 'path = "../../../FastTrackStudio/better-auth"' 'path = "../../nix-external/FastTrackStudio/better-auth"' \
+              --replace-fail 'path = "../../../FastTrackStudio/better-auth/crates/core"' 'path = "../../nix-external/FastTrackStudio/better-auth/crates/core"' \
+              --replace-fail 'path = "../../../FastTrackStudio/better-auth/crates/api"' 'path = "../../nix-external/FastTrackStudio/better-auth/crates/api"'
+
+            if [ -f "$out/nix-external/FastTrackStudio/better-auth/crates/api/Cargo.toml" ]; then
+              ${pkgs.perl}/bin/perl -0pi -e 's#vox-types = \{ path = "../../../vox/rust/vox-types", optional = true \}#vox-types = { git = "https://github.com/Codys-Wright/vox", rev = "ccb46b5416100d38430cb082d71bf0377428c241", optional = true }#g' \
+                "$out/nix-external/FastTrackStudio/better-auth/crates/api/Cargo.toml"
+            fi
+
+            substituteInPlace "$out/crates/task-db/Cargo.toml" \
+              --replace-fail 'path = "../../../FastTrackStudio/better-auth/crates/core"' 'path = "../../nix-external/FastTrackStudio/better-auth/crates/core"'
+
+            substituteInPlace "$out/nix-external/FastTrackStudio/crudcrate/crudcrate/Cargo.toml" \
+              --replace-fail 'spring-rs = ["spring", "spring-web", "derive"]' 'spring-rs = ["derive"]' \
+              --replace-fail 'spring = { version = "0.4.3", optional = true }' '# spring removed for packaged build' \
+              --replace-fail 'spring-web = { version = "0.4.3", optional = true }' '# spring-web removed for packaged build'
+            ${pkgs.perl}/bin/perl -0pi -e 's/\n\[dev-dependencies\].*?(?=\n\[\[example\]\])/\n/s' \
+              "$out/nix-external/FastTrackStudio/crudcrate/crudcrate/Cargo.toml"
+            ${pkgs.perl}/bin/perl -0pi -e 's/\n\[dev-dependencies\].*?(?=\n\[lints\.clippy\])/\n/s' \
+              "$out/nix-external/FastTrackStudio/crudcrate/crudcrate-derive/Cargo.toml"
+          '';
+
           taskCliSrc = pkgs.runCommand "task-cli-src" { } ''
             set -euo pipefail
 
             mkdir -p "$out/crates"
-            cp -r ${taskSrc}/Cargo.lock "$out/Cargo.lock"
-            cp -r ${taskSrc}/rust-toolchain.toml "$out/rust-toolchain.toml"
-            if [ -e ${taskSrc}/.cargo ]; then
-              cp -r ${taskSrc}/.cargo "$out/.cargo"
+            cp -r ${taskPackageSrc}/Cargo.lock "$out/Cargo.lock"
+            cp -r ${taskPackageSrc}/rust-toolchain.toml "$out/rust-toolchain.toml"
+            if [ -e ${taskPackageSrc}/.cargo ]; then
+              cp -r ${taskPackageSrc}/.cargo "$out/.cargo"
             fi
-            cp -r ${taskSrc}/crates/task-core "$out/crates/task-core"
-            cp -r ${taskSrc}/crates/task-cli "$out/crates/task-cli"
+            cp -r ${taskPackageSrc}/crates/task-core "$out/crates/task-core"
+            cp -r ${taskPackageSrc}/crates/task-cli "$out/crates/task-cli"
 
             cat > "$out/Cargo.toml" <<'EOF'
 [workspace]
@@ -138,11 +176,11 @@ rev = "13eac79"
 
 [workspace.dependencies.vox]
 git = "https://github.com/Codys-Wright/vox"
-rev = "4103658f29c88ffd913314903f16e327c5248cdb"
+rev = "ccb46b5416100d38430cb082d71bf0377428c241"
 
 [workspace.dependencies.vox-core]
 git = "https://github.com/Codys-Wright/vox"
-rev = "4103658f29c88ffd913314903f16e327c5248cdb"
+rev = "ccb46b5416100d38430cb082d71bf0377428c241"
 
 [workspace.dependencies.serde]
 version = "1"
@@ -166,11 +204,11 @@ EOF
             chmod -R u+w "$out"
           '';
 
-          cargoVendorDir = craneLib.vendorCargoDeps { src = taskSrc; };
+          cargoVendorDir = craneLib.vendorCargoDeps { src = taskPackageSrc; };
           cargoVendorDirCli = craneLib.vendorCargoDeps { src = taskCliSrc; };
 
           commonArgs = {
-            src = taskSrc;
+            src = taskPackageSrc;
             inherit cargoVendorDir;
             strictDeps = true;
           };
@@ -208,12 +246,14 @@ EOF
 
           task-server = craneLib.buildPackage (serverArgs // {
             pname = "task-server";
+            version = "0.1.0";
             cargoExtraArgs = "--package task-server";
             doCheck = false;
           });
 
           task-cli = craneLib.buildPackage (cliArgs // {
             pname = "task-cli";
+            version = "0.1.0";
             cargoExtraArgs = "--package task-cli";
             doCheck = false;
           });
@@ -293,9 +333,17 @@ EOF
               echo "  nix build .#task-cli      CLI tool"
               echo "  nix build .#obsidian-wasm  Obsidian plugin WASM"
               echo "  nix flake check           tests, clippy, fmt"
+              echo "  nix develop .#ui          Dioxus web/desktop dev shell"
+              echo "  nix develop .#mobile      Dioxus mobile (Android) dev shell"
               echo ""
             '';
           };
+
+          # Re-export the shared Dioxus dev shells so app work uses the
+          # same toolchain as fts-ui / dioxus-flake without duplicating
+          # config here.
+          devShells.ui = inputs.dioxus-flake.devShells.${system}.default;
+          devShells.mobile = inputs.dioxus-flake.devShells.${system}.mobile;
         };
     };
 }
