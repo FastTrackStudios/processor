@@ -2,12 +2,7 @@
 # Build
 target/
 result
-result-*
 .direnv/
-
-# Vendored fork copies — packaged Nix build pulls these from flake inputs
-# (sea-orm-fork, crudcrate-fork, better-auth-fork). Never commit them.
-nix/vendor/
 
 # Dependencies
 node_modules/

@@ -17,22 +17,6 @@
       url = "github:Codys-Wright/vox";
     };
 
-    # Forks consumed only by the Nix build. `cargo build` uses the live
-    # sibling checkouts in ../FastTrackStudio/{sea-orm,crudcrate,better-auth};
-    # bump these revs when you want the packaged build to track new fork work.
-    sea-orm-fork = {
-      flake = false;
-      url = "github:FastTrackStudios/sea-orm";
-    };
-    crudcrate-fork = {
-      flake = false;
-      url = "github:FastTrackStudios/crudcrate";
-    };
-    better-auth-fork = {
-      flake = false;
-      url = "github:FastTrackStudios/better-auth";
-    };
-
     # Shared Dioxus toolchain (web/desktop/mobile/native) — re-exposed
     # below as `devShells.ui` and `devShells.mobile`.
     dioxus-flake = {
@@ -87,9 +71,9 @@
             chmod -R u+w "$out"
 
             mkdir -p "$out/nix-external/FastTrackStudio"
-            cp -r ${inputs.sea-orm-fork} "$out/nix-external/FastTrackStudio/sea-orm"
-            cp -r ${inputs.crudcrate-fork} "$out/nix-external/FastTrackStudio/crudcrate"
-            cp -r ${inputs.better-auth-fork} "$out/nix-external/FastTrackStudio/better-auth"
+            cp -r ${./nix/vendor/FastTrackStudio/sea-orm} "$out/nix-external/FastTrackStudio/sea-orm"
+            cp -r ${./nix/vendor/FastTrackStudio/crudcrate} "$out/nix-external/FastTrackStudio/crudcrate"
+            cp -r ${./nix/vendor/FastTrackStudio/better-auth} "$out/nix-external/FastTrackStudio/better-auth"
             cp -r ${inputs.vox} "$out/nix-external/FastTrackStudio/vox"
             chmod -R u+w "$out/nix-external"
 
