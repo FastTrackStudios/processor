@@ -14,8 +14,10 @@
 
     # Shared Dioxus toolchain (web/desktop/mobile/native) — re-exposed
     # below as `devShells.ui` and `devShells.mobile`.
+    # Use the pushed fork as a real git input so flake eval/builds don't
+    # depend on a local checkout path.
     dioxus-flake = {
-      url = "path:/home/cody/Development/Dioxus/dioxus-flake";
+      url = "github:FastTrackStudios/Dioxus-Flake";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
       inputs.crane.follows = "crane";
