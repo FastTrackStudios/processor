@@ -90,6 +90,7 @@
                     libxtst
                     libxcb
                     libxscrnsaver
+                    xdotool
 
                     # XKB (keyboard handling)
                     libxkbcommon
@@ -103,6 +104,8 @@
 
                     # GTK / GLib (for file dialogs, clipboard)
                     gtk3
+                    webkitgtk_4_1
+                    libsoup_3
                     glib
                     gdk-pixbuf
                     pango
@@ -145,12 +148,18 @@
                     FTS_REAPER_CONFIG = ftsReaperConfig;
                     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
                     BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.avahi.dev}/include -isystem ${pkgs.glibc.dev}/include";
-                    LIBRARY_PATH = "${pkgs.lib.getLib pkgs.avahi}/lib";
+                    LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+                      pkgs.avahi
+                      pkgs.xdotool
+                    ];
                     LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
                       pkgs.vulkan-loader
                       pkgs.libGL
                       pkgs.wayland
                       pkgs.libxkbcommon
+                      pkgs.webkitgtk_4_1
+                      pkgs.libsoup_3
+                      pkgs.xdotool
                     ];
                   };
 
