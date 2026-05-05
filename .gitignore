@@ -18,6 +18,10 @@ obsidian-plugin/js/
 # IDE
 .cargo/
 .config/
+!.config/
+.config/*
+!.config/capn/
+!.config/capn/config.styx
 
 # Secrets / local config
 .envrc
