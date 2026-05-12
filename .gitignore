@@ -1,0 +1,11 @@
+target/
+result
+result-*
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.direnv/
+.envrc.local
+node_modules/
+dist/
