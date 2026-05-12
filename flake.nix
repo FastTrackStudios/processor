@@ -1,5 +1,5 @@
 {
-  description = "Architecture-Reference — example-proto pattern (vox + Dioxus + SeaORM)";
+  description = "architect — example-proto pattern (vox + Dioxus + SeaORM)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
