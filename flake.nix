@@ -66,8 +66,8 @@
               export GECKODRIVER=${pkgs.geckodriver}/bin/geckodriver
               export CHROMEDRIVER=${pkgs.chromedriver}/bin/chromedriver
 
-              # Default DB path for `cargo run -p example-app-server` and
-              # `cargo run -p example-app-db -- up`.
+              # Default DB path for `cargo run -p app-server` and
+              # `cargo run -p app-db -- up`.
               : "''${DATABASE_URL:=sqlite://./example.db?mode=rwc}"
               export DATABASE_URL
 
@@ -77,7 +77,7 @@
               echo "  DATABASE_URL=$DATABASE_URL"
               echo
               echo "  just deps        — list workspace deps"
-              echo "  just server      — run example-app-server"
+              echo "  just server      — run app-server"
               echo "  just test        — workspace cargo check + tests"
               echo "  just test-wasm   — browser integration tests"
             '';
