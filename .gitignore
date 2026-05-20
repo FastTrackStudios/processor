@@ -1,4 +1,5 @@
-/target
+target/
+**/playground.log*
 Cargo.lock
 **/*.rs.bk
 .DS_Store
