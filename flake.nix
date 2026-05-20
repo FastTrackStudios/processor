@@ -53,6 +53,10 @@
               nodejs_22
               pnpm
               playwright-driver.browsers
+              # `just` for the convenience recipes in justfile.
+              # Top-level commands like `just test` keep the
+              # cargo / dx / pnpm invocations memorable.
+              just
             ];
             shellHook = ''
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
