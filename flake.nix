@@ -54,16 +54,35 @@
               pnpm
               playwright-driver.browsers
               # `just` for the convenience recipes in justfile.
-              # Top-level commands like `just test` keep the
-              # cargo / dx / pnpm invocations memorable.
               just
+              # clang + llvm provide a wasm-capable C cross-
+              # compiler so `cc::Build`-based crates (notably
+              # arborium-sysroot, which ships the wasm sysroot
+              # for tree-sitter grammars) actually emit wasm
+              # object files. Without these `cc` silently falls
+              # back to host gcc, produces x86-64 ELF objects,
+              # the wasm linker ignores them, and the resulting
+              # wasm has unresolved `env` imports.
+              # Use the *unwrapped* clang/llvm-ar so nix's
+              # cc-wrapper doesn't inject host-only hardening
+              # flags (e.g. `-fzero-call-used-regs`) that wasm
+              # doesn't accept.
+              llvmPackages.clang-unwrapped
+              llvmPackages.bintools-unwrapped
             ];
             shellHook = ''
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-              # On non-Ubuntu Linuxes Playwright's host check is
-              # too strict; this disables it for the nix shell.
               export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
+              # Pin the `cc` crate's wasm32 C compiler/archiver.
+              # arborium-sysroot's build.rs compiles its bundled
+              # tree-sitter C runtime through `cc::Build`; without
+              # these env vars `cc` falls back to host gcc, the
+              # objects are x86-64 ELF, the wasm linker silently
+              # drops them, and you get unresolved `env` imports
+              # at JS load time.
+              export CC_wasm32_unknown_unknown=${pkgs.llvmPackages.clang-unwrapped}/bin/clang
+              export AR_wasm32_unknown_unknown=${pkgs.llvmPackages.bintools-unwrapped}/bin/llvm-ar
             '';
           };
         };
