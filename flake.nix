@@ -9,19 +9,67 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
+    nix2container = {
+      url = "github:nlewo/nix2container";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, flake-parts, crane, ... } @inputs:
+  outputs =
+    {
+      self,
+      flake-parts,
+      crane,
+      ...
+    }@inputs:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" "x86_64-darwin" "aarch64-darwin" "aarch64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+        "aarch64-linux"
+      ];
 
-      perSystem = { self', pkgs, lib, system, ... }:
+      flake = {
+        lib =
+          inputs.nixpkgs.lib.genAttrs [ "x86_64-linux" "x86_64-darwin" "aarch64-darwin" "aarch64-linux" ]
+            (
+              system:
+              let
+                pkgs = import inputs.nixpkgs {
+                  inherit system;
+                  config = {
+                    allowUnfree = true;
+                  };
+                };
+              in
+              import ./nix/web-container.nix {
+                inherit pkgs;
+                n2c = inputs.nix2container.packages.${system}.nix2container;
+                skopeo-n2c = inputs.nix2container.packages.${system}.skopeo-nix2container;
+              }
+            );
+      };
+
+      perSystem =
+        {
+          self',
+          pkgs,
+          lib,
+          system,
+          ...
+        }:
         let
           # ── Rust toolchain ───────────────────────────────────────────
           # Android targets included so cross-compilation works when
           # ANDROID_NDK_HOME is set on the host system.
           rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-            extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
+            extensions = [
+              "rust-src"
+              "rust-analyzer"
+              "clippy"
+              "rustfmt"
+            ];
             targets = [
               "wasm32-unknown-unknown"
               "aarch64-linux-android"
@@ -52,8 +100,14 @@
           # Kept out of the default shell because it is large and only
           # needed for mobile builds/emulator workflows.
           androidComposition = pkgs.androidenv.composeAndroidPackages {
-            platformVersions = [ "34" "35" ];
-            buildToolsVersions = [ "34.0.0" "35.0.0" ];
+            platformVersions = [
+              "34"
+              "35"
+            ];
+            buildToolsVersions = [
+              "34.0.0"
+              "35.0.0"
+            ];
             includeNDK = true;
             ndkVersions = [ "27.2.12479018" ];
             includeEmulator = true;
@@ -65,6 +119,7 @@
           androidHome = "${androidSdk}/libexec/android-sdk";
 
           rev = toString (self.shortRev or self.dirtyShortRev or self.lastModified or "unknown");
+          skopeo-n2c = inputs.nix2container.packages.${system}.skopeo-nix2container;
 
           # ── Source filtering ─────────────────────────────────────────
           # Include Rust sources plus Dioxus asset files
@@ -86,28 +141,52 @@
           };
 
           # ── Build dependencies (platform-specific) ──────────────────
-          buildInputs = (with pkgs; [
-            openssl openssl.dev pkg-config fontconfig freetype
-          ])
-          ++ lib.optionals pkgs.stdenv.isLinux (with pkgs; [
-            # WebView / GTK (Dioxus desktop)
-            glib gtk3 libsoup_3 webkitgtk_4_1 xdotool
-            # X11 / Wayland
-            libx11 libxcursor libxrandr libxi libxcb
-            libxkbcommon wayland gsettings-desktop-schemas
-            # Graphics
-            libGL vulkan-loader
-            # Multimedia (webkit2gtk media playback)
-            gst_all_1.gstreamer gst_all_1.gst-plugins-base
-            gst_all_1.gst-plugins-good gst_all_1.gst-plugins-bad
-          ])
-          ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs; [
-            apple-sdk_15
-            libiconv
-          ]);
+          buildInputs =
+            (with pkgs; [
+              openssl
+              openssl.dev
+              pkg-config
+              fontconfig
+              freetype
+            ])
+            ++ lib.optionals pkgs.stdenv.isLinux (
+              with pkgs;
+              [
+                # WebView / GTK (Dioxus desktop)
+                glib
+                gtk3
+                libsoup_3
+                webkitgtk_4_1
+                xdotool
+                # X11 / Wayland
+                libx11
+                libxcursor
+                libxrandr
+                libxi
+                libxcb
+                libxkbcommon
+                wayland
+                gsettings-desktop-schemas
+                # Graphics
+                libGL
+                vulkan-loader
+                # Multimedia (webkit2gtk media playback)
+                gst_all_1.gstreamer
+                gst_all_1.gst-plugins-base
+                gst_all_1.gst-plugins-good
+                gst_all_1.gst-plugins-bad
+              ]
+            )
+            ++ lib.optionals pkgs.stdenv.isDarwin (
+              with pkgs;
+              [
+                apple-sdk_15
+                libiconv
+              ]
+            );
 
           # Stub codesign for Nix sandbox — dx tries to invoke codesign on macOS
-          fakeCodesign = pkgs.writeShellScriptBin "codesign" ''exec true'';
+          fakeCodesign = pkgs.writeShellScriptBin "codesign" "exec true";
 
           nativeBuildInputs = [
             pkgs.pkg-config
@@ -116,7 +195,8 @@
             wasm-bindgen-cli
             pkgs.binaryen
             pkgs.tailwindcss_4
-          ] ++ lib.optionals pkgs.stdenv.isDarwin [
+          ]
+          ++ lib.optionals pkgs.stdenv.isDarwin [
             fakeCodesign
           ];
 
@@ -143,18 +223,33 @@
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
           # ── Runtime library path ─────────────────────────────────────
-          libPath = lib.makeLibraryPath (with pkgs;
-            [ fontconfig freetype openssl ]
+          libPath = lib.makeLibraryPath (
+            with pkgs;
+            [
+              fontconfig
+              freetype
+              openssl
+            ]
             ++ lib.optionals pkgs.stdenv.isLinux [
-              libGL vulkan-loader gtk3 glib
-              libx11 libxcb libxkbcommon wayland
-              webkitgtk_4_1 libsoup_3
-              gst_all_1.gstreamer gst_all_1.gst-plugins-base
-              gst_all_1.gst-plugins-good gst_all_1.gst-plugins-bad
+              libGL
+              vulkan-loader
+              gtk3
+              glib
+              libx11
+              libxcb
+              libxkbcommon
+              wayland
+              webkitgtk_4_1
+              libsoup_3
+              gst_all_1.gstreamer
+              gst_all_1.gst-plugins-base
+              gst_all_1.gst-plugins-good
+              gst_all_1.gst-plugins-bad
             ]
           );
 
-        in {
+        in
+        {
           _module.args.pkgs = import inputs.nixpkgs {
             inherit system;
             config = {
@@ -173,46 +268,52 @@
             deps = cargoArtifacts;
 
             # Web app (WASM via dx)
-            web = craneLib.buildPackage (commonArgs // {
-              pname = "web";
-              version = rev;
-              inherit cargoArtifacts;
-              doNotPostBuildInstallCargoBinaries = true;
-              buildPhaseCargoCommand = ''
-                cd packages/web
-                dx build --release --platform web
-              '';
-              installPhaseCommand = ''
-                cd "$NIX_BUILD_TOP/source"
-                mkdir -p $out/www
-                cp -r target/dx/web/release/web/* $out/www/
-              '';
-              doCheck = false;
-            });
+            web = craneLib.buildPackage (
+              commonArgs
+              // {
+                pname = "web";
+                version = rev;
+                inherit cargoArtifacts;
+                doNotPostBuildInstallCargoBinaries = true;
+                buildPhaseCargoCommand = ''
+                  cd packages/web
+                  dx build --release --platform web
+                '';
+                installPhaseCommand = ''
+                  cd "$NIX_BUILD_TOP/source"
+                  mkdir -p $out/www
+                  cp -r target/dx/web/release/web/* $out/www/
+                '';
+                doCheck = false;
+              }
+            );
 
             # Desktop app (native webview via dx)
-            desktop = craneLib.buildPackage (commonArgs // {
-              pname = "desktop";
-              version = rev;
-              inherit cargoArtifacts;
-              doNotPostBuildInstallCargoBinaries = true;
-              buildPhaseCargoCommand = ''
-                cd packages/desktop
-                dx build --release --platform desktop
-              '';
-              installPhaseCommand = ''
-                cd "$NIX_BUILD_TOP/source"
-                mkdir -p $out/bin
-                if [ -d "target/dx/desktop/release/macos" ]; then
-                  mkdir -p $out/Applications
-                  cp -r target/dx/desktop/release/macos/*.app $out/Applications/
-                  ln -s "$out/Applications/"*.app"/Contents/MacOS/"* $out/bin/desktop
-                elif [ -f "target/release/desktop" ]; then
-                  cp target/release/desktop $out/bin/
-                fi
-              '';
-              doCheck = false;
-            });
+            desktop = craneLib.buildPackage (
+              commonArgs
+              // {
+                pname = "desktop";
+                version = rev;
+                inherit cargoArtifacts;
+                doNotPostBuildInstallCargoBinaries = true;
+                buildPhaseCargoCommand = ''
+                  cd packages/desktop
+                  dx build --release --platform desktop
+                '';
+                installPhaseCommand = ''
+                  cd "$NIX_BUILD_TOP/source"
+                  mkdir -p $out/bin
+                  if [ -d "target/dx/desktop/release/macos" ]; then
+                    mkdir -p $out/Applications
+                    cp -r target/dx/desktop/release/macos/*.app $out/Applications/
+                    ln -s "$out/Applications/"*.app"/Contents/MacOS/"* $out/bin/desktop
+                  elif [ -f "target/release/desktop" ]; then
+                    cp target/release/desktop $out/bin/
+                  fi
+                '';
+                doCheck = false;
+              }
+            );
 
             default = self'.packages.desktop;
           };
@@ -221,10 +322,13 @@
           # Checks
           # ============================================================
           checks = {
-            clippy = craneLib.cargoClippy (commonArgs // {
-              inherit cargoArtifacts;
-              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-            });
+            clippy = craneLib.cargoClippy (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+              }
+            );
 
             fmt = craneLib.cargoFmt {
               inherit src;
@@ -232,11 +336,14 @@
               version = rev;
             };
 
-            tests = craneLib.cargoNextest (commonArgs // {
-              inherit cargoArtifacts;
-              partitions = 1;
-              partitionType = "count";
-            });
+            tests = craneLib.cargoNextest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                partitions = 1;
+                partitionType = "count";
+              }
+            );
           };
 
           # ============================================================
@@ -252,6 +359,8 @@
               pkgs.cargo-nextest
               pkgs.bacon
               pkgs.nodejs_22
+              skopeo-n2c
+              pkgs.flyctl
             ]
             ++ buildInputs
             ++ nativeBuildInputs;
@@ -268,16 +377,15 @@
             WEBKIT_DISABLE_COMPOSITING_MODE = lib.optionalString pkgs.stdenv.isLinux "1";
             WEBKIT_ENABLE_WEBGPU = lib.optionalString pkgs.stdenv.isLinux "0";
             GTK_USE_PORTAL = lib.optionalString pkgs.stdenv.isLinux "0";
-            XDG_DATA_DIRS = lib.optionalString pkgs.stdenv.isLinux
-              "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
+            XDG_DATA_DIRS = lib.optionalString pkgs.stdenv.isLinux "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
 
             shellHook = ''
               export PATH="$HOME/.cargo/bin:$PATH"
               export LD_LIBRARY_PATH="${libPath}:$LD_LIBRARY_PATH"
               DX_VERSION=$(dx --version 2>/dev/null | grep -oP 'dioxus \K[0-9.]+' || echo "0")
-              if [ "$DX_VERSION" != "0.7.6" ]; then
-                echo "  Installing dx 0.7.6..."
-                cargo install dioxus-cli --locked --version "=0.7.6" 2>/dev/null || \
+              if [ "$DX_VERSION" != "0.7.9" ]; then
+                echo "  Installing dx 0.7.9..."
+                cargo install dioxus-cli --locked --version "=0.7.9" 2>/dev/null || \
                   cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli --locked
               fi
               echo "  Dioxus dev shell"
@@ -302,6 +410,8 @@
               pkgs.cargo-nextest
               pkgs.bacon
               pkgs.nodejs_22
+              skopeo-n2c
+              pkgs.flyctl
             ]
             ++ buildInputs
             ++ nativeBuildInputs;
@@ -324,16 +434,15 @@
             WEBKIT_DISABLE_COMPOSITING_MODE = lib.optionalString pkgs.stdenv.isLinux "1";
             WEBKIT_ENABLE_WEBGPU = lib.optionalString pkgs.stdenv.isLinux "0";
             GTK_USE_PORTAL = lib.optionalString pkgs.stdenv.isLinux "0";
-            XDG_DATA_DIRS = lib.optionalString pkgs.stdenv.isLinux
-              "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
+            XDG_DATA_DIRS = lib.optionalString pkgs.stdenv.isLinux "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
 
             shellHook = ''
               export PATH="$HOME/.cargo/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
               export LD_LIBRARY_PATH="${libPath}:$LD_LIBRARY_PATH"
               DX_VERSION=$(dx --version 2>/dev/null | grep -oP 'dioxus \K[0-9.]+' || echo "0")
-              if [ "$DX_VERSION" != "0.7.6" ]; then
-                echo "  Installing dx 0.7.6..."
-                cargo install dioxus-cli --locked --version "=0.7.6" 2>/dev/null || \
+              if [ "$DX_VERSION" != "0.7.9" ]; then
+                echo "  Installing dx 0.7.9..."
+                cargo install dioxus-cli --locked --version "=0.7.9" 2>/dev/null || \
                   cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli --locked
               fi
               echo "  Dioxus mobile dev shell"
