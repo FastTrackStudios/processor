@@ -42,13 +42,13 @@
           reaper = pkgs.callPackage ./pkgs/reaper.nix {
             headless = false;
             jackLibrary = pkgs.pipewire.jack;
-            libxml2 = pkgs.libxml2;
+            libxml2 = pkgs.libxml2_13; # .so.2 for libSwell (matches nixpkgs)
           };
           # Headless build: custom NOGDK libSwell — no display server required
           reaper-headless-bin = pkgs.callPackage ./pkgs/reaper.nix {
             headless = true;
             jackLibrary = pkgs.pipewire.jack;
-            libxml2 = pkgs.libxml2;
+            libxml2 = pkgs.libxml2_13; # .so.2 for libSwell (matches nixpkgs)
           };
           sws = pkgs.reaper-sws-extension;
           reapack = pkgs.reaper-reapack-extension;
@@ -122,6 +122,12 @@
             dbus
             zlib
             stdenv.cc.cc.lib
+            # REAPER 7.7x's libSwell dlopen()s libxml2.so.2; the default
+            # nixpkgs libxml2 is now soname .so.16, so use libxml2_13 which
+            # still ships .so.2 (this is exactly what nixpkgs' reaper does).
+            # curl/libxml2_13 are also needed for ReaPack.
+            libxml2_13
+            curl
           ];
 
           fhsLibs = graphicsLibs ++ audioLibs ++ codecLibs ++ miscLibs;
