@@ -48,7 +48,9 @@
           bundlePath = if bundleEnv != "" then /. + bundleEnv else ./bundle;
           image = deploy.mkDioxusWebImage {
             inherit appName bundlePath;
-            imageName = "registry.fly.io/${appName}";
+            # In-cluster registry on the starcommand k3s host (unauthenticated,
+            # plain HTTP, LAN-only) — same registry/pattern Task's images use.
+            imageName = "registry.starcommand.live:30050/fasttrackstudio-site";
           };
         in
         {
