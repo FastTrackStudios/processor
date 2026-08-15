@@ -1,0 +1,28 @@
+[package]
+name = "fts-audio-ui"
+description = "FastTrack Studio audio widget kit — Dioxus port of iced_audio (knobs, sliders, XY pads, meters)"
+version.workspace = true
+edition = "2021"          # kept on 2021 — pre-move workspace edition; migrate deliberately
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+dioxus = { workspace = true }
+architect-ui = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []
+# Enable nih_plug ParamPtr adapter for ParamHandle.
+# Consumers building plugins should enable this; UI-only consumers can leave it off.
+nih-plug = []
+
+# The knob contact sheet (tests/knob_sheet.rs) paints every style in the kit
+# to one PNG on the headless Blitz DOM — no GPU, no window. It is the answer
+# to "does my new knob look right" without building a whole faceplate.
+[dev-dependencies]
+dioxus-test = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
