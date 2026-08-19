@@ -13,6 +13,10 @@ use nice_plug_dioxus::prelude::ParamContext;
 /// Build a [`ParamHandle`] from a nice_plug `ParamPtr` and the editor's
 /// [`ParamContext`].
 ///
+/// The ONE adapter for the plugin suite — every `*-ui` crate re-exports it
+/// (`primitives.drift-is-a-bug`: it was copied verbatim into seven crates
+/// before being lifted here, and the copies drifted).
+///
 /// Pulls the param's default + bipolar metadata off of `nice_plug`:
 /// `default_normalized_value()` populates the alt-click reset target;
 /// `step_count() == None && unit() == "dB"` is taken as a hint that the
@@ -49,6 +53,11 @@ pub fn param_handle_with_options(
     )
     .with_default(default_normalized)
     .with_bipolar(bipolar)
+    // Stepped params snap one step per wheel notch / arrow key; the unit
+    // drives the typed-value conventions (`1k`, `A4`, `2x`) — see
+    // `fts_audio_ui::gesture`.
+    .with_step_count(unsafe { ptr.step_count() })
+    .with_unit(unsafe { ptr.unit() })
 }
 
 /// Treat parameters whose unit is dB as bipolar by default — gain

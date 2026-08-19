@@ -18,12 +18,16 @@ pub mod axis;
 pub mod color;
 pub mod controls;
 pub mod drag;
+pub mod gesture;
 pub mod hardware;
 pub mod marks;
 pub mod meters;
+pub mod paint;
 pub mod param;
 pub mod shell;
 pub mod theme;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod widget;
 
 pub mod prelude;
 

@@ -5,12 +5,13 @@
 //! handles drive the modulation range. Drag the base track horizontally; drag
 //! the small min/max marker thumbs to adjust the range.
 
-use crate::drag::{begin_drag_axis, DragAxis, DragState};
+use crate::drag::{DragAxis, DragState};
+use crate::gesture::{self, SLIDER_SENSITIVITY};
 use crate::param::ParamHandle;
 use crate::theme::*;
 use dioxus::prelude::*;
 
-const SENSITIVITY: f64 = 200.0;
+const SENSITIVITY: f64 = SLIDER_SENSITIVITY;
 
 #[component]
 pub fn ModRangeInput(
@@ -82,12 +83,16 @@ pub fn ModRangeInput(
                         let h = base_handle.clone();
                         move |evt: MouseEvent| {
                             if disabled { return; }
-                            let p = evt.client_coordinates();
-                            begin_drag_axis(
-                                &mut drag, h.clone(),
-                                DragAxis::Horizontal, p.x, p.y, SENSITIVITY,
-                            );
+                            let _ = gesture::press(&evt, &mut drag, &h, DragAxis::Horizontal, SENSITIVITY);
                         }
+                    },
+                    ondoubleclick: {
+                        let h = base_handle.clone();
+                        move |_| if !disabled { gesture::double_click(&mut drag, &h) }
+                    },
+                    onwheel: {
+                        let h = base_handle.clone();
+                        move |evt: WheelEvent| if !disabled { gesture::wheel(&evt, &h) }
                     },
                 }
 
@@ -102,11 +107,7 @@ pub fn ModRangeInput(
                         move |evt: MouseEvent| {
                             if disabled { return; }
                             evt.stop_propagation();
-                            let p = evt.client_coordinates();
-                            begin_drag_axis(
-                                &mut drag, h.clone(),
-                                DragAxis::Horizontal, p.x, p.y, SENSITIVITY,
-                            );
+                            let _ = gesture::press(&evt, &mut drag, &h, DragAxis::Horizontal, SENSITIVITY);
                         }
                     },
                 }
@@ -122,11 +123,7 @@ pub fn ModRangeInput(
                         move |evt: MouseEvent| {
                             if disabled { return; }
                             evt.stop_propagation();
-                            let p = evt.client_coordinates();
-                            begin_drag_axis(
-                                &mut drag, h.clone(),
-                                DragAxis::Horizontal, p.x, p.y, SENSITIVITY,
-                            );
+                            let _ = gesture::press(&evt, &mut drag, &h, DragAxis::Horizontal, SENSITIVITY);
                         }
                     },
                 }

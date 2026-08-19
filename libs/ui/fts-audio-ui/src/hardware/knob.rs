@@ -12,7 +12,8 @@
 //! control, so a hardware face behaves like the rest of the editor.
 
 use dioxus::prelude::*;
-use crate::drag::{begin_drag, DragState};
+use crate::drag::DragState;
+use crate::gesture::{self, Press};
 use crate::prelude::*;
 
 use crate::hardware::knob_kit::{Edge, Index, KnobSpec, Paint, Turns};
@@ -40,9 +41,8 @@ const WING_TAIL: f64 = 0.66;
 
 /// Pixels of vertical drag per full sweep. Looser than the FTS knob's 150 —
 /// these are big knobs with printed scales, and a coarse feel suits them.
+/// A hardware knob is bigger than a flat one, so a sweep is a little longer.
 const SENSITIVITY: f64 = 190.0;
-const WHEEL_STEP: f64 = 0.02;
-const WHEEL_STEP_FINE: f64 = 0.005;
 
 /// How the knob is built.
 ///
@@ -385,6 +385,8 @@ pub fn HardwareKnob(
     let mut drag: Signal<DragState> = use_context();
     // Re-render while a drag is in flight so the pointer tracks the cursor.
     let _ = drag.read().move_count;
+    // Right-click / Enter open the readout's text entry.
+    let mut readout_open = use_signal(|| false);
 
     let normalized = handle.normalized() as f64;
     // The collar's angle, and the cap's. They are the same knob unless an
@@ -411,7 +413,7 @@ pub fn HardwareKnob(
         div {
             "data-testid": "hw-knob-{testid}",
             "data-normalized": "{normalized:.4}",
-            title: format!("{name} — {display}\nDrag · Shift=fine · Wheel · Alt-click=reset"),
+            title: format!("{name} — {display}\nDrag · Ctrl/Shift=fine · Wheel · Dbl-click=reset · Right-click=type"),
             style: format!(
                 "position:relative; width:{box_px:.1}px; height:{box_px:.1}px;"
             ),
@@ -752,41 +754,47 @@ pub fn HardwareKnob(
                 }
             }
 
-            // Interaction overlay — same gestures as every FTS control.
+            // A faceplate knob has no printed readout; right-click / Enter
+            // pops one up over the cap for typing a value
+            // (`fx.control.text-entry`).
+            if *readout_open.read() {
+                div {
+                    style: "position:absolute; left:50%; bottom:-4px; transform:translateX(-50%); z-index:5;",
+                    ValueReadout {
+                        handle: handle.clone(),
+                        open: readout_open,
+                        testid: "hw-knob-{testid}",
+                    }
+                }
+            }
+
+            // Interaction overlay — the shared gesture layer, like every FTS
+            // control (`fx.control.shared-gesture`).
             div {
                 style: "position:absolute; inset:0; cursor:ns-resize; user-select:none;",
+                tabindex: "0",
                 onmousedown: {
                     let handle = handle.clone();
                     move |evt: MouseEvent| {
-                        if evt.modifiers().alt() {
-                            evt.prevent_default();
-                            handle.reset_to_default();
-                            return;
+                        if gesture::press_vertical(&evt, &mut drag, &handle, SENSITIVITY) == Press::Menu {
+                            readout_open.set(true);
                         }
-                        begin_drag(
-                            &mut drag,
-                            handle.clone(),
-                            evt.client_coordinates().y,
-                            SENSITIVITY,
-                        );
                     }
+                },
+                ondoubleclick: {
+                    let handle = handle.clone();
+                    move |_| gesture::double_click(&mut drag, &handle)
                 },
                 onwheel: {
                     let handle = handle.clone();
-                    move |evt: WheelEvent| {
-                        evt.prevent_default();
-                        let delta_y = evt.delta().strip_units().y;
-                        if delta_y == 0.0 {
-                            return;
+                    move |evt: WheelEvent| gesture::wheel(&evt, &handle)
+                },
+                onkeydown: {
+                    let handle = handle.clone();
+                    move |evt: KeyboardEvent| {
+                        if gesture::key(&evt, &handle) == gesture::KeyOutcome::OpenTextEntry {
+                            readout_open.set(true);
                         }
-                        let direction = if delta_y < 0.0 { 1.0 } else { -1.0 };
-                        let mods = evt.modifiers();
-                        let step = if mods.shift() { WHEEL_STEP_FINE } else { WHEEL_STEP };
-                        let next = (handle.normalized() as f64 + direction * step)
-                            .clamp(0.0, 1.0) as f32;
-                        handle.begin_edit();
-                        handle.set_normalized(next);
-                        handle.end_edit();
                     }
                 },
             }
@@ -813,39 +821,21 @@ pub fn HardwareKnob(
                         let inner = inner.clone();
                         move |evt: MouseEvent| {
                             evt.stop_propagation();
-                            if evt.modifiers().alt() {
-                                evt.prevent_default();
-                                inner.reset_to_default();
-                                return;
-                            }
-                            begin_drag(
-                                &mut drag,
-                                inner.clone(),
-                                evt.client_coordinates().y,
-                                SENSITIVITY,
-                            );
+                            let _ = gesture::press_vertical(&evt, &mut drag, &inner, SENSITIVITY);
+                        }
+                    },
+                    ondoubleclick: {
+                        let inner = inner.clone();
+                        move |evt: MouseEvent| {
+                            evt.stop_propagation();
+                            gesture::double_click(&mut drag, &inner);
                         }
                     },
                     onwheel: {
                         let inner = inner.clone();
                         move |evt: WheelEvent| {
-                            evt.prevent_default();
                             evt.stop_propagation();
-                            let delta_y = evt.delta().strip_units().y;
-                            if delta_y == 0.0 {
-                                return;
-                            }
-                            let direction = if delta_y < 0.0 { 1.0 } else { -1.0 };
-                            let step = if evt.modifiers().shift() {
-                                WHEEL_STEP_FINE
-                            } else {
-                                WHEEL_STEP
-                            };
-                            let next = (inner.normalized() as f64 + direction * step)
-                                .clamp(0.0, 1.0) as f32;
-                            inner.begin_edit();
-                            inner.set_normalized(next);
-                            inner.end_edit();
+                            gesture::wheel(&evt, &inner);
                         }
                     },
                 }
