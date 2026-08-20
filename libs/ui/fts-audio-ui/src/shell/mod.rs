@@ -117,6 +117,10 @@ fn default_badge(label: &str) -> String {
 /// Rail width in CSS px — the Task app's `w-12` ribbon.
 pub const RAIL_W: f64 = 48.0;
 
+/// The modifier-key type `on_select_mods` hands out, re-exported so shells
+/// name it without a direct dioxus dependency.
+pub use dioxus::prelude::Modifiers as RailModifiers;
+
 /// The shell: identity + profile rail on the left, the plugin's surface on
 /// the right.
 ///
@@ -138,6 +142,12 @@ pub fn PluginShell(
     items: Vec<ShellItem>,
     #[props(default)] selected: usize,
     #[props(default)] on_select: Option<EventHandler<usize>>,
+    /// Like `on_select`, but carrying the click's modifier keys — for shells
+    /// whose rail distinguishes plain click (replace) from Shift-click (stack
+    /// serially) and Ctrl+Shift-click (stack in parallel), per
+    /// `fx.stack.add`. When set, `on_select` is not called.
+    #[props(default)]
+    on_select_mods: Option<EventHandler<(usize, Modifiers)>>,
     /// Accent for the selected item — the plugin's or the profile's colour.
     #[props(default = "#8aa4ff".to_string())]
     accent: String,
@@ -193,6 +203,7 @@ pub fn PluginShell(
                             {
                                 let active = index == selected;
                                 let on_select = on_select;
+                                let on_select_mods = on_select_mods;
                                 rsx! {
                                     div {
                                         "data-testid": "rail-item-{item.id}",
@@ -206,8 +217,10 @@ pub fn PluginShell(
                                         style: "display:flex; flex-direction:column; \
                                                 align-items:center; gap:2px; flex:none; \
                                                 cursor:pointer;",
-                                        onclick: move |_| {
-                                            if let Some(cb) = on_select {
+                                        onclick: move |evt: MouseEvent| {
+                                            if let Some(cb) = on_select_mods {
+                                                cb.call((index, evt.modifiers()));
+                                            } else if let Some(cb) = on_select {
                                                 cb.call(index);
                                             }
                                         },

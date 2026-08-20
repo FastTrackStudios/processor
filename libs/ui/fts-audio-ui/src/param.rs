@@ -45,6 +45,14 @@ pub struct ParamHandle {
     /// dB). Affects visualization — knobs draw the value arc from the
     /// centre detent instead of from the start of the track.
     pub(crate) bipolar: bool,
+    /// Number of discrete steps for a stepped (enum / int / bool) parameter;
+    /// `None` for a continuous one. Wheel, keyboard and drag snap by it
+    /// (`fx.control.stepped`).
+    pub(crate) step_count: Option<usize>,
+    /// Unit suffix as the parameter reports it (`"dB"`, `"Hz"`, `"ms"`,
+    /// `"%"`, `""`). Drives the typed-value conventions in
+    /// [`crate::gesture::parse_typed`].
+    pub(crate) unit: Arc<str>,
 }
 
 impl ParamHandle {
@@ -72,6 +80,8 @@ impl ParamHandle {
             string_to_normalized: Arc::new(string_to_normalized),
             default_normalized: 0.5,
             bipolar: false,
+            step_count: None,
+            unit: Arc::from(""),
         }
     }
 
@@ -111,6 +121,18 @@ impl ParamHandle {
         self
     }
 
+    /// Declare the parameter stepped (`Some(n)` steps) or continuous (`None`).
+    pub fn with_step_count(mut self, step_count: Option<usize>) -> Self {
+        self.step_count = step_count.filter(|n| *n >= 1);
+        self
+    }
+
+    /// Declare the parameter's unit suffix (`"dB"`, `"Hz"`, …).
+    pub fn with_unit(mut self, unit: impl AsRef<str>) -> Self {
+        self.unit = Arc::from(unit.as_ref().trim());
+        self
+    }
+
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -141,6 +163,34 @@ impl ParamHandle {
     }
     pub fn is_bipolar(&self) -> bool {
         self.bipolar
+    }
+    pub fn step_count(&self) -> Option<usize> {
+        self.step_count
+    }
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// Normalized value one step away in `direction` (+1 / −1). A stepped
+    /// parameter moves exactly one step; a continuous one moves by `step`
+    /// (a normalized amount).
+    pub fn stepped_from(&self, from: f32, direction: f32, step: f32) -> f32 {
+        match self.step_count {
+            Some(n) if n >= 1 => {
+                let n = n as f32;
+                let idx = (from * n).round();
+                ((idx + direction.signum()) / n).clamp(0.0, 1.0)
+            }
+            _ => (from + direction * step).clamp(0.0, 1.0),
+        }
+    }
+
+    /// Set a value as one complete edit gesture (wheel notch, key press,
+    /// typed entry).
+    pub fn set_as_gesture(&self, v: f32) {
+        self.begin_edit();
+        self.set_normalized(v);
+        self.end_edit();
     }
 
     /// Reset to the default normalized value, wrapped in begin/end edit so

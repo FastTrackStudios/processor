@@ -8,7 +8,8 @@
 
 use dioxus::prelude::*;
 
-use crate::drag::{begin_drag_axis, DragAxis, DragState};
+use crate::drag::{DragAxis, DragState};
+use crate::gesture::{self, Press};
 use crate::param::ParamHandle;
 
 /// Half the lever's travel, in degrees either side of vertical.
@@ -199,15 +200,19 @@ pub fn LeverSwitch(
                     let handle = handle.clone();
                     move |evt: MouseEvent| {
                         let x = evt.client_coordinates().x;
-                        press_x.set(Some(x));
-                        begin_drag_axis(
-                            &mut drag,
-                            handle.clone(),
-                            DragAxis::Horizontal,
-                            x,
-                            evt.client_coordinates().y,
-                            DRAG_SENSITIVITY,
-                        );
+                        match gesture::press(&evt, &mut drag, &handle, DragAxis::Horizontal, DRAG_SENSITIVITY) {
+                            Press::Drag => press_x.set(Some(x)),
+                            // A reset or a menu press is not the start of a
+                            // click-to-advance.
+                            _ => press_x.set(None),
+                        }
+                    }
+                },
+                ondoubleclick: {
+                    let handle = handle.clone();
+                    move |_| {
+                        press_x.set(None);
+                        gesture::double_click(&mut drag, &handle);
                     }
                 },
                 onclick: {
@@ -217,10 +222,8 @@ pub fn LeverSwitch(
                         // wrap, which is how a lever is used without aiming.
                         // After a real drag the value is already where the
                         // user put it and must not be bumped one further.
-                        let moved = press_x
-                            .take()
-                            .is_some_and(|sx| (evt.client_coordinates().x - sx).abs() > CLICK_SLOP);
-                        if moved {
+                        let Some(sx) = press_x.take() else { return };
+                        if (evt.client_coordinates().x - sx).abs() > CLICK_SLOP {
                             return;
                         }
                         let next = (selected + 1) % count;

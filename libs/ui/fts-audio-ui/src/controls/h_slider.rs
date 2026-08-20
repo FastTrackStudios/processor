@@ -1,16 +1,20 @@
 //! Horizontal slider (iced_audio `HSlider` parity).
 //!
-//! Drag horizontally to adjust. Double-click resets to `default_value` when
-//! provided. Optional tick-mark and text-mark groups render along the track.
+//! Drag horizontally to adjust; all gestures per [`crate::gesture`]
+//! (`fx.control.*`): double-click / Alt-click reset, wheel, keyboard,
+//! right-click to type. Optional tick-mark and text-mark groups render along
+//! the track.
 
-use crate::drag::{begin_drag_axis, DragAxis, DragState};
+use crate::controls::readout::ValueReadout;
+use crate::drag::{DragAxis, DragState};
+use crate::gesture::{self, Press, SLIDER_SENSITIVITY};
 use crate::marks::{TextMarkGroup, TickMarkGroup};
 use crate::param::ParamHandle;
 use crate::theme::*;
 use dioxus::prelude::*;
 
 const DEFAULT_HEIGHT: f64 = 24.0;
-const DEFAULT_SENSITIVITY: f64 = 200.0;
+const DEFAULT_SENSITIVITY: f64 = SLIDER_SENSITIVITY;
 
 #[component]
 pub fn HSlider(
@@ -18,6 +22,8 @@ pub fn HSlider(
     #[props(default)] label: Option<String>,
     #[props(default = DEFAULT_HEIGHT)] height: f64,
     #[props(default = DEFAULT_SENSITIVITY)] sensitivity: f64,
+    /// Deprecated: the reset target is the handle's default
+    /// (`ParamHandle::with_default`); this prop is ignored.
     #[props(default)] default_value: Option<f32>,
     #[props(default)] tick_marks: Option<TickMarkGroup>,
     #[props(default)] text_marks: Option<TextMarkGroup>,
@@ -26,9 +32,10 @@ pub fn HSlider(
 ) -> Element {
     let mut drag: Signal<DragState> = use_context();
     let _ = drag.read().move_count;
+    let _ = default_value;
+    let mut readout_open = use_signal(|| false);
 
     let normalized = handle.normalized();
-    let display_value = handle.display_value();
     let name = label.unwrap_or_else(|| handle.name());
     let fill_pct = (normalized.clamp(0.0, 1.0) * 100.0) as f64;
     let accent = color.as_deref().unwrap_or(ACCENT);
@@ -56,27 +63,31 @@ pub fn HSlider(
                      position:relative; overflow:hidden; cursor:{cursor}; \
                      border:1px solid {BORDER}; user-select:none;"
                 ),
+                tabindex: "0",
                 onmousedown: {
                     let handle = handle.clone();
                     move |evt: MouseEvent| {
                         if disabled { return; }
-                        let p = evt.client_coordinates();
-                        begin_drag_axis(
-                            &mut drag,
-                            handle.clone(),
-                            DragAxis::Horizontal,
-                            p.x, p.y,
-                            sensitivity,
-                        );
+                        if gesture::press(&evt, &mut drag, &handle, DragAxis::Horizontal, sensitivity)
+                            == Press::Menu
+                        {
+                            readout_open.set(true);
+                        }
                     }
                 },
                 ondoubleclick: {
                     let handle = handle.clone();
-                    move |_| {
-                        if let Some(d) = default_value {
-                            handle.begin_edit();
-                            handle.set_normalized(d);
-                            handle.end_edit();
+                    move |_| if !disabled { gesture::double_click(&mut drag, &handle) }
+                },
+                onwheel: {
+                    let handle = handle.clone();
+                    move |evt: WheelEvent| if !disabled { gesture::wheel(&evt, &handle) }
+                },
+                onkeydown: {
+                    let handle = handle.clone();
+                    move |evt: KeyboardEvent| {
+                        if !disabled && gesture::key(&evt, &handle) == gesture::KeyOutcome::OpenTextEntry {
+                            readout_open.set(true);
                         }
                     }
                 },
@@ -111,7 +122,16 @@ pub fn HSlider(
                          justify-content:center; font-size:11px; color:{TEXT}; \
                          pointer-events:none; font-variant-numeric:tabular-nums;"
                     ),
-                    "{display_value}"
+                    div {
+                        style: "pointer-events:auto;",
+                        ValueReadout {
+                            handle: handle.clone(),
+                            disabled,
+                            open: readout_open,
+                            style: format!("font-size:11px; color:{TEXT}; font-variant-numeric:tabular-nums;"),
+                            testid: "hslider-{name}",
+                        }
+                    }
                 }
             }
 

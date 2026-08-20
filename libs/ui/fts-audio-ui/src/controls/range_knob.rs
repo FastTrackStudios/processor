@@ -4,7 +4,8 @@
 //! them fills with the accent color. Vertical drag on the left half adjusts
 //! the min handle; right half adjusts the max handle.
 
-use crate::drag::{begin_drag, DragState};
+use crate::drag::DragState;
+use crate::gesture::{self, KNOB_SENSITIVITY};
 use crate::param::ParamHandle;
 use crate::theme::*;
 use dioxus::prelude::*;
@@ -12,7 +13,7 @@ use std::f64::consts::PI;
 
 const START_ANGLE: f64 = 135.0;
 const SWEEP: f64 = 270.0;
-const SENSITIVITY: f64 = 150.0;
+const SENSITIVITY: f64 = KNOB_SENSITIVITY;
 
 fn angle_for(v: f64) -> f64 {
     START_ANGLE + v.clamp(0.0, 1.0) * SWEEP
@@ -81,8 +82,16 @@ pub fn RangeKnob(
                     onmousedown: {
                         let h = min_handle.clone();
                         move |evt: MouseEvent| {
-                            begin_drag(&mut drag, h.clone(), evt.client_coordinates().y, SENSITIVITY);
+                            let _ = gesture::press_vertical(&evt, &mut drag, &h, SENSITIVITY);
                         }
+                    },
+                    ondoubleclick: {
+                        let h = min_handle.clone();
+                        move |_| gesture::double_click(&mut drag, &h)
+                    },
+                    onwheel: {
+                        let h = min_handle.clone();
+                        move |evt: WheelEvent| gesture::wheel(&evt, &h)
                     },
                 }
                 div {
@@ -90,8 +99,16 @@ pub fn RangeKnob(
                     onmousedown: {
                         let h = max_handle.clone();
                         move |evt: MouseEvent| {
-                            begin_drag(&mut drag, h.clone(), evt.client_coordinates().y, SENSITIVITY);
+                            let _ = gesture::press_vertical(&evt, &mut drag, &h, SENSITIVITY);
                         }
+                    },
+                    ondoubleclick: {
+                        let h = max_handle.clone();
+                        move |_| gesture::double_click(&mut drag, &h)
+                    },
+                    onwheel: {
+                        let h = max_handle.clone();
+                        move |evt: WheelEvent| gesture::wheel(&evt, &h)
                     },
                 }
             }

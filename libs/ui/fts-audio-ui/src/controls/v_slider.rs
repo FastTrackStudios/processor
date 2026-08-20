@@ -1,6 +1,9 @@
-//! Vertical slider (iced_audio `VSlider` parity). Drag vertically; up = increase.
+//! Vertical slider (iced_audio `VSlider` parity). Drag vertically; up =
+//! increase. All gestures per [`crate::gesture`] (`fx.control.*`).
 
-use crate::drag::{begin_drag, DragState};
+use crate::controls::readout::ValueReadout;
+use crate::drag::DragState;
+use crate::gesture::{self, Press, SLIDER_SENSITIVITY};
 use crate::marks::{TextMarkGroup, TickMarkGroup};
 use crate::param::ParamHandle;
 use crate::theme::*;
@@ -8,7 +11,7 @@ use dioxus::prelude::*;
 
 const DEFAULT_WIDTH: f64 = 24.0;
 const DEFAULT_HEIGHT: f64 = 120.0;
-const DEFAULT_SENSITIVITY: f64 = 200.0;
+const DEFAULT_SENSITIVITY: f64 = SLIDER_SENSITIVITY;
 
 #[component]
 pub fn VSlider(
@@ -17,6 +20,7 @@ pub fn VSlider(
     #[props(default = DEFAULT_WIDTH)] width: f64,
     #[props(default = DEFAULT_HEIGHT)] height: f64,
     #[props(default = DEFAULT_SENSITIVITY)] sensitivity: f64,
+    /// Deprecated: the reset target is the handle's default; ignored.
     #[props(default)] default_value: Option<f32>,
     #[props(default)] tick_marks: Option<TickMarkGroup>,
     #[props(default)] text_marks: Option<TextMarkGroup>,
@@ -25,9 +29,10 @@ pub fn VSlider(
 ) -> Element {
     let mut drag: Signal<DragState> = use_context();
     let _ = drag.read().move_count;
+    let _ = default_value;
+    let mut readout_open = use_signal(|| false);
 
     let normalized = handle.normalized();
-    let display_value = handle.display_value();
     let name = label.unwrap_or_else(|| handle.name());
     let fill_pct = (normalized.clamp(0.0, 1.0) * 100.0) as f64;
     let accent = color.as_deref().unwrap_or(ACCENT);
@@ -57,25 +62,31 @@ pub fn VSlider(
                          border-radius:4px; position:relative; overflow:hidden; \
                          cursor:{cursor}; border:1px solid {BORDER}; user-select:none;"
                     ),
+                    tabindex: "0",
                     onmousedown: {
                         let handle = handle.clone();
                         move |evt: MouseEvent| {
                             if disabled { return; }
-                            begin_drag(
-                                &mut drag,
-                                handle.clone(),
-                                evt.client_coordinates().y,
-                                sensitivity,
-                            );
+                            if gesture::press_vertical(&evt, &mut drag, &handle, sensitivity)
+                                == Press::Menu
+                            {
+                                readout_open.set(true);
+                            }
                         }
                     },
                     ondoubleclick: {
                         let handle = handle.clone();
-                        move |_| {
-                            if let Some(d) = default_value {
-                                handle.begin_edit();
-                                handle.set_normalized(d);
-                                handle.end_edit();
+                        move |_| if !disabled { gesture::double_click(&mut drag, &handle) }
+                    },
+                    onwheel: {
+                        let handle = handle.clone();
+                        move |evt: WheelEvent| if !disabled { gesture::wheel(&evt, &handle) }
+                    },
+                    onkeydown: {
+                        let handle = handle.clone();
+                        move |evt: KeyboardEvent| {
+                            if !disabled && gesture::key(&evt, &handle) == gesture::KeyOutcome::OpenTextEntry {
+                                readout_open.set(true);
                             }
                         }
                     },
@@ -128,11 +139,12 @@ pub fn VSlider(
                 }
             }
 
-            span {
-                style: format!(
-                    "font-size:10px; color:{TEXT_DIM}; font-variant-numeric:tabular-nums;"
-                ),
-                "{display_value}"
+            ValueReadout {
+                handle: handle.clone(),
+                disabled,
+                open: readout_open,
+                style: format!("font-size:10px; color:{TEXT_DIM}; font-variant-numeric:tabular-nums;"),
+                testid: "vslider-{name}",
             }
         }
     }

@@ -4,12 +4,13 @@
 //! drag vertically to reshape it. Normalized value 0.5 = linear, <0.5 = ease
 //! out, >0.5 = ease in. Direction selects which diagonal the curve follows.
 
-use crate::drag::{begin_drag, DragState};
+use crate::drag::DragState;
+use crate::gesture::{self, KNOB_SENSITIVITY};
 use crate::param::ParamHandle;
 use crate::theme::*;
 use dioxus::prelude::*;
 
-const SENSITIVITY: f64 = 150.0;
+const SENSITIVITY: f64 = KNOB_SENSITIVITY;
 const SAMPLES: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -70,8 +71,16 @@ pub fn Ramp(
                 let handle = handle.clone();
                 move |evt: MouseEvent| {
                     if disabled { return; }
-                    begin_drag(&mut drag, handle.clone(), evt.client_coordinates().y, SENSITIVITY);
+                    let _ = gesture::press_vertical(&evt, &mut drag, &handle, SENSITIVITY);
                 }
+            },
+            ondoubleclick: {
+                let handle = handle.clone();
+                move |_| if !disabled { gesture::double_click(&mut drag, &handle) }
+            },
+            onwheel: {
+                let handle = handle.clone();
+                move |evt: WheelEvent| if !disabled { gesture::wheel(&evt, &handle) }
             },
 
             svg {

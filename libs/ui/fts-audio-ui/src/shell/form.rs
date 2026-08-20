@@ -189,8 +189,11 @@ impl EditorForm {
 }
 
 /// Below this the silkscreen stops being readable and a panel is worse than a
-/// plain row of controls. Matches the hardware kit's own minimum scale.
-pub const PANEL_LEGIBLE_SCALE: f64 = 0.55;
+/// plain row of controls. Deliberately far below the hardware kit's old
+/// minimum: a resized-down window should get a smaller PANEL (the panel
+/// scales all the way, `panel_svg::MIN_SCALE`), and the flow fallback is
+/// only for genuinely tiny or wildly mismatched boxes.
+pub const PANEL_LEGIBLE_SCALE: f64 = 0.32;
 
 #[cfg(test)]
 mod tests {

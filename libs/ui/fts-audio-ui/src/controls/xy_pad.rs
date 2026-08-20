@@ -1,11 +1,17 @@
 //! XY pad — two-parameter 2D control surface (iced_audio `XYPad` parity).
 //!
-//! Click-and-drag positions the dot in pad-relative space. Y axis is flipped
-//! so up = increase, matching iced_audio. Bound to two [`ParamHandle`]s.
+//! Press jumps the dot to the pointer, then the drag is captured by the shared
+//! [`crate::drag::DragProvider`] (two-axis mode) so leaving the pad does not
+//! drop it. Y axis is flipped so up = increase. Bound to two [`ParamHandle`]s.
+//! Gestures per `fx.control.*`: double-click / Alt-click reset both axes, wheel
+//! nudges Y.
 
+use crate::drag::{begin_drag_xy, DragState};
+use crate::gesture;
 use crate::param::ParamHandle;
 use crate::theme::*;
 use dioxus::prelude::*;
+use dioxus_elements::input_data::MouseButton;
 
 /// Plain-value variant — emits normalized `(x, y)` via callback.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,9 +30,8 @@ pub fn XYPad(
     #[props(default)] color: Option<String>,
     #[props(default)] disabled: bool,
 ) -> Element {
-    let mut dragging = use_signal(|| false);
-    let mut bump = use_signal(|| 0u32);
-    let _ = *bump.read();
+    let mut drag: Signal<DragState> = use_context();
+    let _ = drag.read().move_count;
 
     let s = size as f64;
     let xn = x_handle.normalized().clamp(0.0, 1.0) as f64;
@@ -37,18 +42,6 @@ pub fn XYPad(
     let accent = color.as_deref().unwrap_or(ACCENT);
     let opacity = if disabled { "0.5" } else { "1.0" };
     let cursor = if disabled { "not-allowed" } else { "crosshair" };
-
-    let update = {
-        let xh = x_handle.clone();
-        let yh = y_handle.clone();
-        move |evt: MouseEvent| {
-            let p = evt.element_coordinates();
-            let nx = (p.x / s).clamp(0.0, 1.0) as f32;
-            let ny = (1.0 - p.y / s).clamp(0.0, 1.0) as f32;
-            xh.set_normalized(nx);
-            yh.set_normalized(ny);
-        }
-    };
 
     rsx! {
         div {
@@ -63,49 +56,44 @@ pub fn XYPad(
                      background:rgba(34,34,64,0.3); overflow:hidden; cursor:{cursor}; \
                      width:{size}px; height:{size}px; user-select:none;"
                 ),
+                // Press: jump the dot to the pointer, then drag relatively from
+                // there through the shared capture (`fx.control.capture`);
+                // Alt-click resets both axes; right-click does nothing here.
                 onmousedown: {
                     let xh = x_handle.clone();
                     let yh = y_handle.clone();
-                    let update = update.clone();
                     move |evt: MouseEvent| {
                         if disabled { return; }
-                        xh.begin_edit();
-                        yh.begin_edit();
-                        dragging.set(true);
-                        update(evt);
-                        bump += 1;
-                    }
-                },
-                onmousemove: {
-                    let update = update.clone();
-                    move |evt: MouseEvent| {
-                        if *dragging.read() {
-                            update(evt);
-                            bump += 1;
+                        if evt.trigger_button() == Some(MouseButton::Secondary) {
+                            return;
                         }
+                        if evt.modifiers().alt() {
+                            xh.reset_to_default();
+                            yh.reset_to_default();
+                            return;
+                        }
+                        let p = evt.element_coordinates();
+                        let c = evt.client_coordinates();
+                        xh.set_normalized((p.x / s).clamp(0.0, 1.0) as f32);
+                        yh.set_normalized((1.0 - p.y / s).clamp(0.0, 1.0) as f32);
+                        // One pad pixel = one normalized unit of pad, so the
+                        // dot stays under the cursor.
+                        begin_drag_xy(&mut drag, xh.clone(), yh.clone(), c.x, c.y, s);
                     }
                 },
-                onmouseup: {
+                ondoubleclick: {
                     let xh = x_handle.clone();
                     let yh = y_handle.clone();
                     move |_| {
-                        if *dragging.read() {
-                            xh.end_edit();
-                            yh.end_edit();
-                            dragging.set(false);
-                        }
+                        if disabled { return; }
+                        if drag.read().active { drag.set(DragState::default()); }
+                        xh.reset_to_default();
+                        yh.reset_to_default();
                     }
                 },
-                onmouseleave: {
-                    let xh = x_handle.clone();
+                onwheel: {
                     let yh = y_handle.clone();
-                    move |_| {
-                        if *dragging.read() {
-                            xh.end_edit();
-                            yh.end_edit();
-                            dragging.set(false);
-                        }
-                    }
+                    move |evt: WheelEvent| if !disabled { gesture::wheel(&evt, &yh) }
                 },
 
                 div {
