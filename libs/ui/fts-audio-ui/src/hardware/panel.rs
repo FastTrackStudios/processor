@@ -25,8 +25,21 @@ use crate::hardware::panel_svg::fit_scale;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct EditorSize(pub f64, pub f64);
 
-/// Logical window size, if anything in context knows it.
+/// A per-subtree override of the window box.
+///
+/// A face rendered in a ROW of a taller editor — one stage of the comp
+/// stack, the panel above an embedded EQ strip — must scale itself to its
+/// row, not to the whole window. The row's owner provides this around the
+/// face; everything that asks [`window_logical_size`] then sees the row.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PanelBox(pub f64, pub f64);
+
+/// Logical window size, if anything in context knows it. A [`PanelBox`]
+/// provided closer to the face wins over the real window.
 pub fn window_logical_size() -> Option<(f64, f64)> {
+    if let Some(PanelBox(w, h)) = try_consume_context::<PanelBox>() {
+        return Some((w, h));
+    }
     if let Some(sig) = try_consume_context::<Signal<(u32, u32)>>() {
         let (w, h) = *sig.read();
         return Some((w as f64, h as f64));
