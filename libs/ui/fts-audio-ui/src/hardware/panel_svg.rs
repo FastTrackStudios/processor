@@ -10,10 +10,11 @@
 //! Geometry only; the components multiply their pixel sizes by
 //! [`fit_scale`].
 
-/// Smallest scale a panel is drawn at. Below this the silkscreen stops being
-/// readable, and a too-small window is better served by an oversized panel
-/// cropped by the window than by an unreadable one.
-pub const MIN_SCALE: f64 = 0.55;
+/// Smallest scale a panel is drawn at. The panel tracks the window all the
+/// way down — a resizable editor that stops shrinking and crops instead is
+/// broken resizing, not legibility protection. The floor only guards the
+/// degenerate zero-size window.
+pub const MIN_SCALE: f64 = 0.1;
 /// Largest scale. Past roughly twice the design size a faceplate is just a
 /// blurry enlargement, and the extra window space is better left as margin.
 pub const MAX_SCALE: f64 = 2.0;
