@@ -237,7 +237,10 @@ mod tests {
         // which is what gives a VU face its characteristic look.
         let low = vu_to_fraction(-10.0) - vu_to_fraction(-20.0);
         let high = vu_to_fraction(0.0) - vu_to_fraction(-10.0);
-        assert!(low < high, "low span {low} should be tighter than high {high}");
+        assert!(
+            low < high,
+            "low span {low} should be tighter than high {high}"
+        );
     }
 
     #[test]
@@ -294,7 +297,10 @@ mod tests {
         let (_, mid) = tick_point(-4.0, 0.0);
         let (_, edge) = tick_point(-20.0, 0.0);
         let drop = (edge - mid) / VU_H;
-        assert!(drop > 0.1 && drop < 0.35, "arc depth is {drop:.2} of the card");
+        assert!(
+            drop > 0.1 && drop < 0.35,
+            "arc depth is {drop:.2} of the card"
+        );
     }
 
     #[test]
@@ -332,7 +338,11 @@ mod tests {
     fn level_mode_aligns_minus_18_dbfs_to_zero_vu() {
         assert_eq!(db_to_vu(-18.0), 0.0);
         assert!(db_to_vu(-30.0) < 0.0);
-        assert_eq!(db_to_vu(0.0), 3.0, "hot signals pin at the top of the scale");
+        assert_eq!(
+            db_to_vu(0.0),
+            3.0,
+            "hot signals pin at the top of the scale"
+        );
     }
 
     #[test]

@@ -419,15 +419,19 @@ mod tests {
         };
         let css = g.css(1.0);
         assert!(css.contains("20.0px"), "{css}");
-        assert!(css.contains("7.0px"), "the core is not tighter than the halo: {css}");
+        assert!(
+            css.contains("7.0px"),
+            "the core is not tighter than the halo: {css}"
+        );
         // And it scales with the panel like everything else.
         assert!(g.css(2.0).contains("40.0px"));
 
-        let plain = Glow {
-            core: None,
-            ..g
-        };
-        assert_eq!(plain.css(1.0).matches("0 0").count(), 1, "a coreless glow has one layer");
+        let plain = Glow { core: None, ..g };
+        assert_eq!(
+            plain.css(1.0).matches("0 0").count(),
+            1,
+            "a coreless glow has one layer"
+        );
     }
 
     /// The frame's lip shadows the card from above and from one side, never
@@ -442,8 +446,14 @@ mod tests {
         };
         let css = sh.css(1.0);
         assert_eq!(css.matches("inset").count(), 2, "{css}");
-        assert!(css.contains("inset 0 7.0px"), "no shadow from the top lip: {css}");
-        assert!(css.contains("inset 4.0px 0"), "no shadow from the side lip: {css}");
+        assert!(
+            css.contains("inset 0 7.0px"),
+            "no shadow from the top lip: {css}"
+        );
+        assert!(
+            css.contains("inset 4.0px 0"),
+            "no shadow from the side lip: {css}"
+        );
         // And it scales with the panel.
         assert!(sh.css(2.0).contains("inset 0 14.0px"));
     }
@@ -452,7 +462,9 @@ mod tests {
     #[test]
     fn a_hotspot_is_tighter_than_the_wash_it_sits_in() {
         for face in VuFace::ALL {
-            let Some(lamp) = face.spec().lamp else { continue };
+            let Some(lamp) = face.spec().lamp else {
+                continue;
+            };
             let Some(core) = lamp.core else { continue };
             assert!(
                 core.reach < lamp.reach,

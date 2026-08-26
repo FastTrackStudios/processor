@@ -20,11 +20,7 @@ use crate::hardware::vu::{VuFace, VuMode};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ring {
     /// Numbers running `from`..`to` across the sweep, with `majors` of them.
-    Linear {
-        from: f64,
-        to: f64,
-        majors: usize,
-    },
+    Linear { from: f64, to: f64, majors: usize },
     /// One numbered mark per detent — for rotary switches.
     Detents(&'static [&'static str]),
     /// Tick marks with no numbers.

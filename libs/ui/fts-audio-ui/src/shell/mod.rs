@@ -407,6 +407,9 @@ mod cycle_tests {
     /// than one that is drawn at the end.
     #[test]
     fn an_out_of_range_position_lands_on_the_last_dot() {
-        assert_eq!(ShellItem::new("x", "X").with_cycle(3, 9).cycle, Some((3, 2)));
+        assert_eq!(
+            ShellItem::new("x", "X").with_cycle(3, 9).cycle,
+            Some((3, 2))
+        );
     }
 }

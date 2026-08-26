@@ -83,11 +83,23 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
     // Cap disc — anchors the knob and gives the arc something to sit on.
     let cap = Circle::new((cx, cy), cap_r);
     s.fill(Fill::NonZero, at, look.cap_fill, None, &cap);
-    s.stroke(&Stroke::new(0.75), at, look.cap_stroke.with_alpha(0.95), None, &cap);
+    s.stroke(
+        &Stroke::new(0.75),
+        at,
+        look.cap_stroke.with_alpha(0.95),
+        None,
+        &cap,
+    );
 
     // Track.
     let track = arc_path(cx, cy, r, START_ANGLE, START_ANGLE + SWEEP);
-    s.stroke(&Stroke::new(4.0).with_caps(kurbo::Cap::Round), at, look.track, None, &track);
+    s.stroke(
+        &Stroke::new(4.0).with_caps(kurbo::Cap::Round),
+        at,
+        look.track,
+        None,
+        &track,
+    );
 
     // Centre detent tick (bipolar only, so the 0 mark is visible).
     if look.bipolar {
@@ -107,7 +119,11 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
     if let Some((lo, hi)) = look.mod_range {
         let lo_a = angle_for_value(lo.clamp(0.0, 1.0));
         let hi_a = angle_for_value(hi.clamp(0.0, 1.0));
-        let (a, b) = if lo_a <= hi_a { (lo_a, hi_a) } else { (hi_a, lo_a) };
+        let (a, b) = if lo_a <= hi_a {
+            (lo_a, hi_a)
+        } else {
+            (hi_a, lo_a)
+        };
         let path = arc_path(cx, cy, r - 2.0, a, b);
         s.stroke(
             &Stroke::new(2.5).with_caps(kurbo::Cap::Round),
@@ -194,7 +210,11 @@ mod tests {
         let _ = scene(&look(0.0, false));
         let _ = scene(&look(1.0, false));
         let _ = scene(&look(0.5, true));
-        let _ = scene(&KnobLook { mod_range: Some((0.2, 0.8)), active: true, ..look(0.3, false) });
+        let _ = scene(&KnobLook {
+            mod_range: Some((0.2, 0.8)),
+            active: true,
+            ..look(0.3, false)
+        });
     }
 
     #[test]

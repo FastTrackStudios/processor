@@ -45,7 +45,7 @@ pub static ILLUMINATED: ButtonSpec = ButtonSpec {
         radius: 5.0,
     }),
     travel: 1.4,
-    legend: 9.5
+    legend: 9.5,
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -116,7 +116,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate().skip(i + 1) {
                 assert_ne!(
-                    a, b,
+                    a,
+                    b,
                     "{:?} and {:?} are the same part",
                     ButtonStyle::ALL[i],
                     ButtonStyle::ALL[j],

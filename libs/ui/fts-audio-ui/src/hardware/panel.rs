@@ -158,7 +158,8 @@ pub fn Panel(
     /// the black FET panel. A full CSS background value.
     background: String,
     /// Colour of the rack ears and screws around the panel.
-    #[props(default = "#b9b4a8".to_string())] chrome: String,
+    #[props(default = "#b9b4a8".to_string())]
+    chrome: String,
     /// How the panel is finished at its edges.
     #[props(default)]
     ends: PanelEnds,

@@ -5,8 +5,8 @@
 //! writing a value: the handle owns the mapping from "the 8 button" to
 //! ratio 8:1.
 
-use dioxus::prelude::*;
 use crate::prelude::*;
+use dioxus::prelude::*;
 
 /// Normalized position of detent `index` out of `count`.
 fn detent(index: usize, count: usize) -> f32 {
@@ -45,7 +45,11 @@ pub fn ToggleSwitch(
     let body_h = 44.0 * scale;
     let handle_h = body_h * 0.46;
     // The bat leans toward the selected legend.
-    let handle_top = if index == 0 { body_h * 0.06 } else { body_h * 0.48 };
+    let handle_top = if index == 0 {
+        body_h * 0.06
+    } else {
+        body_h * 0.48
+    };
 
     rsx! {
         div {

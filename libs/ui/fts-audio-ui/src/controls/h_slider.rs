@@ -24,7 +24,8 @@ pub fn HSlider(
     #[props(default = DEFAULT_SENSITIVITY)] sensitivity: f64,
     /// Deprecated: the reset target is the handle's default
     /// (`ParamHandle::with_default`); this prop is ignored.
-    #[props(default)] default_value: Option<f32>,
+    #[props(default)]
+    default_value: Option<f32>,
     #[props(default)] tick_marks: Option<TickMarkGroup>,
     #[props(default)] text_marks: Option<TextMarkGroup>,
     #[props(default)] color: Option<String>,

@@ -219,7 +219,11 @@ mod tests {
     #[test]
     fn a_rack_unit_is_half_of_two_and_the_face_is_two() {
         let (w2, h2) = EditorForm::Rack2U.editor_size(RAIL, PREFERRED);
-        assert_eq!((w2, h2), PREFERRED, "the faces are drawn 2U, so 2U is their own size");
+        assert_eq!(
+            (w2, h2),
+            PREFERRED,
+            "the faces are drawn 2U, so 2U is their own size"
+        );
         let (w1, h1) = EditorForm::Rack1U.editor_size(RAIL, PREFERRED);
         assert_eq!(w1, w2, "a rack is one width");
         assert_eq!(h1, h2 / 2, "1U is half the height of 2U");
@@ -247,7 +251,10 @@ mod tests {
 
     #[test]
     fn responsive_defers_to_the_face() {
-        assert_eq!(EditorForm::Responsive.editor_size(RAIL, PREFERRED), PREFERRED);
+        assert_eq!(
+            EditorForm::Responsive.editor_size(RAIL, PREFERRED),
+            PREFERRED
+        );
     }
 
     #[test]
@@ -258,8 +265,14 @@ mod tests {
             let (w, h) = form.editor_size(RAIL, PREFERRED);
             form.wants_panel(panel.0, panel.1, w as f64 - RAIL, h as f64)
         };
-        assert!(fits(EditorForm::Rack3U), "3U is what the faces are drawn for");
-        assert!(!fits(EditorForm::Series500), "a 3:1 panel does not go in a module");
+        assert!(
+            fits(EditorForm::Rack3U),
+            "3U is what the faces are drawn for"
+        );
+        assert!(
+            !fits(EditorForm::Series500),
+            "a 3:1 panel does not go in a module"
+        );
         assert!(!fits(EditorForm::Mini));
     }
 

@@ -335,7 +335,13 @@ mod tests {
         let t = T.toothed(16, 0.07).shadowed(0.05).outlined("#111", 0.7);
         assert_eq!(t.r, 1.0);
         assert_eq!(t.turns, Turns::Collar);
-        assert_eq!(t.edge, Edge::Toothed { teeth: 16, depth: 0.07 });
+        assert_eq!(
+            t.edge,
+            Edge::Toothed {
+                teeth: 16,
+                depth: 0.07
+            }
+        );
         assert_eq!(t.shadow, 0.05);
         assert_eq!(t.stroke, Some(("#111", 0.7)));
     }

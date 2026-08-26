@@ -47,9 +47,9 @@ impl CapFinish {
     /// The cap in `color`.
     pub fn css(self, color: &str) -> String {
         match self {
-            Self::Matte => format!(
-                "linear-gradient(180deg, color-mix(in oklab, {color} 88%, white), {color})"
-            ),
+            Self::Matte => {
+                format!("linear-gradient(180deg, color-mix(in oklab, {color} 88%, white), {color})")
+            }
             Self::Gloss => format!(
                 "linear-gradient(180deg, color-mix(in oklab, {color} 66%, white) 0%, \
                  color-mix(in oklab, {color} 92%, white) 34%, {color} 52%, \
@@ -197,7 +197,10 @@ mod tests {
             let up = spec.shadow(false, 1.0);
             let down = spec.shadow(true, 1.0);
             assert!(!up.contains("inset"), "{style:?} is sunken while up: {up}");
-            assert!(down.contains("inset"), "{style:?} is proud while down: {down}");
+            assert!(
+                down.contains("inset"),
+                "{style:?} is proud while down: {down}"
+            );
         }
     }
 

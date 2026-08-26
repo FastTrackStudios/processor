@@ -179,7 +179,11 @@ async fn shot_every_vu_face_in_the_kit() {
         .take(READINGS.len())
         .filter_map(|m| m.attribute("data-vu"))
         .collect();
-    assert_eq!(positions.len(), READINGS.len(), "a movement reported no position");
+    assert_eq!(
+        positions.len(),
+        READINGS.len(),
+        "a movement reported no position"
+    );
     for pair in positions.windows(2) {
         assert_ne!(
             pair[0], pair[1],
@@ -208,7 +212,10 @@ async fn shot_every_vu_face_in_the_kit() {
 
     // Exactly one face takes a colour. The rest are real parts in the colour
     // they are, and quietly recolouring one would be a different unit.
-    let tintable: Vec<VuFace> = VuFace::ALL.into_iter().filter(|f| f.is_tintable()).collect();
+    let tintable: Vec<VuFace> = VuFace::ALL
+        .into_iter()
+        .filter(|f| f.is_tintable())
+        .collect();
     assert_eq!(
         tintable,
         vec![VuFace::Backlit],

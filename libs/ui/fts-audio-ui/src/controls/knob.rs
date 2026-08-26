@@ -92,7 +92,11 @@ pub fn KnobDial(look: KnobLook) -> Element {
         let end = angle_for_value(look.value);
         let value = if look.bipolar {
             let c = START_ANGLE + SWEEP / 2.0;
-            if look.value > 0.5 { svg_arc(r, c, end) } else { svg_arc(r, end, c) }
+            if look.value > 0.5 {
+                svg_arc(r, c, end)
+            } else {
+                svg_arc(r, end, c)
+            }
         } else {
             svg_arc(r, START_ANGLE, end)
         };

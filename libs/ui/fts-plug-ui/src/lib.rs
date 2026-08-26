@@ -48,16 +48,16 @@ pub mod param_adapter;
 pub mod skin;
 
 pub use param_adapter::{param_handle, param_handle_with_options};
-pub use skin::{Skin, accents};
+pub use skin::{accents, Skin};
 
 /// `use fts_plug_ui::prelude::*` — the chrome plus the widget kit it builds on.
 pub mod prelude {
     pub use crate::chrome::{
-        BASE_CSS, ControlSurface, ParamKnob, ParamSelector, ParamToggle, PluginApp, PluginRoot,
-        Section, use_redraw_tick,
+        use_redraw_tick, ControlSurface, ParamKnob, ParamSelector, ParamToggle, PluginApp,
+        PluginRoot, Section, BASE_CSS,
     };
-    pub use crate::feed::{IoGrMeters, PeakMeter, WAVE_HISTORY_LEN, WaveRing};
+    pub use crate::feed::{IoGrMeters, PeakMeter, WaveRing, WAVE_HISTORY_LEN};
     pub use crate::param_adapter::{param_handle, param_handle_with_options};
-    pub use crate::skin::{Skin, accents};
+    pub use crate::skin::{accents, Skin};
     pub use fts_audio_ui::prelude::*;
 }

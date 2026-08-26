@@ -391,7 +391,12 @@ mod tests {
             || String::new(),
             || "p".into(),
             // A plain "−24..+24 dB"-style linear parser: bare number → 0..1.
-            |t| t.trim().parse::<f32>().ok().map(|x| ((x + 24.0) / 48.0).clamp(0.0, 1.0)),
+            |t| {
+                t.trim()
+                    .parse::<f32>()
+                    .ok()
+                    .map(|x| ((x + 24.0) / 48.0).clamp(0.0, 1.0))
+            },
         )
         .with_unit(unit)
         .with_step_count(steps)
@@ -436,7 +441,12 @@ mod tests {
             || {},
             || String::new(),
             || "f".into(),
-            |t| t.trim().parse::<f32>().ok().map(|hz| (hz / 20_000.0).clamp(0.0, 1.0)),
+            |t| {
+                t.trim()
+                    .parse::<f32>()
+                    .ok()
+                    .map(|hz| (hz / 20_000.0).clamp(0.0, 1.0))
+            },
         )
         .with_unit("Hz");
         let hz = |n: f32| n * 20_000.0;
@@ -483,6 +493,9 @@ mod tests {
         assert_eq!(fine_multiplier(Modifiers::CONTROL), FINE);
         assert_eq!(fine_multiplier(Modifiers::SHIFT), FINE);
         assert_eq!(fine_multiplier(Modifiers::META), FINE);
-        assert_eq!(fine_multiplier(Modifiers::CONTROL | Modifiers::SHIFT), ULTRA_FINE);
+        assert_eq!(
+            fine_multiplier(Modifiers::CONTROL | Modifiers::SHIFT),
+            ULTRA_FINE
+        );
     }
 }

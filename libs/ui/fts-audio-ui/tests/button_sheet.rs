@@ -174,7 +174,9 @@ async fn shot_every_button_in_the_kit() {
         // The cap is the part that is pressed, so it has to have a box of its
         // own — a surround that swallowed it would leave nothing to click.
         let cap = tester
-            .query(by_testid(&format!("hw-button-{style:?}-0-cap").to_lowercase()))
+            .query(by_testid(
+                &format!("hw-button-{style:?}-0-cap").to_lowercase(),
+            ))
             .immediately()
             .expect("no cap");
         let (cw, ch) = cap.size();
