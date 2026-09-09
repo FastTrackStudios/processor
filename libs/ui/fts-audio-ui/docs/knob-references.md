@@ -25,6 +25,8 @@ cargo test -p kit-sheet                        # every knob on the panel it sits
 | `MetalFluted` | dbx 160 and its generation | brushed rim flutes, dark centre cap |
 | `Pointer` | Davies 1900H, LA-2A | plain black body with a moulded *nose* |
 | `Neve` | 1073 concentric EQ | light collar, **geared** dark cap — teeth inside |
+| `SoftPointer` | Rogan PT — Make Noise, Mutable | soft-touch rubber, pointer *widening* to the rim |
+| `ChickenHead` | tweed Fender, Ampeg, EMS VCS3 | the pointer IS the knob: a beak on a small hub |
 | `Dial` | Empirical Labs Distressor | numerals printed on the skirt, turning with it |
 
 The kit's own vocabulary — skirt, collet, flutes, knurl, index, hub — is the
@@ -37,19 +39,6 @@ lathe, which is why it goes *round* and not out.
 Roughly in order of how much they would add — a new silhouette is worth far
 more than a new colourway, because silhouette is what you recognise across a
 room and what a screenshot has to carry at 44 px.
-
-**Chicken-head.** A flat pointer with a beaked nose on a round hub, the beak
-overhanging the body — tweed Fender, Ampeg, EMS VCS3, and the meter selector
-on half the outboard ever built. The biggest gap in the kit, because it is
-the one knob that *reads as a switch*: every stepped selector we draw
-currently looks like a continuous control, and the shape is the whole
-convention for "this one clicks".
-
-**Rogan PT / soft-touch pointer.** The modular standard — Make Noise, Mutable
-— rubber over polymer, a flat top and a bold moulded pointer running the full
-radius. Distinct from `Pointer`: a cylinder with a wedge, not a dome with a
-nose. It is what a *modern* boutique panel looks like, where every other knob
-in the kit is 1960s.
 
 **Top-hat / witch-hat.** Fender amp and API 550-family: a cylinder flaring to
 a numbered skirt, often with a coloured insert in the cap. Close to `Skirted`

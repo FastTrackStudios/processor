@@ -57,6 +57,13 @@ pub enum Finish {
     Matte,
     /// Turned or brushed metal: a sweep across the surface.
     Brushed,
+    /// Soft-touch rubber over polymer: the modular knob.
+    ///
+    /// Almost no specular at all, and what light there is sits at the
+    /// *edges* — rubber scatters, so the rim picks up a diffuse ring while
+    /// the middle stays dead flat. Painting it as a matte plastic gives a
+    /// hard top-lit face, which is exactly what these do not have.
+    SoftTouch,
 }
 
 impl Finish {
@@ -73,6 +80,8 @@ impl Finish {
             Self::Brushed => (0.30, 0.12),
             Self::Matte => (0.20, 0.08),
             Self::FlatTop => (0.16, 0.07),
+            // Rubber has no lip to catch the light and no hard under-edge.
+            Self::SoftTouch => (0.12, 0.05),
         }
     }
 
@@ -90,6 +99,12 @@ impl Finish {
             Self::Matte => format!(
                 "linear-gradient(160deg, color-mix(in oklab, {color} 88%, white) 0%, \
                  {color} 38%, color-mix(in oklab, {color} 82%, black) 100%)"
+            ),
+            // Flat through the middle, lifting only at the very edge.
+            Self::SoftTouch => format!(
+                "radial-gradient(circle at 50% 50%, {color} 0%, {color} 62%, \
+                 color-mix(in oklab, {color} 90%, white) 88%, \
+                 color-mix(in oklab, {color} 78%, black) 100%)"
             ),
             // Brushed metal is anisotropic: faced on a lathe, it throws two
             // bright lobes opposite each other, goes dark ninety degrees
@@ -217,6 +232,20 @@ pub enum Index {
     /// A pointer knob's moulded nose, reaching past the body toward the
     /// panel's printed scale.
     Nose { color: &'static str },
+    /// A pointer that **widens** toward the rim: the moulded wedge on a
+    /// Rogan PT, and the modular panel's whole look.
+    ///
+    /// Every other index in the kit is constant-width or narrows outward, so
+    /// they all read as *lines drawn on* a knob. This one reads as a shape
+    /// moulded into it, which is the difference between 1967 and now.
+    Taper {
+        from: f64,
+        to: f64,
+        /// Half-width at `from` and at `to`, in viewBox units.
+        hub_half: f64,
+        tip_half: f64,
+        color: &'static str,
+    },
     /// A chicken-head: the pointer *is* the knob. A flat moulding with a
     /// broad rounded tail, a waist, and a beak overhanging the hub it turns
     /// on.

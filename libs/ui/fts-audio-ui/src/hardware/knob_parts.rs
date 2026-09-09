@@ -572,6 +572,65 @@ pub static POINTER: KnobSpec = KnobSpec {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
+// Rogan PT — the modular knob. Make Noise, Mutable, and most of what has been
+// built since: soft-touch rubber over polymer, a matte cylinder with a flat
+// top and a pointer moulded into it, widening toward the rim.
+//
+// The only part in the kit that is not from the 1960s, and the two things
+// that say so are the material — rubber scatters, so the light sits in a
+// diffuse ring at the edge and the middle is dead flat — and the pointer,
+// which is a shape moulded *in* rather than a line painted *on*. Every other
+// index here is constant-width or narrows outward.
+// ─────────────────────────────────────────────────────────────────────────
+static SOFT_POINTER_TIERS: &[Tier] = &[
+    // The base standing on the panel.
+    Tier::new(1.0, Paint::Flat("#08080a"), Turns::Cap)
+        .shadowed(0.055)
+        .outlined("rgba(255,255,255,0.08)", 0.8),
+    // The rubber wall.
+    Tier::new(
+        0.94,
+        Paint::Surface {
+            css: "radial-gradient(circle at 50% 50%, #26262b 0%, #26262b 62%, \
+                  #34343b 88%, #17171b 100%)",
+            finish: Finish::SoftTouch,
+            tint: true,
+        },
+        Turns::Cap,
+    ),
+    // The flat top, a hair proud of it. Barely a step: a soft-touch knob is
+    // one moulding, not a stack, and a hard edge here reads as machined.
+    Tier::new(
+        0.80,
+        Paint::Surface {
+            css: "radial-gradient(circle at 50% 50%, #2c2c32 0%, #2c2c32 66%, \
+                  #3a3a42 90%, #202026 100%)",
+            finish: Finish::SoftTouch,
+            tint: true,
+        },
+        Turns::Cap,
+    ),
+];
+
+pub static SOFT_POINTER: KnobSpec = KnobSpec {
+    tiers: SOFT_POINTER_TIERS,
+    index: Index::Taper {
+        from: 0.06,
+        to: 0.86,
+        hub_half: 1.5,
+        tip_half: 3.6,
+        color: "#f2f2ef",
+    },
+    collar_index: None,
+    flutes: None,
+    // Rubber takes no gloss blob; the tiers' own edge rings are the light.
+    specular: None,
+    ring_offset: 0.0,
+    numerals_on_knob: false,
+    hub: None,
+};
+
+// ─────────────────────────────────────────────────────────────────────────
 // Chicken-head — tweed Fender, Ampeg, the EMS VCS3, and the meter selector on
 // half the outboard ever built. The pointer IS the knob: a flat cream
 // moulding with a broad tail and a beak, turning on a small dark hub.
@@ -862,6 +921,10 @@ mod tests {
                     assert!(to <= 1.0, "{style:?}'s index runs off the knob");
                 }
                 Index::Blade { to, .. } => assert!(to <= 1.0),
+                Index::Taper { from, to, .. } => {
+                    assert!(from < to, "{style:?}'s index runs backwards");
+                    assert!(to <= 1.0, "{style:?}'s index runs off the knob");
+                }
                 Index::Wing { .. } | Index::Nose { .. } | Index::Beak { .. } => assert!(
                     spec.ring_offset > 0.0,
                     "{style:?} overhangs the knob but does not move the \

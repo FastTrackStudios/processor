@@ -103,6 +103,16 @@ pub enum KnobStyle {
     /// Pairs with `inner_handle` on [`HardwareKnob`]: on the module the ring
     /// and the cap are two different controls, and the toothed one is the cap.
     Neve,
+    /// Rogan PT — the modular panel's knob, on Make Noise, Mutable and most
+    /// of what has been built since. Soft-touch rubber over polymer: a matte
+    /// cylinder with a flat top and a moulded pointer **widening toward the
+    /// rim**.
+    ///
+    /// The only part in the kit that is not from the 1960s, and it shows in
+    /// two places: the material has no glint, only a diffuse ring at its
+    /// edge, and the pointer is a shape moulded *into* the cap rather than a
+    /// line painted on it.
+    SoftPointer,
     /// A chicken-head: the pointer *is* the knob. A flat cream moulding with
     /// a broad tail and a beak, turning on a small dark hub — tweed Fender,
     /// Ampeg, the EMS VCS3, and the meter selector on half the outboard ever
@@ -122,7 +132,7 @@ pub enum KnobStyle {
 impl KnobStyle {
     /// Every knob in the kit, so a test or a contact sheet can walk them all
     /// without anyone having to remember to add the new one.
-    pub const ALL: [KnobStyle; 12] = [
+    pub const ALL: [KnobStyle; 13] = [
         Self::Bakelite,
         Self::Metal,
         Self::Skirted,
@@ -133,6 +143,7 @@ impl KnobStyle {
         Self::MetalFluted,
         Self::Pointer,
         Self::Neve,
+        Self::SoftPointer,
         Self::ChickenHead,
         Self::Dial,
     ];
@@ -157,6 +168,7 @@ impl KnobStyle {
             Self::MetalFluted => &kit::METAL_FLUTED,
             Self::Pointer => &kit::POINTER,
             Self::Neve => &kit::NEVE,
+            Self::SoftPointer => &kit::SOFT_POINTER,
             Self::ChickenHead => &kit::CHICKEN_HEAD,
             Self::Dial => &kit::DIAL,
         }
@@ -308,6 +320,15 @@ fn wing_highlight_points(body_r: f64) -> String {
     )
 }
 
+/// A pointer that widens outward, as a polygon pointing up before rotation:
+/// `hub_half` wide at `from`, `tip_half` wide at `to`.
+fn taper_points(from: f64, to: f64, hub_half: f64, tip_half: f64) -> String {
+    format!(
+        "{:.2},{:.2} {:.2},{:.2} {:.2},{:.2} {:.2},{:.2}",
+        -hub_half, -from, hub_half, -from, tip_half, -to, -tip_half, -to,
+    )
+}
+
 /// How far a chicken-head's beak overhangs the hub it turns on, and how far
 /// the tail runs the other way, as multiples of the knob's radius.
 ///
@@ -387,6 +408,26 @@ fn draw_index(index: Index, tint: Option<&str>) -> Element {
         } => rsx! {
             polygon {
                 points: "{pointer_polygon(BODY_R * to, BODY_R * half_width)}",
+                fill: "{color}",
+            }
+        },
+        // A wedge that widens outward, moulded into the cap rather than
+        // painted on it — so it carries its own shadow along one flank the
+        // way a raised feature does.
+        Index::Taper {
+            from,
+            to,
+            hub_half,
+            tip_half,
+            color,
+        } => rsx! {
+            polygon {
+                points: "{taper_points(BODY_R * from, BODY_R * to, hub_half, tip_half)}",
+                transform: "translate(0.7 1.0)",
+                fill: "rgba(0,0,0,0.34)",
+            }
+            polygon {
+                points: "{taper_points(BODY_R * from, BODY_R * to, hub_half, tip_half)}",
                 fill: "{color}",
             }
         },
