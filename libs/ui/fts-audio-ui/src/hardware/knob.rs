@@ -605,6 +605,10 @@ pub fn HardwareKnob(
                                     (true, Some(c)) => finish.tinted(c),
                                     _ => css.to_string(),
                                 };
+                                // How hard the edge is shaded. One strength
+                                // for every finish is what turned matte
+                                // phenolic into a billiard ball.
+                                let (under, lip) = finish.relief();
                                 // A toothed surface is two boxes, not one: the
                                 // outer carries the rotated clip so the teeth
                                 // turn with the control, the inner counter-
@@ -640,8 +644,8 @@ pub fn HardwareKnob(
                                                  border:{1:.1}px solid rgba(0,0,0,0.45); \
                                                  box-shadow:0 {2:.1}px {3:.1}px rgba(0,0,0,0.55), \
                                                    0 {4:.1}px {5:.1}px rgba(0,0,0,0.30), \
-                                                   inset 0 {6:.1}px {7:.1}px rgba(0,0,0,0.45), \
-                                                   inset 0 {8:.1}px {9:.1}px rgba(255,255,255,0.16); \
+                                                   inset 0 {6:.1}px {7:.1}px rgba(0,0,0,{11:.2}), \
+                                                   inset 0 {8:.1}px {9:.1}px rgba(255,255,255,{12:.2}); \
                                                  {10}",
                                                 fill,
                                                 (0.5 * scale).max(0.6),
@@ -654,6 +658,8 @@ pub fn HardwareKnob(
                                                 px * 0.05,
                                                 px * 0.10,
                                                 unspin,
+                                                under,
+                                                lip,
                                             ),
                                         }
                                     }
@@ -749,8 +755,15 @@ pub fn HardwareKnob(
                          background:{}; transform:rotate({:.1}deg);",
                         diameter * lit.w * scale,
                         diameter * lit.h * scale,
-                        diameter * lit.dx * scale,
-                        diameter * lit.dy * scale,
+                        // `dx`/`dy` are where the *centre* of the highlight
+                        // sits; the margins that place it have to take half
+                        // its own size off. They did not, so every specular
+                        // in the kit was thrown right and down by half its
+                        // width and height — a light source beside the knob
+                        // instead of above the rack, and the reason a stack
+                        // of concentric circles managed to look off-centre.
+                        diameter * (lit.dx - lit.w / 2.0) * scale,
+                        diameter * (lit.dy - lit.h / 2.0) * scale,
                         lit.fill,
                         lit.rotate,
                     ),
@@ -765,13 +778,22 @@ pub fn HardwareKnob(
 
                 if let Some(lit) = spec.specular {
                     if let Some(rim) = lit.rim {
-                        path {
-                            d: "M {-BODY_R * 0.72:.2} {-BODY_R * 0.58:.2} \
-                                A {BODY_R * 0.93:.2} {BODY_R * 0.93:.2} 0 0 1 \
-                                {BODY_R * 0.40:.2} {-BODY_R * 0.84:.2}",
-                            fill: "none",
-                            stroke: "{rim}",
-                            stroke_width: "1.0",
+                        {
+                            // On the lit tier's own edge, not at a fixed 0.93
+                            // of the knob: a highlight over here with its rim
+                            // over there is what reads as off-centre even
+                            // when every circle is concentric.
+                            let rr = BODY_R * lit.r * 0.965;
+                            rsx! {
+                                path {
+                                    d: "M {-rr * 0.775:.2} {-rr * 0.624:.2} \
+                                        A {rr:.2} {rr:.2} 0 0 1 \
+                                        {rr * 0.430:.2} {-rr * 0.903:.2}",
+                                    fill: "none",
+                                    stroke: "{rim}",
+                                    stroke_width: "1.0",
+                                }
+                            }
                         }
                     }
                 }

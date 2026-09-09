@@ -60,6 +60,22 @@ pub enum Finish {
 }
 
 impl Finish {
+    /// How hard the tier's edge is shaded, as `(under, lip)` alphas.
+    ///
+    /// A gradient div also carries two inset shadows — dark along the bottom
+    /// edge, light along the top — and at one strength for every finish they
+    /// are what turned matte phenolic into a billiard ball: a flat top-lit
+    /// gradient cannot survive a hard dark crescent baked into its lower rim.
+    /// A dome wants them; a flat face wants almost none.
+    pub fn relief(self) -> (f64, f64) {
+        match self {
+            Self::Moulded => (0.45, 0.16),
+            Self::Brushed => (0.30, 0.12),
+            Self::Matte => (0.20, 0.08),
+            Self::FlatTop => (0.16, 0.07),
+        }
+    }
+
     /// This finish in `color`.
     pub fn tinted(self, color: &str) -> String {
         match self {
@@ -257,6 +273,14 @@ pub struct Specular {
     /// Tilt, in degrees. A light smear on a moulded face runs with the
     /// surface, not with the screen's axes.
     pub rotate: f64,
+    /// Where the lit rim sits, as a fraction of the knob's outer radius.
+    ///
+    /// It used to be hard-coded at 0.93 of the *knob*, on every style, while
+    /// the highlight it belongs to was sized to whichever tier is lit. On a
+    /// knob whose lit face is smaller than its skirt the two came apart, and
+    /// a highlight over here with its rim over there is precisely what reads
+    /// as "off-centre" even when every circle is concentric.
+    pub r: f64,
     /// A hairline of the same light along the top rim, as an SVG arc.
     pub rim: Option<&'static str>,
 }
@@ -269,22 +293,49 @@ pub struct Specular {
 /// whose face is a cap inside a collar gets a highlight sized to the cap.
 pub const fn dome(body: f64) -> Specular {
     Specular {
-        // Tighter and brighter than a broad wash, and tilted off the screen
-        // axes. A wide, faint blob centred on the knob is what a flat disc
-        // looks like; a small hot spot up and to the left, falling off fast,
-        // is what a curved surface under one light looks like.
-        w: 0.46 * body,
+        // A broad, soft band high on the face, near enough centred in x.
+        //
+        // It used to be a small hot ellipse thrown a third of the radius up
+        // AND left, tilted 18°. That is a lit sphere, and it is why these
+        // read as marbles: a hotspot that far off centre puts the light
+        // source beside the knob rather than above the rack, and the eye
+        // resolves the whole part as a ball. Moulded phenolic is nearly
+        // matte — the light on it is wide and weak, and the shape comes from
+        // the tiers and their contact shadows, not from a glint.
+        w: 0.62 * body,
         h: 0.30 * body,
-        dx: -0.32 * body,
-        dy: -0.34 * body,
-        fill: "radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.30) 0%, \
-               rgba(255,255,255,0.10) 46%, rgba(255,255,255,0.0) 76%)",
-        rotate: -18.0,
-        // The edge catching the same light. Every knob had this off, which is
-        // most of why they read as circles painted on the panel rather than
-        // objects standing on it — a lit rim is the cheapest depth cue there
-        // is and the one the eye reads first.
-        rim: Some("rgba(255,255,255,0.22)"),
+        dx: -0.02 * body,
+        dy: -0.24 * body,
+        fill: "radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.15) 0%, \
+               rgba(255,255,255,0.06) 52%, rgba(255,255,255,0.0) 80%)",
+        rotate: 0.0,
+        // The edge catching the same light. A lit rim is the cheapest depth
+        // cue there is and the one the eye reads first — but it has to be on
+        // the tier the light is on, which is what `r` is for.
+        rim: Some("rgba(255,255,255,0.20)"),
+        r: body,
+    }
+}
+
+/// The light on a *matte* part: moulded phenolic, painted metal.
+///
+/// Almost nothing. A black knob under a rack light has no glint — what you
+/// see of its shape is the step from one tier to the next and the shadow each
+/// drops, plus a thread of light along the top edge. Giving these the same
+/// hot ellipse a gloss part gets is what made every black knob in the kit
+/// read as a billiard ball, and the offset of that ellipse is what made them
+/// look off-centre inside their own rims.
+pub const fn matte_light(r: f64) -> Specular {
+    Specular {
+        w: 0.66 * r,
+        h: 0.26 * r,
+        dx: -0.01 * r,
+        dy: -0.22 * r,
+        fill: "radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.10) 0%, \
+               rgba(255,255,255,0.035) 54%, rgba(255,255,255,0.0) 82%)",
+        rotate: 0.0,
+        rim: Some("rgba(255,255,255,0.17)"),
+        r,
     }
 }
 

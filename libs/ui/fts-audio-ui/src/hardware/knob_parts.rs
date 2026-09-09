@@ -5,7 +5,9 @@
 //! knob — see [`knob_kit`](crate::hardware::knob_kit) for how to add one, and
 //! the `knob_sheet` test for how to look at it.
 
-use super::knob_kit::{dome, Finish, Flutes, Index, KnobSpec, Paint, Specular, Tier, Turns};
+use super::knob_kit::{
+    dome, matte_light, Finish, Flutes, Index, KnobSpec, Paint, Specular, Tier, Turns,
+};
 
 // ── Inks ─────────────────────────────────────────────────────────────────
 /// Turned aluminium, in four layers from the light down to the metal.
@@ -63,14 +65,31 @@ static BAKELITE_TIERS: &[Tier] = &[
     // gradient disc on its own cannot, however good the gradient.
     Tier::new(1.0, Paint::Flat("#070709"), Turns::Cap)
         .shadowed(0.05)
-        .outlined("rgba(255,255,255,0.07)", 0.7),
-    // The body, with the highlight tighter and higher than a centred wash.
+        .outlined("rgba(255,255,255,0.09)", 0.7),
+    // The cone's wall. Top-lit, not a hotspot: `radial-gradient(circle at
+    // 33% 21%, ...)` puts the light beside the knob rather than above the
+    // rack, and a black moulding lit from beside it is a billiard ball. An
+    // LA-2A's knob is matte, and what you see of its shape is that the top
+    // face is fractionally lighter than the wall.
     Tier::new(
-        0.90,
+        0.94,
         Paint::Surface {
-            css: "radial-gradient(circle at 33% 21%, #5a5a60 0%, #26262b 32%, \
-                  #131316 66%, #0a0a0c 100%)",
-            finish: Finish::Moulded,
+            css: "linear-gradient(178deg, #34343b 0%, #212126 42%, #131317 78%, #0b0b0e 100%)",
+            finish: Finish::Matte,
+            tint: true,
+        },
+        Turns::Cap,
+    ),
+    // The step up to the top face, as a shadowed wall. Without a visible
+    // edge the face reads as a bubble inside the knob rather than a machined
+    // step on it — which, with a highlight thrown off to one side, is most of
+    // what "offset and out of balance" was.
+    Tier::new(0.76, Paint::Flat("rgba(0,0,0,0.5)"), Turns::Cap),
+    Tier::new(
+        0.73,
+        Paint::Surface {
+            css: "linear-gradient(178deg, #3c3c44 0%, #26262c 46%, #16161a 100%)",
+            finish: Finish::FlatTop,
             tint: true,
         },
         Turns::Cap,
@@ -79,19 +98,22 @@ static BAKELITE_TIERS: &[Tier] = &[
 
 pub static BAKELITE: KnobSpec = KnobSpec {
     tiers: BAKELITE_TIERS,
-    index: Index::Blade {
-        // Slimmer and reaching further out. At 0.113 the blade was a wedge
-        // you read as a shape; a pointer should read as a line.
-        to: 0.86,
-        half_width: 0.070,
+    // A line of even width, which is what is painted on an LA-2A's knob and
+    // an 1176's. A tapered blade is wide at the hub and pointed at the tip —
+    // the opposite end from the one you read — and it made the pointer look
+    // like a shard rather than a mark.
+    index: Index::Bar {
+        from: 0.05,
+        to: 0.88,
+        width: 3.2,
         color: LIGHT,
     },
     collar_index: None,
     flutes: None,
-    specular: Some(dome(1.0)),
+    specular: Some(matte_light(0.94)),
     ring_offset: 0.0,
     numerals_on_knob: false,
-    hub: HUB,
+    hub: None,
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -129,46 +151,80 @@ pub static METAL: KnobSpec = KnobSpec {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
-// Skirted — the generic vintage outboard knob: a fluted body with a smooth
-// cap inside it, read by a short bar on the rim.
+// Skirted — the Davies 1910/1913 and the shelf of phenolic skirted knobs
+// beside it, on every piece of vintage outboard that is not a Pultec.
+//
+// The anatomy is the name: a wide flat *skirt* of moulded phenolic sitting on
+// the panel, a narrower ribbed body standing on it, a flat top, and the
+// indicator line engraved down the body and out across the skirt so it can be
+// read against numbers printed on the panel around the skirt's edge.
+//
+// It was none of that. Every tier was full width, so there was no skirt, and
+// the body was one hard off-centre radial that made the whole knob a glossy
+// black marble — the tier at 0.62 that was meant to be the cap could not be
+// seen at all. Phenolic is matte: what you read is the *step* from skirt to
+// body and the shadow it drops, never a glint.
 // ─────────────────────────────────────────────────────────────────────────
 static SKIRTED_TIERS: &[Tier] = &[
-    // A lit edge on the base, the way Bakelite has one. Without it the whole
-    // knob is within a few percent of a dark panel's own value and the
-    // silhouette disappears — on the Bucket Brigade's green it was a smudge.
-    Tier::new(1.0, Paint::Flat("#08080a"), Turns::Cap)
-        .shadowed(0.05)
-        .outlined("rgba(255,255,255,0.09)", 0.8),
-    solid(
-        "radial-gradient(circle at 36% 22%, #5c5c62 0%, #2b2b30 36%, #141417 72%, #0b0b0d 100%)",
-        Finish::Moulded,
-    ),
-    // The cap, as its own lit surface. A 3.5%-white wash over the body read
-    // as nothing at all, which is why this knob looked like one black disc
-    // when it is meant to be a cap sunk into a skirt.
+    // The skirt, standing on the panel.
+    Tier::new(1.0, Paint::Flat("#0a0a0c"), Turns::Cap)
+        .shadowed(0.055)
+        .outlined("rgba(255,255,255,0.10)", 0.8),
     Tier::new(
-        0.62,
+        0.955,
         Paint::Surface {
-            css: "radial-gradient(circle at 36% 24%, #4a4a51 0%, #26262c 54%, #131317 100%)",
-            finish: Finish::Moulded,
+            css: "linear-gradient(178deg, #33333a 0%, #212127 44%, #141418 76%, #0d0d10 100%)",
+            finish: Finish::Matte,
+            tint: true,
+        },
+        Turns::Cap,
+    ),
+    // The shadow the body drops onto the skirt — the step is the whole read.
+    Tier::new(0.70, Paint::Flat("rgba(0,0,0,0.55)"), Turns::Cap),
+    // The ribbed body wall.
+    Tier::new(
+        0.66,
+        Paint::Surface {
+            css: "linear-gradient(178deg, #3d3d45 0%, #26262c 46%, #17171b 100%)",
+            finish: Finish::Matte,
+            tint: true,
+        },
+        Turns::Cap,
+    ),
+    // The flat top, a shade proud of the wall.
+    Tier::new(
+        0.50,
+        Paint::Surface {
+            css: "linear-gradient(178deg, #47474f 0%, #2e2e35 50%, #1c1c21 100%)",
+            finish: Finish::FlatTop,
             tint: false,
         },
         Turns::Cap,
-    )
-    .outlined("rgba(0,0,0,0.55)", 0.9),
+    ),
 ];
 
 pub static SKIRTED: KnobSpec = KnobSpec {
     tiers: SKIRTED_TIERS,
+    // Down the body and out over the skirt, in one line. The panel prints its
+    // numbers around the skirt's edge, so the line has to reach them.
     index: Index::Bar {
-        from: 0.633,
-        to: 0.967,
-        width: 3.8,
+        from: 0.30,
+        to: 0.955,
+        width: 3.0,
         color: LIGHT,
     },
     collar_index: None,
-    flutes: None,
-    specular: Some(dome(1.0)),
+    // The ribs, on the body wall between the top face and the step.
+    flutes: Some(Flutes {
+        count: 30,
+        from: 0.52,
+        to: 0.66,
+        stroke: "rgba(255,255,255,0.11)",
+        width: 0.8,
+        shadow: Some("rgba(0,0,0,0.34)"),
+        turns: Turns::Cap,
+    }),
+    specular: Some(matte_light(0.955)),
     ring_offset: 0.0,
     numerals_on_knob: false,
     hub: None,
@@ -257,12 +313,13 @@ pub static DAKA: KnobSpec = KnobSpec {
     specular: Some(Specular {
         w: 0.46,
         h: 0.30,
-        dx: -0.34,
-        dy: -0.30,
+        dx: -0.11,
+        dy: -0.15,
         fill: "radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.13) 0%, \
                rgba(255,255,255,0.0) 72%)",
         rotate: -32.0,
         rim: Some("rgba(255,255,255,0.12)"),
+        r: 1.0,
     }),
     ring_offset: 0.0,
     numerals_on_knob: false,
@@ -347,12 +404,13 @@ pub static COLLET: KnobSpec = KnobSpec {
     specular: Some(Specular {
         w: 0.62,
         h: 0.42,
-        dx: -0.46,
-        dy: -0.40,
+        dx: -0.15,
+        dy: -0.19,
         fill: "linear-gradient(150deg, rgba(255,255,255,0.20) 0%, \
                rgba(255,255,255,0.04) 46%, rgba(255,255,255,0.0) 72%)",
         rotate: 0.0,
         rim: None,
+        r: 1.0,
     }),
     ring_offset: 0.0,
     numerals_on_knob: false,
@@ -476,17 +534,30 @@ pub static METAL_FLUTED: KnobSpec = KnobSpec {
 // with a moulded nose that points at a scale printed on the panel. No skirt,
 // no flutes: you read the nose.
 // ─────────────────────────────────────────────────────────────────────────
-static POINTER_TIERS: &[Tier] = &[solid(
-    "radial-gradient(circle at 34% 24%, #48484d 0%, #232327 44%, #0f0f12 100%)",
-    Finish::Moulded,
-)];
+static POINTER_TIERS: &[Tier] = &[
+    Tier::new(1.0, Paint::Flat("#08080a"), Turns::Cap)
+        .shadowed(0.05)
+        .outlined("rgba(255,255,255,0.08)", 0.7),
+    // Matte, top-lit. An LA-2A's knob is a plain black moulding: the hard
+    // off-centre radial it had made it a billiard ball with a nose stuck to
+    // the side.
+    Tier::new(
+        0.94,
+        Paint::Surface {
+            css: "linear-gradient(178deg, #33333a 0%, #212127 44%, #131317 78%, #0c0c0f 100%)",
+            finish: Finish::Matte,
+            tint: true,
+        },
+        Turns::Cap,
+    ),
+];
 
 pub static POINTER: KnobSpec = KnobSpec {
     tiers: POINTER_TIERS,
     index: Index::Nose { color: LIGHT },
     collar_index: None,
     flutes: None,
-    specular: Some(dome(1.0)),
+    specular: Some(matte_light(0.94)),
     // The nose reaches past the body by design — that is how it points — so a
     // ring drawn for a flush knob lands underneath it.
     ring_offset: 13.0,
