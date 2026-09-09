@@ -8,7 +8,8 @@
 //! just works. Install with
 //! `standalone.set_fx_factory(Arc::new(NativeFxFactory))`.
 
-use signal_plugin_host::{FxFactory, InstalledFx, PluginInstance};
+use daw::plugin::{FxFactory, PluginInstance};
+use daw::service::fx::InstalledFx;
 
 use crate::{
     NativeComp, NativeDelay, NativeEq, NativeGain, NativeGate, NativeLevel, NativeMod,

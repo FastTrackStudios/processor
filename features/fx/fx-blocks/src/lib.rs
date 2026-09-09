@@ -13,7 +13,7 @@
 //! in `signal-sampler` calls when constructing the block.
 
 use audiocore_dsp::{AudioConfig, Processor};
-use signal_plugin_host::{
+use daw::plugin::{
     PluginDescriptor, PluginError, PluginEvents, PluginFormat, PluginInstance, PluginParamInfo,
 };
 
