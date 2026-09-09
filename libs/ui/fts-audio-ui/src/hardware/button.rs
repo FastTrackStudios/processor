@@ -122,7 +122,8 @@ pub fn PanelButton(
                  color:{ink}; cursor:{}; \
                  background:{}; \
                  border:{:.1}px solid {}; \
-                 box-shadow:{}{glow};",
+                 box-shadow:{}{glow}; \
+                 transform:translateY({:.2}px);",
                 spec.cap.radius * scale,
                 spec.legend * scale,
                 if wired { "pointer" } else { "default" },
@@ -130,6 +131,7 @@ pub fn PanelButton(
                 (1.0 * scale).max(1.0),
                 spec.cap.border,
                 spec.shadow(on, scale),
+                spec.press_offset(on, scale),
             ),
             onclick: {
                 let handle = handle.clone();

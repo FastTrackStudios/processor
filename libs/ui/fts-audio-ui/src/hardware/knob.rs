@@ -423,6 +423,7 @@ pub fn HardwareKnob(
 
     // The printed ring is drawn outside the body, so the box is wider than
     // the knob — the viewBox spans -55..55 with the body at r = 30.
+    let mut hovered = use_signal(|| false);
     let box_px = diameter * (110.0 / (BODY_R * 2.0)) * scale;
     let ring = ring_arc_path(ring_r);
     // What the knob is made of. Everything below is a walk over this — the
@@ -436,8 +437,21 @@ pub fn HardwareKnob(
             "data-testid": "hw-knob-{testid}",
             "data-normalized": "{normalized:.4}",
             title: format!("{name} — {display}\nDrag · Ctrl/Shift=fine · Wheel · Dbl-click=reset · Right-click=type"),
+            // A hardware knob had no hover state at all — the painted dials
+            // got one and these did not, so half the controls on a panel
+            // answered the pointer and half ignored it. A ring of the panel's
+            // own light around the knob: enough to say "this one", not enough
+            // to look like a selection.
+            onmouseenter: move |_| hovered.set(true),
+            onmouseleave: move |_| hovered.set(false),
             style: format!(
-                "position:relative; width:{box_px:.1}px; height:{box_px:.1}px;"
+                "position:relative; width:{box_px:.1}px; height:{box_px:.1}px; \
+                 border-radius:50%; box-shadow:{};",
+                if *hovered.read() {
+                    format!("0 0 {:.1}px rgba(255,255,255,0.16)", 7.0 * scale)
+                } else {
+                    "none".to_string()
+                },
             ),
 
             svg {

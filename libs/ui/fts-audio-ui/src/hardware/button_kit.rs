@@ -138,18 +138,43 @@ impl ButtonSpec {
     /// a sunken bezel from a raised boss.
     pub fn shadow(&self, pressed: bool, scale: f64) -> String {
         let drop = self.travel * scale;
+        let blur = (drop * 2.0).max(2.0);
+        let lip = (1.0 * scale).clamp(0.6, 1.6);
         if pressed {
+            // Down in its well: the light that was on the top lip is now on
+            // the bottom one, and the cast shadow becomes a shadow falling
+            // INTO the button. Swapping only the drop shadow, which is what
+            // this did, left the cap looking identical at a glance — and a
+            // latching switch whose position you cannot see is read as
+            // broken.
             format!(
-                "inset 0 {:.1}px {:.1}px rgba(0,0,0,0.45)",
+                "inset 0 {lip:.1}px {:.1}px rgba(0,0,0,0.55), \
+                 inset 0 -{lip:.1}px 0 rgba(255,255,255,0.10), \
+                 inset 0 {:.1}px {blur:.1}px rgba(0,0,0,0.45)",
+                lip * 1.5,
                 drop.max(1.0),
-                (drop * 2.0).max(2.0),
             )
         } else {
+            // Standing proud: a lit chamfer along the top edge, a dark one
+            // under it, and the cast shadow on the panel. The chamfer is what
+            // was missing — a flat fill with a drop shadow is a sticker.
             format!(
-                "0 {:.1}px {:.1}px rgba(0,0,0,0.45)",
+                "inset 0 {lip:.1}px 0 rgba(255,255,255,0.34), \
+                 inset 0 -{lip:.1}px 0 rgba(0,0,0,0.34), \
+                 0 {:.1}px {blur:.1}px rgba(0,0,0,0.45)",
                 drop.max(1.0),
-                (drop * 2.0).max(2.0),
             )
+        }
+    }
+
+    /// How far the cap has physically moved, in px. A button that only
+    /// changes shading has not been pressed; it has been recoloured.
+    #[must_use]
+    pub fn press_offset(&self, pressed: bool, scale: f64) -> f64 {
+        if pressed {
+            (self.travel * scale * 0.6).max(0.5)
+        } else {
+            0.0
         }
     }
 }
@@ -192,14 +217,29 @@ mod tests {
     /// is invisible in code.
     #[test]
     fn pressing_a_button_moves_its_shadow_inside() {
+        // Asked as "does it cast a shadow on the panel", not "does the string
+        // contain `inset`". Both states carry inset shadows now — that is
+        // what the lit chamfer along the cap's edges is made of — so the tell
+        // is whether anything falls OUTWARD onto the panel.
+        fn casts_onto_the_panel(shadow: &str) -> bool {
+            shadow.split("), ").any(|layer| !layer.trim_start().starts_with("inset"))
+        }
         for style in ButtonStyle::ALL {
             let spec = style.spec();
             let up = spec.shadow(false, 1.0);
             let down = spec.shadow(true, 1.0);
-            assert!(!up.contains("inset"), "{style:?} is sunken while up: {up}");
             assert!(
-                down.contains("inset"),
-                "{style:?} is proud while down: {down}"
+                casts_onto_the_panel(&up),
+                "{style:?} casts nothing while up: {up}"
+            );
+            assert!(
+                !casts_onto_the_panel(&down),
+                "{style:?} is still proud while down: {down}"
+            );
+            // And it has to actually move, or the state is only a recolour.
+            assert!(
+                spec.press_offset(true, 1.0) > spec.press_offset(false, 1.0),
+                "{style:?} does not travel when pressed"
             );
         }
     }
