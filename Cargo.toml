@@ -66,6 +66,7 @@ members = [
     "features/preset-browser/preset-browser",
     "features/preset-browser/preset-browser-ui",
     "libs/ui/fts-audio-ui",
+    "libs/ui/kit-sheet",
     "libs/ui/fts-plug-ui",
 ]
 

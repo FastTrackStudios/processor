@@ -4101,6 +4101,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kit-sheet"
+version = "0.1.0"
+dependencies = [
+ "comp-profiles",
+ "comp-ui",
+ "delay-profiles",
+ "delay-ui",
+ "dioxus",
+ "dioxus-test",
+ "eq-ui",
+ "fts-audio-ui",
+ "reverb-profiles",
+ "reverb-ui",
+ "saturate-profiles",
+ "saturate-ui",
+ "tokio",
+]
+
+[[package]]
 name = "konst"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
