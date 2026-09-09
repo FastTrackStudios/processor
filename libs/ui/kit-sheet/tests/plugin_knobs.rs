@@ -361,9 +361,9 @@ fn shots_dir() -> PathBuf {
 /// a scene past its capacity does not fail — it *garbles*, drawing a knob's
 /// tiles over its neighbours, which reads as a rendering bug in the knob art
 /// rather than a sheet that was asked for too much at once. The whole product
-/// on one page (≈400 knobs, 6300 px tall) reliably tips over; a page of this
+/// on one page (≈450 knobs, 6300 px tall) reliably tips over; a page of this
 /// size does not.
-const KNOBS_PER_PAGE: usize = 60;
+const KNOBS_PER_PAGE: usize = 36;
 
 /// Split a plugin's faces into pages, never breaking a face across two.
 fn paginate(faces: Vec<Face>) -> Vec<Vec<Face>> {

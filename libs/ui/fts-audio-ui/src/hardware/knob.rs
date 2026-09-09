@@ -197,6 +197,44 @@ fn scallop_path(r: f64, lobes: usize, depth: f64) -> String {
     d
 }
 
+/// The same lobes as [`scallop_path`], as a CSS `clip-path` polygon.
+///
+/// A gradient tier is a div, and a div is a rectangle with a border-radius —
+/// which silently threw away `Edge::Toothed` the moment a tier gained a
+/// material. Both knobs that have teeth had lost them: the Pultec's scalloped
+/// skirt and the 1073's geared cap, the two silhouettes those panels are
+/// recognised by, were plain circles.
+///
+/// `depth` is a fraction of the tier's own radius, and the polygon is in
+/// percentages of the div's box, so it survives any diameter.
+fn scallop_clip(lobes: usize, depth: f64) -> String {
+    use std::f64::consts::TAU;
+    if lobes < 3 {
+        return String::new();
+    }
+    // A quadratic lobe sampled at four points reads the same at knob size as
+    // the curve it approximates, and clip-path has no curves.
+    const PER_LOBE: usize = 6;
+    let inner = 1.0 - depth;
+    let mut pts = Vec::with_capacity(lobes * PER_LOBE);
+    for i in 0..lobes * PER_LOBE {
+        let t = i as f64 / PER_LOBE as f64;
+        let lobe_t = t.fract();
+        // The control point rides outside the rim, as in `scallop_path`.
+        let ctrl = 1.0 + depth * 0.55;
+        let r = (1.0 - lobe_t).powi(2) * inner
+            + 2.0 * (1.0 - lobe_t) * lobe_t * ctrl
+            + lobe_t.powi(2) * inner;
+        let a = t / lobes as f64 * TAU;
+        pts.push(format!(
+            "{:.2}% {:.2}%",
+            50.0 + 50.0 * r * a.sin(),
+            50.0 - 50.0 * r * a.cos(),
+        ));
+    }
+    format!("polygon({})", pts.join(", "))
+}
+
 /// The pointer knob's nose: a teardrop reaching past the body, which is what
 /// the panel's numbers are read against.
 fn nose_points(body_r: f64) -> String {
@@ -263,6 +301,10 @@ fn draw_index(index: Index, tint: Option<&str>) -> Element {
             width,
             color,
         } => rsx! {
+            // A hairline of the shadow the line is cut into. A white index on
+            // a light cap — the 1073's, tinted grey by the panel — was white
+            // on light grey and read as nothing; on a black knob this is
+            // invisible, which is why it can be unconditional.
             rect {
                 x: "{-width / 2.0:.2}",
                 y: "{-(BODY_R * to):.2}",
@@ -270,6 +312,8 @@ fn draw_index(index: Index, tint: Option<&str>) -> Element {
                 height: "{BODY_R * (to - from):.2}",
                 rx: "{(width / 2.4).min(1.6):.2}",
                 fill: "{color}",
+                stroke: "rgba(0,0,0,0.38)",
+                stroke_width: "0.55",
             }
         },
         Index::Blade {
@@ -317,11 +361,16 @@ fn draw_index(index: Index, tint: Option<&str>) -> Element {
                 points: "{wing_highlight_points(BODY_R * body)}",
                 fill: "rgba(255,255,255,0.20)",
             }
+            // The line runs the wing, hub to tip. It used to stop at 0.74 of
+            // the body radius while the wing reached 1.26 of the knob — a
+            // stub near the hub with two thirds of the pointer unmarked, so
+            // the eye read the wing's silhouette and not the line, and at
+            // 44 px read neither.
             rect {
                 x: "-1.3",
-                y: "{-(BODY_R - 2.0):.1}",
+                y: "{-(BODY_R * WING_REACH - 3.0):.1}",
                 width: "2.6",
-                height: "{BODY_R * 0.62:.1}",
+                height: "{BODY_R * WING_REACH - 3.0:.1}",
                 rx: "1.0",
                 fill: "{color}",
             }
@@ -551,35 +600,63 @@ pub fn HardwareKnob(
                     rsx! {
                         match tier.paint {
                             // A gradient surface: a div, so it can carry one.
-                            Paint::Surface { css, finish, tint: tintable } => rsx! {
-                                div {
-                                    key: "tier-{i}",
-                                    style: format!(
-                                        "position:absolute; left:50%; top:50%; \
-                                         width:{0:.1}px; height:{0:.1}px; \
-                                         margin-left:{1:.1}px; margin-top:{1:.1}px; \
-                                         border-radius:50%; background:{2}; \
-                                         border:{3:.1}px solid rgba(0,0,0,0.45); \
-                                         box-shadow:0 {4:.1}px {5:.1}px rgba(0,0,0,0.55), \
-                                           0 {6:.1}px {7:.1}px rgba(0,0,0,0.30), \
-                                           inset 0 {8:.1}px {9:.1}px rgba(0,0,0,0.45), \
-                                           inset 0 {10:.1}px {11:.1}px rgba(255,255,255,0.16);",
-                                        px,
-                                        -px / 2.0,
-                                        match (tintable, tint.as_deref()) {
-                                            (true, Some(c)) => finish.tinted(c),
-                                            _ => css.to_string(),
-                                        },
-                                        (0.5 * scale).max(0.6),
-                                        1.5 * scale,
-                                        3.0 * scale,
-                                        4.0 * scale,
-                                        10.0 * scale,
-                                        -px * 0.10,
-                                        px * 0.16,
-                                        px * 0.05,
-                                        px * 0.10,
+                            Paint::Surface { css, finish, tint: tintable } => {
+                                let fill = match (tintable, tint.as_deref()) {
+                                    (true, Some(c)) => finish.tinted(c),
+                                    _ => css.to_string(),
+                                };
+                                // A toothed surface is two boxes, not one: the
+                                // outer carries the rotated clip so the teeth
+                                // turn with the control, the inner counter-
+                                // rotates so the light does not. A lamp above
+                                // the rack does not move when you turn a knob,
+                                // but a gear's teeth had better.
+                                let (clip, spin, unspin) = match tier.edge {
+                                    Edge::Toothed { teeth, depth } => (
+                                        scallop_clip(teeth, (BODY_R * depth) / r),
+                                        format!("transform:rotate({a:.2}deg);"),
+                                        format!("transform:rotate({:.2}deg);", -a),
                                     ),
+                                    Edge::Round => (
+                                        "circle(50%)".to_string(),
+                                        String::new(),
+                                        String::new(),
+                                    ),
+                                };
+                                rsx! {
+                                    div {
+                                        key: "tier-{i}",
+                                        style: format!(
+                                            "position:absolute; left:50%; top:50%; \
+                                             width:{0:.1}px; height:{0:.1}px; \
+                                             margin-left:{1:.1}px; margin-top:{1:.1}px; \
+                                             clip-path:{2}; {3}",
+                                            px, -px / 2.0, clip, spin,
+                                        ),
+                                        div {
+                                            style: format!(
+                                                "width:100%; height:100%; border-radius:50%; \
+                                                 background:{0}; \
+                                                 border:{1:.1}px solid rgba(0,0,0,0.45); \
+                                                 box-shadow:0 {2:.1}px {3:.1}px rgba(0,0,0,0.55), \
+                                                   0 {4:.1}px {5:.1}px rgba(0,0,0,0.30), \
+                                                   inset 0 {6:.1}px {7:.1}px rgba(0,0,0,0.45), \
+                                                   inset 0 {8:.1}px {9:.1}px rgba(255,255,255,0.16); \
+                                                 {10}",
+                                                fill,
+                                                (0.5 * scale).max(0.6),
+                                                1.5 * scale,
+                                                3.0 * scale,
+                                                4.0 * scale,
+                                                10.0 * scale,
+                                                -px * 0.10,
+                                                px * 0.16,
+                                                px * 0.05,
+                                                px * 0.10,
+                                                unspin,
+                                            ),
+                                        }
+                                    }
                                 }
                             },
                             // Flat fills and grooves are SVG, in a group that
@@ -778,8 +855,14 @@ pub fn HardwareKnob(
                 }
 
                 // The hub, over everything and turning with nothing.
+                //
+                // Small. At r = 4.5 in a 30-unit body it was 15% of the knob:
+                // a dark disc at the centre of every dial, which reads as a
+                // screw head rather than the dimple where the shaft goes in,
+                // and on a Collet it looked like the white bar had been laid
+                // beside a fixing.
                 if let Some(hub) = spec.hub {
-                    circle { cx: "0", cy: "0", r: "4.5", fill: "{hub}" }
+                    circle { cx: "0", cy: "0", r: "2.6", fill: "{hub}" }
                 }
             }
 

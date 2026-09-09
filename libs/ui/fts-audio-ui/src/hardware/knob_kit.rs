@@ -75,24 +75,23 @@ impl Finish {
                 "linear-gradient(160deg, color-mix(in oklab, {color} 88%, white) 0%, \
                  {color} 38%, color-mix(in oklab, {color} 82%, black) 100%)"
             ),
-            // Brushed metal is anisotropic: turned on a lathe, it throws two
-            // bright lobes opposite each other and goes dark at ninety
-            // degrees to them. A radial gradient cannot say that — it was
-            // making every metal knob read as pale plastic — so the sheen is
-            // a conic sweep with the dome laid over it.
+            // Brushed metal is anisotropic: faced on a lathe, it throws two
+            // bright lobes opposite each other, goes dark ninety degrees
+            // away, and carries fine *concentric* turning marks. A radial
+            // gradient can say none of that — it was making every metal knob
+            // read as pale plastic. Kept in step with `BRUSHED_METAL`: only
+            // the metal underneath takes the tint, because the light on it
+            // does not change colour when a console codes a control.
             Self::Brushed => format!(
-                "conic-gradient(from 210deg, \
-                 color-mix(in oklab, {color} 58%, white) 0deg, \
-                 color-mix(in oklab, {color} 88%, black) 42deg, \
-                 color-mix(in oklab, {color} 70%, white) 90deg, \
-                 color-mix(in oklab, {color} 92%, black) 140deg, \
-                 color-mix(in oklab, {color} 62%, white) 180deg, \
-                 color-mix(in oklab, {color} 88%, black) 222deg, \
-                 color-mix(in oklab, {color} 72%, white) 270deg, \
-                 color-mix(in oklab, {color} 94%, black) 320deg, \
-                 color-mix(in oklab, {color} 58%, white) 360deg), \
-                 radial-gradient(circle at 34% 26%, rgba(255,255,255,0.30) 0%, \
-                 rgba(255,255,255,0.0) 62%)"
+                "radial-gradient(circle at 34% 26%, rgba(255,255,255,0.26) 0%, \
+                 rgba(255,255,255,0.0) 58%), \
+                 conic-gradient(from 208deg, rgba(255,255,255,0.14) 0deg, \
+                 rgba(0,0,0,0.12) 88deg, rgba(255,255,255,0.13) 180deg, \
+                 rgba(0,0,0,0.13) 268deg, rgba(255,255,255,0.14) 360deg), \
+                 repeating-radial-gradient(circle at 50% 50%, rgba(255,255,255,0.07) 0%, \
+                 rgba(0,0,0,0.07) 1.6%, rgba(255,255,255,0.07) 3.2%), \
+                 linear-gradient(162deg, color-mix(in oklab, {color} 86%, white) 0%, \
+                 {color} 46%, color-mix(in oklab, {color} 84%, black) 100%)"
             ),
         }
     }

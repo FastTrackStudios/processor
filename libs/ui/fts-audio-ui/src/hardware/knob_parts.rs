@@ -8,13 +8,26 @@
 use super::knob_kit::{dome, Finish, Flutes, Index, KnobSpec, Paint, Specular, Tier, Turns};
 
 // ── Inks ─────────────────────────────────────────────────────────────────
-/// Turned aluminium.
+/// Turned aluminium, in four layers from the light down to the metal.
 ///
-/// Anisotropic on purpose. A lathe leaves two bright lobes opposite each
-/// other and goes near-black at ninety degrees to them, and that sweep is the
-/// whole difference between metal and pale plastic — a radial gradient, which
-/// is what every metal knob here used to have, can only say "light dome".
-const BRUSHED_METAL: &str = "conic-gradient(from 210deg, #e6e6e2 0deg, #8f8f8b 42deg, #d2d2ce 90deg, #868682 140deg, #dededa 180deg, #90908c 222deg, #d6d6d2 270deg, #7e7e7a 320deg, #e6e6e2 360deg), radial-gradient(circle at 34% 26%, rgba(255,255,255,0.34) 0%, rgba(255,255,255,0.0) 60%)";
+/// 1. the room's glint, high and left;
+/// 2. the *anisotropy* — a turned face throws two bright lobes opposite each
+///    other and goes dark ninety degrees away, and that is what says metal;
+/// 3. the turning marks. Concentric, because a knob cap is faced on a lathe
+///    that spins it: the marks go round, not out. Drawn as conic spokes they
+///    converge at the hub and the cap reads as a paper fan — which is what
+///    happened, twice: four fat spokes made a pinwheel, and thirty-six fine
+///    ones made a sunburst;
+/// 4. the metal itself. Anodised aluminium, not chrome: an outboard knob is
+///    darker than the white index line printed on it, or the line disappears.
+const BRUSHED_METAL: &str = "radial-gradient(circle at 34% 26%, \
+     rgba(255,255,255,0.26) 0%, rgba(255,255,255,0.0) 58%), \
+     conic-gradient(from 208deg, rgba(255,255,255,0.14) 0deg, \
+     rgba(0,0,0,0.12) 88deg, rgba(255,255,255,0.13) 180deg, \
+     rgba(0,0,0,0.13) 268deg, rgba(255,255,255,0.14) 360deg), \
+     repeating-radial-gradient(circle at 50% 50%, rgba(255,255,255,0.07) 0%, \
+     rgba(0,0,0,0.07) 1.6%, rgba(255,255,255,0.07) 3.2%), \
+     linear-gradient(162deg, #cdcdc8 0%, #b4b4af 46%, #96968f 100%)";
 
 /// The two index colours nearly every knob uses: a painted white line, or a
 /// dark groove on a light face.
@@ -120,7 +133,12 @@ pub static METAL: KnobSpec = KnobSpec {
 // cap inside it, read by a short bar on the rim.
 // ─────────────────────────────────────────────────────────────────────────
 static SKIRTED_TIERS: &[Tier] = &[
-    Tier::new(1.0, Paint::Flat("#08080a"), Turns::Cap).shadowed(0.05),
+    // A lit edge on the base, the way Bakelite has one. Without it the whole
+    // knob is within a few percent of a dark panel's own value and the
+    // silhouette disappears — on the Bucket Brigade's green it was a smudge.
+    Tier::new(1.0, Paint::Flat("#08080a"), Turns::Cap)
+        .shadowed(0.05)
+        .outlined("rgba(255,255,255,0.09)", 0.8),
     solid(
         "radial-gradient(circle at 36% 22%, #5c5c62 0%, #2b2b30 36%, #141417 72%, #0b0b0d 100%)",
         Finish::Moulded,
@@ -216,10 +234,13 @@ static DAKA_TIERS: &[Tier] = &[
 
 pub static DAKA: KnobSpec = KnobSpec {
     tiers: DAKA_TIERS,
+    // Bold. This line is the only thing a Pultec's printed 0–10 is read
+    // against, and on a 96 px boost knob a 2.4-wide engraving reads as a
+    // scratch rather than a pointer.
     index: Index::Bar {
-        from: 0.29,
-        to: 0.95,
-        width: 2.4,
+        from: 0.24,
+        to: 0.96,
+        width: 3.2,
         color: "#eceae4",
     },
     collar_index: None,
@@ -303,10 +324,13 @@ static COLLET_TIERS: &[Tier] = &[solid(
 
 pub static COLLET: KnobSpec = KnobSpec {
     tiers: COLLET_TIERS,
+    // The bar reaches the flutes. On the desk it runs the cap's full radius —
+    // stopping at 0.90 with a hub dot showing through left it reading as a
+    // short dash beside a screw, which is a different knob entirely.
     index: Index::Bar {
-        from: 0.20,
-        to: 0.90,
-        width: 3.6,
+        from: 0.06,
+        to: 0.97,
+        width: 3.4,
         color: LIGHT,
     },
     collar_index: None,
@@ -332,7 +356,8 @@ pub static COLLET: KnobSpec = KnobSpec {
     }),
     ring_offset: 0.0,
     numerals_on_knob: false,
-    hub: HUB,
+    // A collet cap is pressed on from above: no shaft shows.
+    hub: None,
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -352,18 +377,22 @@ static SILVER_TOP_TIERS: &[Tier] = &[
         },
         Turns::Cap,
     ),
+    // The cap. Half the knob, not five-ninths: the 1176 reads as a dark
+    // annulus around a bright disc, and every tenth the cap gains is a tenth
+    // off the collar the index line is printed on.
     Tier::new(
-        0.56,
+        0.50,
         Paint::Surface {
             css: BRUSHED_METAL,
             finish: Finish::Brushed,
             tint: true,
         },
         Turns::Cap,
-    ),
+    )
+    .outlined("rgba(0,0,0,0.55)", 0.8),
     // Two turned rings on the brushed face.
     Tier::new(
-        0.347,
+        0.310,
         Paint::Groove {
             color: "rgba(0,0,0,0.16)",
             width: 0.7,
@@ -371,7 +400,7 @@ static SILVER_TOP_TIERS: &[Tier] = &[
         Turns::Cap,
     ),
     Tier::new(
-        0.168,
+        0.150,
         Paint::Groove {
             color: "rgba(0,0,0,0.13)",
             width: 0.6,
@@ -382,25 +411,28 @@ static SILVER_TOP_TIERS: &[Tier] = &[
 
 pub static SILVER_TOP: KnobSpec = KnobSpec {
     tiers: SILVER_TOP_TIERS,
-    // On the collar: from just outside the cap to just inside the rim.
+    // On the collar, and it has to *read* as a line: at 0.677–0.917 it was a
+    // 5 px stub on a 44 px knob — you could not tell where a Shimmer's DECAY
+    // was pointing, on a panel of eight of them. Now it runs the collar's
+    // whole width, cap edge to rim.
     index: Index::Bar {
-        from: 0.677,
-        to: 0.917,
-        width: 3.0,
+        from: 0.56,
+        to: 0.97,
+        width: 2.8,
         color: "#f4f4f2",
     },
     collar_index: None,
     // Fine knurling around the cap's edge.
     flutes: Some(Flutes {
         count: 54,
-        from: 0.48,
-        to: 0.56,
+        from: 0.42,
+        to: 0.50,
         stroke: "rgba(0,0,0,0.34)",
         width: 1.2,
         shadow: Some("rgba(0,0,0,0.40)"),
         turns: Turns::Cap,
     }),
-    specular: Some(dome(0.56)),
+    specular: Some(dome(0.50)),
     ring_offset: 0.0,
     numerals_on_knob: false,
     hub: HUB,
@@ -476,9 +508,21 @@ pub static POINTER: KnobSpec = KnobSpec {
 // ring carries its own slim index.
 // ─────────────────────────────────────────────────────────────────────────
 static NEVE_TIERS: &[Tier] = &[
-    Tier::new(1.0, Paint::Flat("#c3c8cd"), Turns::Collar)
-        .shadowed(0.053)
-        .outlined("rgba(0,0,0,0.42)", 0.8),
+    // Painted metal, not a flat fill. The module's knobs are matte — a
+    // brushed sweep here reads as chrome and makes a row of 1073s look
+    // plated — but flat discs read as a sticker, which is what the whole
+    // knob looked like: two grey circles and a scallop.
+    Tier::new(
+        1.0,
+        Paint::Surface {
+            css: "linear-gradient(160deg, #c8ccd1 0%, #b4b9bf 38%, #979da4 100%)",
+            finish: Finish::Matte,
+            tint: false,
+        },
+        Turns::Collar,
+    )
+    .shadowed(0.053)
+    .outlined("rgba(0,0,0,0.42)", 0.8),
     // A turned groove near the rim, which is most of what a plain ring has
     // to say for itself.
     Tier::new(
@@ -489,12 +533,27 @@ static NEVE_TIERS: &[Tier] = &[
         },
         Turns::Collar,
     ),
-    Tier::new(0.62, Paint::Tinted("#8f949b"), Turns::Cap)
-        .toothed(16, 0.073)
-        .shadowed(0.04)
-        .outlined("rgba(0,0,0,0.5)", 0.7),
+    // Dark. The cap used to be #8f949b, a mid grey inside a near-white ring,
+    // and the white line cut into it had nothing to read against — the whole
+    // knob went to one pale washer at panel size. A 1073's cap is the dark
+    // half of the pair; the ring is the light one.
+    Tier::new(
+        0.62,
+        Paint::Surface {
+            css: "linear-gradient(160deg, #5e646c 0%, #4e535a 40%, #383c42 100%)",
+            finish: Finish::Matte,
+            tint: true,
+        },
+        Turns::Cap,
+    )
+    // Deeper teeth and a harder edge. At 0.073 with a hairline outline the
+    // gear merged into the ring behind it and the pair read as one washer —
+    // and which part is toothed is the whole tell on this knob.
+    .toothed(16, 0.095)
+    .shadowed(0.04)
+    .outlined("rgba(0,0,0,0.62)", 1.1),
     // The flat of the cap inside the teeth.
-    Tier::new(0.527, Paint::Flat("rgba(255,255,255,0.07)"), Turns::Cap),
+    Tier::new(0.527, Paint::Flat("rgba(255,255,255,0.06)"), Turns::Cap),
 ];
 
 pub static NEVE: KnobSpec = KnobSpec {
@@ -503,7 +562,7 @@ pub static NEVE: KnobSpec = KnobSpec {
     index: Index::Bar {
         from: 0.248,
         to: 0.633,
-        width: 3.0,
+        width: 3.4,
         color: "#f4f4f2",
     },
     // Slim, and dark: the collar is read off the printed dots, and the cap's
@@ -512,7 +571,7 @@ pub static NEVE: KnobSpec = KnobSpec {
         from: 0.747,
         to: 0.967,
         width: 2.2,
-        color: "#3c4046",
+        color: "#2c3036",
     }),
     // The gear's teeth are the texture. Knurl lines over them read as dirt.
     flutes: None,
