@@ -16,7 +16,7 @@
 # you are testing (~35 MB each).
 set -euo pipefail
 
-REPO="${FTS_REPO:-/Volumes/build-disk/development/signal}"
+REPO="${FTS_REPO:-/Volumes/build-disk/development/processor}"
 APP="${FTS_HOST_APP:-$HOME/Applications/FTSPluginHost.app}"
 STAGE="${FTS_HOST_STAGE:-$HOME/Library/Application Support/FTSPluginHost/plugins}"
 BIN="$REPO/target/release/fts-clap-host"

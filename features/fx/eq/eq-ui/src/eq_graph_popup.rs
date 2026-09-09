@@ -1073,13 +1073,16 @@ const CHIP_H: f64 = 30.0;
 /// docked. It is small enough that flipping it does not disturb anything.
 #[must_use]
 pub fn band_chip_rect(bx: f64, by: f64, graph_w: f64, graph_h: f64) -> (f64, f64, f64, f64) {
-    let x = (bx - CHIP_W / 2.0).clamp(0.0, (graph_w - CHIP_W).max(0.0));
-    let y = if by - CHIP_H - POPUP_GAP >= 0.0 {
-        by - CHIP_H - POPUP_GAP
+    // Outside the label, which owns the space nearest the node.
+    let (_, label_bottom) = band_label_anchor(bx, by, graph_w, graph_h);
+    let y = if label_bottom > by {
+        // The label flipped below the node; the chip goes below it.
+        label_bottom + LABEL_GAP
     } else {
-        by + POPUP_GAP
+        label_bottom - LABEL_H - LABEL_GAP - CHIP_H
     }
     .clamp(0.0, (graph_h - CHIP_H).max(0.0));
+    let x = (bx - CHIP_W / 2.0).clamp(0.0, (graph_w - CHIP_W).max(0.0));
     (x, y, CHIP_W, CHIP_H)
 }
 
@@ -1091,16 +1094,29 @@ pub fn band_chip_rect(bx: f64, by: f64, graph_w: f64, graph_h: f64) -> (f64, f64
 /// field opened, took focus and accepted typing, with nothing visible on
 /// screen. Returns the point the label's bottom centre should sit on.
 pub fn band_label_anchor(bx: f64, by: f64, graph_w: f64, graph_h: f64) -> (f64, f64) {
-    let (_, chip_y, _, _) = band_chip_rect(bx, by, graph_w, graph_h);
-    // The chip normally sits above the node and flips below it near the top
-    // of the graph. Stay above the chip in the first case, above the node in
-    // the second.
-    let y = if chip_y < by { chip_y } else { by - POPUP_GAP };
-    (bx, (y - LABEL_GAP).max(0.0))
+    let _ = graph_w;
+    // Immediately above the node — the label is the one that stays. A named
+    // band keeps its label whether or not it is focused, while the readout
+    // chip comes and goes with focus, so the label is what has to read as
+    // belonging to the node. It used to sit outside the chip, which put a
+    // permanent label two rows away from the thing it names.
+    let above = by - POPUP_GAP;
+    let y = if above - LABEL_H >= 0.0 {
+        above
+    } else {
+        // No room above: put it under the node instead, and the chip follows.
+        (by + POPUP_GAP + LABEL_H).min(graph_h)
+    };
+    (bx, y)
 }
 
-/// Breathing room between a band's name label and the readout chip below it.
+/// Breathing room between a band's name label and the readout chip beyond it.
 const LABEL_GAP: f64 = 4.0;
+
+/// Height reserved for the name label: one line of the face's 10px text.
+/// The label is bottom-anchored (`translate(-50%, -100%)`), so this is only
+/// used to work out where the chip goes on the other side of it.
+const LABEL_H: f64 = 14.0;
 
 /// The frequency / gain / Q readout that follows the band node.
 ///

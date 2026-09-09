@@ -1893,3 +1893,125 @@ async fn clicking_into_the_empty_field_restores_the_old_name() -> dioxus_test::R
     );
     Ok(())
 }
+
+/// A space in a band name survives being typed.
+///
+/// It did not: the field is controlled, and `commit` trimmed on every
+/// keystroke, so "Air " was stored as "Air", the value prop snapped the
+/// editor back to "Air", and the space was gone before the next letter
+/// arrived. Typing "Air Lift" produced "AirLift".
+#[tokio::test]
+async fn a_space_in_a_band_name_survives_typing() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let (x, y) = fx.band_point(1);
+    fx.double_click_at(x, y).await;
+
+    fx.tester.type_text("Air Lift");
+    fx.settle().await;
+
+    assert_eq!(
+        *fx.params.bands[1].name.read(),
+        "Air Lift",
+        "the space should still be there"
+    );
+    Ok(())
+}
+
+/// Trailing whitespace is tidied when the field closes, not while typing.
+/// That distinction is the whole fix: trimming per keystroke is what ate
+/// the spaces.
+#[tokio::test]
+async fn whitespace_is_tidied_when_the_field_closes() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let (x, y) = fx.band_point(1);
+    fx.double_click_at(x, y).await;
+
+    fx.tester.type_text("Air ");
+    fx.settle().await;
+    assert_eq!(
+        *fx.params.bands[1].name.read(),
+        "Air ",
+        "mid-edit the value is exactly what was typed"
+    );
+
+    fx.tester.press_key(Key::Enter, Modifiers::empty());
+    fx.settle().await;
+    assert_eq!(
+        *fx.params.bands[1].name.read(),
+        "Air",
+        "closing tidies the trailing space"
+    );
+    Ok(())
+}
+
+/// The label sits nearest the node and the readout chip beyond it.
+///
+/// The label is the permanent one — a named band keeps it whether or not it
+/// is focused, while the chip comes and goes — so it is what has to read as
+/// belonging to the node.
+#[test]
+fn the_label_sits_between_the_node_and_the_chip() {
+    use eq_ui::eq_graph_popup::{band_chip_rect, band_label_anchor};
+
+    let (bx, by) = (400.0, 200.0);
+    let (_, label_bottom) = band_label_anchor(bx, by, 800.0, 350.0);
+    let (_, chip_y, _, chip_h) = band_chip_rect(bx, by, 800.0, 350.0);
+
+    assert!(label_bottom < by, "the label should be above the node");
+    assert!(
+        chip_y + chip_h <= label_bottom,
+        "the chip should be beyond the label, not between it and the node: \
+         chip bottom {} vs label bottom {label_bottom}",
+        chip_y + chip_h
+    );
+}
+
+/// Near the top of the graph there is no room above, so both flip below the
+/// node — and keep their order relative to it.
+#[test]
+fn near_the_top_they_flip_below_and_keep_their_order() {
+    use eq_ui::eq_graph_popup::{band_chip_rect, band_label_anchor};
+
+    let (bx, by) = (400.0, 4.0);
+    let (_, label_bottom) = band_label_anchor(bx, by, 800.0, 350.0);
+    let (_, chip_y, _, _) = band_chip_rect(bx, by, 800.0, 350.0);
+
+    assert!(label_bottom > by, "with no room above, the label goes below");
+    assert!(
+        chip_y >= label_bottom,
+        "the chip should still be the far one: chip {chip_y} vs label {label_bottom}"
+    );
+}
+
+/// Backspace deletes a character in the name field.
+///
+/// Sent as the macOS editing COMMAND rather than as `Key::Backspace`,
+/// because that is what actually reaches blitz: its text input gates the
+/// `Key::Backspace` arm behind `#[cfg(not(target_os = "macos"))]` and expects
+/// the platform's own command instead. baseview never ran AppKit's
+/// `interpretKeyEvents:`, so nothing produced one and backspace did nothing
+/// at all — in a DAW or standalone. nice-plug-dioxus synthesises it now; this
+/// holds up our end of that contract.
+#[tokio::test]
+async fn the_delete_command_removes_a_character_from_the_name_field()
+-> dioxus_test::Result<()> {
+    let fx = mount();
+    let (x, y) = fx.band_point(1);
+    fx.double_click_at(x, y).await;
+
+    fx.tester.type_text("Air");
+    fx.settle().await;
+    assert_eq!(*fx.params.bands[1].name.read(), "Air");
+
+    fx.tester.send_ui_event(blitz_traits::events::UiEvent::AppleStandardKeybinding(
+        "deleteBackward:".into(),
+    ));
+    fx.settle().await;
+
+    assert_eq!(
+        *fx.params.bands[1].name.read(),
+        "Ai",
+        "the delete command should have removed the last character"
+    );
+    Ok(())
+}

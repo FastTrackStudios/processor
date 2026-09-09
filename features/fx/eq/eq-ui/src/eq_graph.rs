@@ -285,9 +285,6 @@ pub fn EqGraph(
     // typing restores it — nothing is lost by opening the editor.
     let mut label_original: Signal<String> = use_signal(String::new);
     // Closes the open name field, putting the old name back if the user did
-    // not type one. Reached from Enter, Escape, and any press elsewhere on
-    // the graph — a double-click that opens a field and goes nowhere must not
-    // silently wipe the band's name.
     // Puts the old name back if the field is empty. Reached from Enter,
     // Escape, and any press elsewhere on the graph — opening an editor and
     // walking away must not wipe a band's name.
@@ -306,8 +303,29 @@ pub fn EqGraph(
             cb.call((idx, b));
         }
     };
+    // Tidy the name once the field is done with. This is where trimming
+    // belongs — doing it per keystroke is what ate every space the user
+    // typed, because the field is controlled and the trimmed value snapped
+    // the editor back before the next letter arrived.
+    let mut tidy_label = move |idx: usize| {
+        let tidied = {
+            let mut bw = bands.write();
+            bw.get_mut(idx).and_then(|b| {
+                let t = b.name.trim();
+                if t == b.name {
+                    return None;
+                }
+                b.name = t.to_string();
+                Some(b.clone())
+            })
+        };
+        if let (Some(b), Some(cb)) = (tidied, &on_band_change) {
+            cb.call((idx, b));
+        }
+    };
     let mut close_label_editor = move || {
         if let Some(idx) = editing_label.take() {
+            tidy_label(idx);
             restore_label_if_empty(idx);
         }
     };
@@ -1519,7 +1537,14 @@ pub fn EqGraph(
                                 // on commit: the label is the same string, so
                                 // the band gets its name as the user types it.
                                 let mut commit = move |value: String| {
-                                    let name = value.trim().to_string();
+                                    // Stored EXACTLY as typed. Trimming here
+                                    // looked harmless and ate every space:
+                                    // the field is controlled, so "Air " was
+                                    // committed as "Air", the prop snapped
+                                    // the editor back to "Air", and the space
+                                    // was gone before the next letter. Any
+                                    // trimming happens when the field closes.
+                                    let name = value;
                                     let updated = {
                                         let mut bw = bands.write();
                                         bw.get_mut(idx).map(|b| {
