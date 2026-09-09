@@ -197,6 +197,17 @@ fn scallop_path(r: f64, lobes: usize, depth: f64) -> String {
     d
 }
 
+/// How many ridges a knurl of `asked` can actually show at `band_px` across.
+///
+/// Circumference over a minimum pitch, clamped to what the spec asked for. A
+/// knurl finer than the screen can resolve is not detail, it is noise, and it
+/// costs the small knob the only thing it had — a readable silhouette.
+fn flute_count(asked: usize, band_px: f64) -> usize {
+    const PITCH_PX: f64 = 3.2;
+    let fits = (std::f64::consts::PI * band_px.max(1.0) / PITCH_PX) as usize;
+    asked.min(fits).max(8)
+}
+
 /// The same lobes as [`scallop_path`], as a CSS `clip-path` polygon.
 ///
 /// A gradient tier is a div, and a div is a rectangle with a border-radius —
@@ -745,28 +756,51 @@ pub fn HardwareKnob(
             // reads as wrong, because the lamp above the rack does not move
             // when you turn a control.
             if let Some(lit) = spec.specular {
-                div {
-                    "data-testid": "hw-knob-{testid}-light",
-                    style: format!(
-                        "position:absolute; left:50%; top:50%; \
-                         width:{:.1}px; height:{:.1}px; \
-                         margin-left:{:.1}px; margin-top:{:.1}px; \
-                         border-radius:50%; pointer-events:none; \
-                         background:{}; transform:rotate({:.1}deg);",
-                        diameter * lit.w * scale,
-                        diameter * lit.h * scale,
-                        // `dx`/`dy` are where the *centre* of the highlight
-                        // sits; the margins that place it have to take half
-                        // its own size off. They did not, so every specular
-                        // in the kit was thrown right and down by half its
-                        // width and height — a light source beside the knob
-                        // instead of above the rack, and the reason a stack
-                        // of concentric circles managed to look off-centre.
-                        diameter * (lit.dx - lit.w / 2.0) * scale,
-                        diameter * (lit.dy - lit.h / 2.0) * scale,
-                        lit.fill,
-                        lit.rotate,
-                    ),
+                {
+                    // Clipped to the face it falls on. A highlight is an
+                    // ellipse and a knob is a circle, and an ellipse thrown
+                    // up and left of centre leaves the circle at the top
+                    // corner — you saw the blob's own edge crossing the rim,
+                    // which is a shape no light has. The wrapper is the lit
+                    // tier; nothing inside it can spill past the knob.
+                    let face = diameter * lit.r * scale;
+                    rsx! {
+                        div {
+                            style: format!(
+                                "position:absolute; left:50%; top:50%; \
+                                 width:{0:.1}px; height:{0:.1}px; \
+                                 margin-left:{1:.1}px; margin-top:{1:.1}px; \
+                                 clip-path:circle(50%); pointer-events:none;",
+                                face,
+                                -face / 2.0,
+                            ),
+                            div {
+                                "data-testid": "hw-knob-{testid}-light",
+                                style: format!(
+                                    "position:absolute; left:50%; top:50%; \
+                                     width:{:.1}px; height:{:.1}px; \
+                                     margin-left:{:.1}px; margin-top:{:.1}px; \
+                                     border-radius:50%; pointer-events:none; \
+                                     background:{}; transform:rotate({:.1}deg);",
+                                    diameter * lit.w * scale,
+                                    diameter * lit.h * scale,
+                                    // `dx`/`dy` are where the *centre* of the
+                                    // highlight sits; the margins that place
+                                    // it have to take half its own size off.
+                                    // They did not, so every specular in the
+                                    // kit was thrown right and down by half
+                                    // its width and height — a light source
+                                    // beside the knob instead of above the
+                                    // rack, and the reason a stack of
+                                    // concentric circles looked off-centre.
+                                    diameter * (lit.dx - lit.w / 2.0) * scale,
+                                    diameter * (lit.dy - lit.h / 2.0) * scale,
+                                    lit.fill,
+                                    lit.rotate,
+                                ),
+                            }
+                        }
+                    }
                 }
             }
 
@@ -806,12 +840,22 @@ pub fn HardwareKnob(
                         transform: "rotate({angle:.2})",
                         for mark in marks.iter() {
                             {
-                                let (lx, ly) = ring_point(mark.normalized, BODY_R - 6.0);
+                                // Standing on the radius, the way a dial's
+                                // scale is actually silkscreened. Printed
+                                // upright they all faced the top of the
+                                // screen, so half the ring was lying on its
+                                // side and the ones near the bottom crowded
+                                // into the centre cap.
+                                let r = BODY_R * 0.80;
+                                let (lx, ly) = ring_point(mark.normalized, r);
+                                let spin = knob_angle(mark.normalized);
                                 rsx! {
                                     if let Some(label) = &mark.label {
                                         text {
-                                            x: "{lx:.2}", y: "{ly + 2.2:.2}",
-                                            fill: "#1a1c1f", font_size: "6.5",
+                                            x: "0", y: "{-r + 2.4:.2}",
+                                            transform: "rotate({spin:.2} {lx:.2} {ly:.2}) \
+                                                        translate({lx:.2} {ly + r:.2})",
+                                            fill: "#15171a", font_size: "7.6",
                                             font_weight: "700", text_anchor: "middle",
                                             "{label}"
                                         }
@@ -826,12 +870,21 @@ pub fn HardwareKnob(
                 if let Some(fl) = spec.flutes {
                     {
                         let fa = if fl.turns == Turns::Cap { inner_angle } else { angle };
+                        // A knurl is cut at a pitch, not at a count. The
+                        // 1176's trim knobs are 20 design px across and were
+                        // getting the same forty ridges as the 84 px INPUT —
+                        // at that size the pair of lines per ridge lands
+                        // inside one pixel and the whole band goes to grey
+                        // mud, which is why a small fluted knob read as a
+                        // smudge with a dot in it. One ridge per ~3.2 screen
+                        // px, and never fewer than eight.
+                        let ridges = flute_count(fl.count, diameter * scale * fl.to);
                         rsx! {
                     g {
                         transform: "rotate({fa:.2})",
-                        for i in 0..fl.count {
+                        for i in 0..ridges {
                             {
-                                let count = fl.count as f64;
+                                let count = ridges as f64;
                                 let a = (i as f64 / count) * std::f64::consts::TAU;
                                 // Half a flute over, for the shadowed side.
                                 let b = a + std::f64::consts::TAU / (count * 2.0);

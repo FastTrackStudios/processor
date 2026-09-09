@@ -400,14 +400,20 @@ pub static COLLET: KnobSpec = KnobSpec {
         shadow: Some("rgba(0,0,0,0.40)"),
         turns: Turns::Cap,
     }),
-    // Flat top: a sheen across the face, not a highlight on a dome.
+    // Flat top: a sheen across the whole face, not a blob on a dome.
+    //
+    // Full size, and shaped by the gradient rather than by the box. A linear
+    // sweep painted into a small offset ellipse does not fade at the
+    // ellipse's edge, so what you saw was the blob's own outline sitting on
+    // the cap — bright right up to a hard elliptical boundary, and past the
+    // rim at the top corner. The sweep now runs the face and is gone by 62%.
     specular: Some(Specular {
-        w: 0.62,
-        h: 0.42,
-        dx: -0.15,
-        dy: -0.19,
-        fill: "linear-gradient(150deg, rgba(255,255,255,0.20) 0%, \
-               rgba(255,255,255,0.04) 46%, rgba(255,255,255,0.0) 72%)",
+        w: 1.0,
+        h: 1.0,
+        dx: 0.0,
+        dy: 0.0,
+        fill: "linear-gradient(152deg, rgba(255,255,255,0.22) 0%, \
+               rgba(255,255,255,0.07) 34%, rgba(255,255,255,0.0) 62%)",
         rotate: 0.0,
         rim: None,
         r: 1.0,

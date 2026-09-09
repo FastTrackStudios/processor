@@ -63,6 +63,12 @@ static ITEMS_1176: &[RackItem] = &[
         style: None,
     },
     // ── The trims that live between them ─────────────────────────────
+    //
+    // 32 px, not 20. They are a third of the mains either way, which is what
+    // a trim should read as — but at 20 on a 960 px panel the knurl lands
+    // inside a pixel and the index has nowhere to be, so both were bright
+    // dots you could not tell apart or read the position of. Still unwired
+    // (`id: ""`): the HR and Mix controls are drawn but not bound.
     RackItem::Text {
         x: 217.0,
         y: 74.0,
@@ -75,7 +81,7 @@ static ITEMS_1176: &[RackItem] = &[
         legend: "",
         x: 217.0,
         y: 104.0,
-        d: 20.0,
+        d: 32.0,
         ring: Ring::None,
         tint: None,
         style: Some(KnobStyle::MetalFluted),
@@ -92,7 +98,7 @@ static ITEMS_1176: &[RackItem] = &[
         legend: "",
         x: 217.0,
         y: 198.0,
-        d: 20.0,
+        d: 32.0,
         ring: Ring::None,
         tint: None,
         style: Some(KnobStyle::MetalFluted),
