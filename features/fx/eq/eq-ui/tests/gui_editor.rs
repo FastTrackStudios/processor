@@ -2015,3 +2015,94 @@ async fn the_delete_command_removes_a_character_from_the_name_field()
     );
     Ok(())
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// The detail panel's own dials
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Document point of a dial in the open band panel, found by its readout.
+///
+/// A [`Knob`](fts_audio_ui::controls::knob::Knob) tags its gesture surface
+/// `knob-{name}-dial` — the box a hand actually presses.
+fn panel_dial(fx: &support::Fixture, name: &str) -> (f64, f64) {
+    let id = format!("knob-{name}-dial");
+    let el = fx
+        .tester
+        .query(dioxus_test::by_testid(id.as_str()))
+        .immediately()
+        .unwrap_or_else(|e| panic!("no {name} dial in the band panel: {e:?}"));
+    let (x, y) = el.document_origin();
+    let (w, h) = el.size();
+    (x + f64::from(w) / 2.0, y + f64::from(h) / 2.0)
+}
+
+/// Dragging a dial in the band detail panel must move its parameter.
+///
+/// The panel stops pointer events so they never reach the graph underneath —
+/// without that, its own coordinates get read as a band drag and the band
+/// jumps across the plot. But `DragProvider` lives *above* the graph, so
+/// stopping them cut the panel's own dials off from the drag layer: a press
+/// on FREQ, GAIN or Q opened a host edit gesture and then nothing moved.
+#[tokio::test]
+async fn dragging_a_panel_dial_moves_its_parameter() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let bp = &fx.params.bands[1];
+    let before = bp.gain_db.value();
+
+    let node = fx.band_point(1);
+    fx.tester.pointer_move(node.0, node.1, false);
+    fx.settle().await;
+    let (dx, dy) = panel_dial(&fx, "GAIN");
+
+    fx.tester.pointer_down(dx, dy);
+    fx.settle().await;
+    for step in 1..=8 {
+        fx.tester.pointer_move(dx, dy - f64::from(step) * 4.0, true);
+        fx.settle().await;
+    }
+    fx.tester.pointer_up(dx, dy - 32.0);
+    fx.settle().await;
+
+    let after = bp.gain_db.value();
+    assert!(
+        (after - before).abs() > 0.01,
+        "dragging the panel's GAIN dial left it at {before} dB",
+    );
+    Ok(())
+}
+
+/// And the gesture it opened has to close.
+///
+/// The swallowed `mouseup` is the half of that bug with teeth: the drag ends
+/// as far as the hand is concerned, but `end_set_parameter` is never sent, so
+/// the host is left inside an automation gesture on that parameter — and the
+/// next press begins another one on top of it. A plugin does not survive many
+/// of those.
+#[tokio::test]
+async fn a_panel_dial_closes_the_host_gesture_it_opened() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let key = ptr_key(fx.params.bands[1].gain_db.as_ptr());
+
+    let node = fx.band_point(1);
+    fx.tester.pointer_move(node.0, node.1, false);
+    fx.settle().await;
+    let (dx, dy) = panel_dial(&fx, "GAIN");
+
+    fx.log.lock().unwrap().clear();
+    fx.tester.pointer_down(dx, dy);
+    fx.settle().await;
+    fx.tester.pointer_move(dx, dy - 16.0, true);
+    fx.settle().await;
+    fx.tester.pointer_up(dx, dy - 16.0);
+    fx.settle().await;
+
+    let log = fx.log.lock().unwrap().clone();
+    let begins = log.iter().filter(|g| **g == Gesture::Begin(key)).count();
+    let ends = log.iter().filter(|g| **g == Gesture::End(key)).count();
+    assert_eq!(
+        (begins, ends),
+        (1, 1),
+        "unbalanced host gesture on the panel's GAIN dial: {log:?}",
+    );
+    Ok(())
+}

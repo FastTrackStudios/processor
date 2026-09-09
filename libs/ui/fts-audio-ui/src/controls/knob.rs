@@ -223,6 +223,10 @@ pub fn Knob(
 
                 if !disabled {
                     div {
+                        // The surface a hand actually presses. Addressable so
+                        // a test can drag the dial rather than guessing an
+                        // offset from the readout under it.
+                        "data-testid": "knob-{param_name}-dial",
                         style: "position:absolute; inset:0; cursor:ns-resize; user-select:none;",
                         tabindex: "0",
                         onmousedown: {

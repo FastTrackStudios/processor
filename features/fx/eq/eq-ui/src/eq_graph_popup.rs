@@ -296,6 +296,10 @@ pub fn BandPopup(
 
     let stereo_mode = band.stereo_mode;
 
+    // The editor's drag layer. The panel stops pointer events reaching the
+    // graph, so it has to feed this itself — see the handlers below.
+    let mut drag: Signal<fts_audio_ui::drag::DragState> = use_context();
+
     let (popup_x, popup_y, popup_w, popup_h) =
         band_popup_rect(bx, by, graph_w, graph_h, is_dragging);
 
@@ -327,11 +331,20 @@ pub fn BandPopup(
             // graph fades the panel out from under the cursor before anything
             // in it can be clicked. Stopping them here also records the moment
             // of contact, which `EqGraph` uses to hold focus open.
+            //
+            // Stopping them also cut the panel's own dials off from
+            // `DragProvider`, which lives above the graph: a drag started on
+            // FREQ, GAIN or Q got no moves and — because the mouseup was
+            // swallowed too — never ended, leaving the parameter's host edit
+            // gesture open. So the drag layer is pumped here, by hand, before
+            // the event is stopped.
             onmousemove: move |evt: MouseEvent| {
+                fts_audio_ui::drag::drag_move(&evt, &mut drag);
                 evt.stop_propagation();
                 popup_activity.set(crate::eq_graph::now_ms());
             },
             onmouseup: move |evt: MouseEvent| {
+                fts_audio_ui::drag::drag_end(&mut drag);
                 evt.stop_propagation();
                 popup_activity.set(crate::eq_graph::now_ms());
             },

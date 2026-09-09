@@ -108,6 +108,91 @@ pub fn begin_drag_xy(
     });
 }
 
+/// Advance an in-flight drag from a `mousemove`.
+///
+/// [`DragProvider`] calls this from the editor root, which is enough for any
+/// widget whose events bubble all the way up. A surface that has to
+/// `stop_propagation()` — the EQ's band panel does, because its coordinates
+/// would otherwise be read by the graph underneath as a band drag — must call
+/// this itself, or the drag it started never moves and, worse, never ends:
+/// the parameter's host gesture is left open. That was the whole reason the
+/// dials in that panel did not work.
+// r[impl fx.control.capture]
+// r[impl fx.control.drag.axis]
+// r[impl fx.control.fine]
+// r[impl fx.control.bipolar]
+pub fn drag_move(evt: &MouseEvent, drag: &mut Signal<DragState>) {
+    let mut state = drag.read().clone();
+    if !state.active {
+        return;
+    }
+    let Some(handle) = state.handle.clone() else {
+        return;
+    };
+    let pos = evt.client_coordinates();
+    let mult = crate::gesture::fine_multiplier(evt.modifiers());
+
+    // A modifier pressed or released mid-drag changes the ratio from *here*:
+    // re-anchor at the current cursor and value so the knob does not jump to
+    // where the new ratio would have put it.
+    if state.last_mult == 0.0 {
+        state.last_mult = mult;
+    } else if mult != state.last_mult {
+        state.start_x = pos.x;
+        state.start_y = pos.y;
+        state.start_value = handle.normalized();
+        if let Some(hy) = &state.handle_y {
+            state.start_value_y = hy.normalized();
+        }
+        state.last_mult = mult;
+    }
+
+    let sens = state.sensitivity * mult;
+    let delta = match state.axis {
+        DragAxis::Vertical => (state.start_y - pos.y) / sens,
+        DragAxis::Horizontal | DragAxis::Both => (pos.x - state.start_x) / sens,
+    };
+    if let (DragAxis::Both, Some(hy)) = (state.axis, &state.handle_y) {
+        let dy = (state.start_y - pos.y) / sens;
+        hy.set_normalized((state.start_value_y as f64 + dy).clamp(0.0, 1.0) as f32);
+    }
+    let mut new_val = (state.start_value as f64 + delta).clamp(0.0, 1.0);
+
+    // Soft detent at a bipolar parameter's default (0 dB, centre): within
+    // DETENT_PX of drag around it the value sticks, so landing on it by hand
+    // is reliable. Fine drags skip it.
+    if handle.is_bipolar() && mult == 1.0 {
+        let detent = handle.default_normalized() as f64;
+        let half = crate::gesture::DETENT_PX / state.sensitivity;
+        if (new_val - detent).abs() < half {
+            new_val = detent;
+        }
+    }
+
+    handle.set_normalized(new_val as f32);
+    state.move_count += 1;
+    drag.set(state);
+}
+
+/// End an in-flight drag from a `mouseup`, closing the host's edit gesture.
+///
+/// Idempotent, and safe to call when nothing is dragging — which is what lets
+/// a surface that stops propagation call it unconditionally.
+// r[impl fx.control.capture]
+pub fn drag_end(drag: &mut Signal<DragState>) {
+    let state = drag.read().clone();
+    if !state.active {
+        return;
+    }
+    if let Some(handle) = &state.handle {
+        handle.end_edit();
+    }
+    if let Some(hy) = &state.handle_y {
+        hy.end_edit();
+    }
+    drag.set(DragState::default());
+}
+
 /// Wrap your editor root in this. Captures `mousemove`/`mouseup` and feeds
 /// them to whichever widget started a drag.
 #[component]
@@ -119,77 +204,8 @@ pub fn DragProvider(children: Element) -> Element {
     rsx! {
         div {
             style: "width:100vw; height:100vh;",
-
-            // r[impl fx.control.capture]
-            // r[impl fx.control.drag.axis]
-            // r[impl fx.control.fine]
-            // r[impl fx.control.bipolar]
-            onmousemove: move |evt: MouseEvent| {
-                let mut state = drag.read().clone();
-                if !state.active {
-                    return;
-                }
-                let Some(handle) = state.handle.clone() else { return };
-                let pos = evt.client_coordinates();
-                let mult = crate::gesture::fine_multiplier(evt.modifiers());
-
-                // A modifier pressed or released mid-drag changes the ratio
-                // from *here*: re-anchor at the current cursor and value so
-                // the knob does not jump to where the new ratio would have
-                // put it.
-                if state.last_mult == 0.0 {
-                    state.last_mult = mult;
-                } else if mult != state.last_mult {
-                    state.start_x = pos.x;
-                    state.start_y = pos.y;
-                    state.start_value = handle.normalized();
-                    if let Some(hy) = &state.handle_y {
-                        state.start_value_y = hy.normalized();
-                    }
-                    state.last_mult = mult;
-                }
-
-                let sens = state.sensitivity * mult;
-                let delta = match state.axis {
-                    DragAxis::Vertical => (state.start_y - pos.y) / sens,
-                    DragAxis::Horizontal | DragAxis::Both => (pos.x - state.start_x) / sens,
-                };
-                if let (DragAxis::Both, Some(hy)) = (state.axis, &state.handle_y) {
-                    let dy = (state.start_y - pos.y) / sens;
-                    hy.set_normalized((state.start_value_y as f64 + dy).clamp(0.0, 1.0) as f32);
-                }
-                let mut new_val = (state.start_value as f64 + delta).clamp(0.0, 1.0);
-
-                // Soft detent at a bipolar parameter's default (0 dB, centre):
-                // within DETENT_PX of drag around it the value sticks, so
-                // landing on it by hand is reliable. Fine drags skip it.
-                if handle.is_bipolar() && mult == 1.0 {
-                    let detent = handle.default_normalized() as f64;
-                    let half = crate::gesture::DETENT_PX / state.sensitivity;
-                    if (new_val - detent).abs() < half {
-                        new_val = detent;
-                    }
-                }
-
-                handle.set_normalized(new_val as f32);
-                state.move_count += 1;
-                drag.set(state);
-            },
-
-            // r[impl fx.control.capture]
-            onmouseup: move |_| {
-                let state = drag.read().clone();
-                if state.active {
-                    if let Some(handle) = &state.handle {
-                        handle.end_edit();
-                    }
-                    if let Some(hy) = &state.handle_y {
-                        hy.end_edit();
-                    }
-                    drag.set(DragState::default());
-                }
-            },
-
+            onmousemove: move |evt: MouseEvent| drag_move(&evt, &mut drag),
+            onmouseup: move |_| drag_end(&mut drag),
             {children}
         }
     }
