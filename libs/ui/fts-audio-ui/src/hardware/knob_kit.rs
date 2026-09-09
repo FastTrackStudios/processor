@@ -217,6 +217,19 @@ pub enum Index {
     /// A pointer knob's moulded nose, reaching past the body toward the
     /// panel's printed scale.
     Nose { color: &'static str },
+    /// A chicken-head: the pointer *is* the knob. A flat moulding with a
+    /// broad rounded tail, a waist, and a beak overhanging the hub it turns
+    /// on.
+    ///
+    /// The one shape in the kit that reads as a **switch** rather than a
+    /// control — tweed Fender, Ampeg, the EMS VCS3, and the meter selector on
+    /// half the outboard ever built. A stepped selector drawn as a round knob
+    /// is the same picture as a continuous one, and the beak is the whole
+    /// convention for "this one clicks".
+    ///
+    /// `body` is the hub it sits on, as a fraction of the knob; the beak's
+    /// reach past the rim is measured off the knob itself.
+    Beak { color: &'static str, body: f64 },
     /// None: the knob is read another way. A Distressor's numerals turn with
     /// its skirt past a fixed panel mark.
     None,

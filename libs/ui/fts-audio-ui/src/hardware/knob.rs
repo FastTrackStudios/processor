@@ -103,6 +103,15 @@ pub enum KnobStyle {
     /// Pairs with `inner_handle` on [`HardwareKnob`]: on the module the ring
     /// and the cap are two different controls, and the toothed one is the cap.
     Neve,
+    /// A chicken-head: the pointer *is* the knob. A flat cream moulding with
+    /// a broad tail and a beak, turning on a small dark hub — tweed Fender,
+    /// Ampeg, the EMS VCS3, and the meter selector on half the outboard ever
+    /// built.
+    ///
+    /// The only shape in the kit that reads as a **switch** rather than a
+    /// control, which is what it is for: a stepped selector drawn as a round
+    /// knob is the same picture as a continuous one.
+    ChickenHead,
     /// Empirical Labs Distressor: a wide brushed dial whose *numerals are
     /// printed on the skirt* and turn with it, around a dark centre cap. The
     /// scale moving rather than a pointer moving is the whole look, and it is
@@ -113,7 +122,7 @@ pub enum KnobStyle {
 impl KnobStyle {
     /// Every knob in the kit, so a test or a contact sheet can walk them all
     /// without anyone having to remember to add the new one.
-    pub const ALL: [KnobStyle; 11] = [
+    pub const ALL: [KnobStyle; 12] = [
         Self::Bakelite,
         Self::Metal,
         Self::Skirted,
@@ -124,6 +133,7 @@ impl KnobStyle {
         Self::MetalFluted,
         Self::Pointer,
         Self::Neve,
+        Self::ChickenHead,
         Self::Dial,
     ];
 
@@ -147,6 +157,7 @@ impl KnobStyle {
             Self::MetalFluted => &kit::METAL_FLUTED,
             Self::Pointer => &kit::POINTER,
             Self::Neve => &kit::NEVE,
+            Self::ChickenHead => &kit::CHICKEN_HEAD,
             Self::Dial => &kit::DIAL,
         }
     }
@@ -297,6 +308,48 @@ fn wing_highlight_points(body_r: f64) -> String {
     )
 }
 
+/// How far a chicken-head's beak overhangs the hub it turns on, and how far
+/// the tail runs the other way, as multiples of the knob's radius.
+///
+/// The overhang is the silhouette. A beak contained inside its own hub is a
+/// blob with a point on it.
+const BEAK_REACH: f64 = 1.15;
+const BEAK_TAIL: f64 = 0.85;
+
+/// The chicken-head moulding, as an SVG path in the knob's viewBox, pointing
+/// up before rotation.
+///
+/// Proportions off the Fender part: a rounded tail lobe about two thirds of
+/// the length, a waist, and a **short, wide** beak whose flanks are straight.
+/// Curve them and you get a teardrop; make them long and you get a compass
+/// needle. The first two attempts were each of those.
+fn beak_path(_hub_r: f64) -> String {
+    let tip = -(BODY_R * BEAK_REACH);
+    let tail = BODY_R * BEAK_TAIL;
+    // Where the beak's straight flanks meet the body.
+    let (sx, sy) = (BODY_R * 0.29, -BODY_R * 0.42);
+    // The widest part of the tail lobe.
+    let (wx, wy) = (BODY_R * 0.66, BODY_R * 0.16);
+    format!(
+        "M 0 {tip:.2} \
+         L {sx:.2} {sy:.2} \
+         Q {c:.2} {d:.2} {wx:.2} {wy:.2} \
+         Q {e:.2} {tail:.2} 0 {tail:.2} \
+         Q {f:.2} {tail:.2} {g:.2} {wy:.2} \
+         Q {h:.2} {d:.2} {i:.2} {sy:.2} \
+         L 0 {tip:.2} Z",
+        // the shoulder, out to the widest part of the lobe
+        c = BODY_R * 0.62,
+        d = -BODY_R * 0.20,
+        // and round the back
+        e = BODY_R * 0.62,
+        f = -BODY_R * 0.62,
+        g = -wx,
+        h = -BODY_R * 0.62,
+        i = -sx,
+    )
+}
+
 /// One index, in the knob's viewBox, before rotation.
 ///
 /// Every style's pointer goes through here: a bar between two radii, a
@@ -350,6 +403,33 @@ fn draw_index(index: Index, tint: Option<&str>) -> Element {
                 width: "2.4",
                 height: "{BODY_R * 0.55:.1}",
                 rx: "1.0",
+                fill: "{color}",
+            }
+        },
+        // The chicken-head: the moulding is the pointer, so it takes the
+        // control's colour and the printed line rides on the beak.
+        Index::Beak { color, body } => rsx! {
+            path {
+                d: "{beak_path(BODY_R * body)}",
+                transform: "translate(0.9 1.8)",
+                fill: "rgba(0,0,0,0.45)",
+            }
+            path {
+                d: "{beak_path(BODY_R * body)}",
+                fill: "{tint.unwrap_or(\"#e8e2d4\")}",
+                stroke: "rgba(0,0,0,0.55)",
+                stroke_width: "0.9",
+            }
+            // The line on the beak, which is what you read exactly — the
+            // silhouette only tells you roughly. It stops at the waist: run
+            // the whole moulding and it reads as a second spike laid over
+            // the first.
+            rect {
+                x: "-1.4",
+                y: "{-(BODY_R * (BEAK_REACH - 0.16)):.1}",
+                width: "2.8",
+                height: "{BODY_R * (BEAK_REACH - 0.52):.1}",
+                rx: "1.4",
                 fill: "{color}",
             }
         },
@@ -590,8 +670,16 @@ pub fn HardwareKnob(
                 }
 
                 // Body shadow — the knob sits proud of the panel.
+                //
+                // Sized to the outermost tier, not to the knob. It used to be
+                // a full-radius disc under every style, which is invisible
+                // while the widest tier is also full radius — and a bare grey
+                // plate the size of the knob the moment one is not. The
+                // chicken-head, whose hub is under half the radius, sat on a
+                // saucer.
                 circle {
-                    cx: "0", cy: "1.5", r: "{BODY_R:.1}",
+                    cx: "0", cy: "1.5",
+                    r: "{BODY_R * spec.tiers.first().map_or(1.0, |t| t.r):.1}",
                     fill: "rgba(0,0,0,0.35)",
                 }
             }
@@ -653,17 +741,25 @@ pub fn HardwareKnob(
                                                 "width:100%; height:100%; border-radius:50%; \
                                                  background:{0}; \
                                                  border:{1:.1}px solid rgba(0,0,0,0.45); \
-                                                 box-shadow:0 {2:.1}px {3:.1}px rgba(0,0,0,0.55), \
-                                                   0 {4:.1}px {5:.1}px rgba(0,0,0,0.30), \
+                                                 box-shadow:0 {2:.1}px {3:.1}px rgba(0,0,0,0.45), \
+                                                   0 {4:.1}px {5:.1}px rgba(0,0,0,0.26), \
                                                    inset 0 {6:.1}px {7:.1}px rgba(0,0,0,{11:.2}), \
                                                    inset 0 {8:.1}px {9:.1}px rgba(255,255,255,{12:.2}); \
                                                  {10}",
                                                 fill,
                                                 (0.5 * scale).max(0.6),
-                                                1.5 * scale,
-                                                3.0 * scale,
-                                                4.0 * scale,
-                                                10.0 * scale,
+                                                // In fractions of the tier,
+                                                // not absolute px: a fixed
+                                                // 10 px blur under a small
+                                                // tier is a grey halo the
+                                                // size of the knob, which is
+                                                // invisible on a black panel
+                                                // and a smudge on a cream
+                                                // one.
+                                                px * 0.020,
+                                                px * 0.045,
+                                                px * 0.055,
+                                                px * 0.130,
                                                 -px * 0.10,
                                                 px * 0.16,
                                                 px * 0.05,

@@ -572,6 +572,46 @@ pub static POINTER: KnobSpec = KnobSpec {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
+// Chicken-head — tweed Fender, Ampeg, the EMS VCS3, and the meter selector on
+// half the outboard ever built. The pointer IS the knob: a flat cream
+// moulding with a broad tail and a beak, turning on a small dark hub.
+//
+// The only shape in the kit that reads as a switch rather than a control.
+// ─────────────────────────────────────────────────────────────────────────
+static CHICKEN_HEAD_TIERS: &[Tier] = &[
+    // The hub it turns on. Small and dark: on the panel you see the moulding
+    // and its shadow, not a disc.
+    Tier::new(0.44, Paint::Flat("#0b0b0d"), Turns::Cap).outlined("rgba(255,255,255,0.07)", 0.7),
+    Tier::new(
+        0.38,
+        Paint::Surface {
+            css: "linear-gradient(178deg, #2c2c32 0%, #1c1c21 46%, #101014 100%)",
+            finish: Finish::Matte,
+            tint: false,
+        },
+        Turns::Cap,
+    ),
+];
+
+pub static CHICKEN_HEAD: KnobSpec = KnobSpec {
+    tiers: CHICKEN_HEAD_TIERS,
+    index: Index::Beak {
+        color: "#2a2621",
+        body: 0.46,
+    },
+    collar_index: None,
+    flutes: None,
+    // Flat moulded plastic: a thread of light along the beak's top edge, no
+    // more. The moulding is drawn with its own shadow and outline.
+    specular: None,
+    // The beak overhangs, so the printed scale moves out to clear its tip —
+    // the same problem the Marconi's wing has, and the same fix.
+    ring_offset: 8.0,
+    numerals_on_knob: false,
+    hub: None,
+};
+
+// ─────────────────────────────────────────────────────────────────────────
 // Neve — the 1073 and its module family. A smooth turned outer ring around a
 // GEARED cap, with a painted white index out at the cap's teeth.
 //
@@ -724,9 +764,18 @@ mod tests {
                 !spec.tiers.is_empty(),
                 "{name} has no tiers, so it draws nothing",
             );
-            assert_eq!(
-                spec.tiers[0].r, 1.0,
-                "{name}'s outermost tier must fill the knob",
+            // The knob has to fill its own radius — but a chicken-head's
+            // body IS its index, turning on a hub under half the width, so
+            // the rule is about the silhouette rather than about tiers.
+            let overhangs = matches!(
+                spec.index,
+                Index::Wing { .. } | Index::Nose { .. } | Index::Beak { .. }
+            );
+            assert!(
+                spec.tiers[0].r == 1.0 || overhangs,
+                "{name}'s widest tier is {} and no part of it overhangs, \
+                 so the knob does not fill its own radius",
+                spec.tiers[0].r,
             );
             for pair in spec.tiers.windows(2) {
                 assert!(
@@ -813,7 +862,7 @@ mod tests {
                     assert!(to <= 1.0, "{style:?}'s index runs off the knob");
                 }
                 Index::Blade { to, .. } => assert!(to <= 1.0),
-                Index::Wing { .. } | Index::Nose { .. } => assert!(
+                Index::Wing { .. } | Index::Nose { .. } | Index::Beak { .. } => assert!(
                     spec.ring_offset > 0.0,
                     "{style:?} overhangs the knob but does not move the \
                      printed scale out of its way",
