@@ -173,6 +173,28 @@ pub const POPUP_GAP: f64 = 18.0;
 /// Slack around the popup/node region that still counts as "on the band".
 const POPUP_REGION_PAD: f64 = 10.0;
 
+/// How long the panel stays where it is after you stop touching it, in ms.
+///
+/// The panel tracks its band horizontally, so turning the band's own FREQ
+/// dial slides the panel out from under the hand turning it — the control
+/// runs away from the cursor that is driving it. Pro-Q's answer, and ours:
+/// while the panel is in use it does not move, and it only catches up once
+/// you have left it alone.
+const PANEL_HOLD_MS: f64 = 2000.0;
+
+/// Where the panel sits: its live position, or the one it was pinned at.
+///
+/// `in_use` is "a drag is running, or the pointer touched the panel less than
+/// [`PANEL_HOLD_MS`] ago". A panel with no pin yet tracks normally — the pin
+/// is taken on first contact, so there is always one by the time it matters.
+#[must_use]
+pub fn held_panel_x(live: f64, pinned: Option<f64>, in_use: bool) -> f64 {
+    match (in_use, pinned) {
+        (true, Some(x)) => x,
+        _ => live,
+    }
+}
+
 /// Geometry of the band detail panel in graph-element pixels: `(x, y, w, h)`.
 ///
 /// Shared with `EqGraph`'s focus logic — the graph needs the same rect to know
@@ -300,8 +322,15 @@ pub fn BandPopup(
     // graph, so it has to feed this itself — see the handlers below.
     let mut drag: Signal<fts_audio_ui::drag::DragState> = use_context();
 
-    let (popup_x, popup_y, popup_w, popup_h) =
+    let (live_x, popup_y, popup_w, popup_h) =
         band_popup_rect(bx, by, graph_w, graph_h, is_dragging);
+
+    // Where the panel is pinned while it is being used. Set from the panel's
+    // own pointer handlers — never during render — and consulted here.
+    let mut pinned_x = use_signal(|| None::<f64>);
+    let in_use = drag.read().active
+        || crate::eq_graph::now_ms() - *popup_activity.read() < PANEL_HOLD_MS;
+    let popup_x = held_panel_x(live_x, *pinned_x.read(), in_use);
 
 
     rsx! {
@@ -341,6 +370,12 @@ pub fn BandPopup(
             onmousemove: move |evt: MouseEvent| {
                 fts_audio_ui::drag::drag_move(&evt, &mut drag);
                 evt.stop_propagation();
+                // A pointer resting on the panel holds it still too, not just
+                // one that has pressed something: the panel must not slide
+                // away while you are reading it.
+                if pinned_x.peek().is_none() {
+                    pinned_x.set(Some(popup_x));
+                }
                 popup_activity.set(crate::eq_graph::now_ms());
             },
             onmouseup: move |evt: MouseEvent| {
@@ -350,6 +385,9 @@ pub fn BandPopup(
             },
             onmousedown: move |evt: MouseEvent| {
                 evt.stop_propagation();
+                // Freeze where the panel is *now*, before the press can move
+                // the band that it follows.
+                pinned_x.set(Some(popup_x));
                 popup_activity.set(crate::eq_graph::now_ms());
             },
             onwheel: move |evt: WheelEvent| {
@@ -1183,5 +1221,27 @@ pub fn BandReadoutChip(band_idx: usize, bx: f64, by: f64, graph_w: f64, graph_h:
                 "{width}"
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    /// While the panel is in use it stays where it was pinned, and when it is
+    /// not it follows its band again.
+    ///
+    /// This is the decision on its own, because the wiring around it is not
+    /// reachable headless: the band's screen position comes from a signal
+    /// that `control_view` refreshes when it re-renders, and nothing
+    /// re-renders it mid-drag without the editor's frame loop. In the harness
+    /// the band does not move during a panel drag at all, so an end-to-end
+    /// test of "the panel did not follow it" would pass against no fix.
+    #[test]
+    fn a_panel_in_use_stays_where_it_was_pinned() {
+        assert_eq!(held_panel_x(480.0, Some(300.0), true), 300.0);
+        assert_eq!(held_panel_x(480.0, Some(300.0), false), 480.0);
+        // Untouched, so nothing to hold it at: it tracks.
+        assert_eq!(held_panel_x(480.0, None, true), 480.0);
     }
 }

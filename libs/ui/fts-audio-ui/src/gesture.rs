@@ -115,7 +115,14 @@ pub fn press(
         handle.reset_to_default();
         return Press::Reset;
     }
-    let p = evt.client_coordinates();
+    // Screen coordinates, not client. Two reasons, and the second is the one
+    // that bites: client coords are relative to the viewport, so a host that
+    // clamps an out-of-window pointer back inside it — which
+    // `nice-plug-dioxus` must, or Blitz's hit test drops the event entirely —
+    // freezes the delta at the edge. The knob stops the moment your hand
+    // reaches the top of the plugin window, which is well before it reaches
+    // the top of the parameter. Screen coords carry the true position.
+    let p = evt.screen_coordinates();
     begin_drag_axis(drag, handle.clone(), axis, p.x, p.y, sensitivity);
     Press::Drag
 }

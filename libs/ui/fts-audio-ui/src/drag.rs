@@ -129,7 +129,9 @@ pub fn drag_move(evt: &MouseEvent, drag: &mut Signal<DragState>) {
     let Some(handle) = state.handle.clone() else {
         return;
     };
-    let pos = evt.client_coordinates();
+    // Screen coords: see `gesture::press`. A drag is measured against the
+    // desk, not against the window it started in.
+    let pos = evt.screen_coordinates();
     let mult = crate::gesture::fine_multiplier(evt.modifiers());
 
     // A modifier pressed or released mid-drag changes the ratio from *here*:

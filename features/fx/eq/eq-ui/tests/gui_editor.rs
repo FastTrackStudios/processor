@@ -2106,3 +2106,52 @@ async fn a_panel_dial_closes_the_host_gesture_it_opened() -> dioxus_test::Result
     );
     Ok(())
 }
+
+/// Pressing a dial on the panel pins the panel where it is.
+///
+/// The panel tracks its band horizontally, so turning the band's own FREQ
+/// dial slides the panel out from under the hand turning it — the control
+/// runs away from the cursor driving it. Pro-Q's answer, and ours: while the
+/// panel is in use it holds still, and only catches up once you have left it
+/// alone. The decision itself is
+/// [`held_panel_x`](eq_ui::eq_graph_popup::held_panel_x), unit-tested beside
+/// it; what this covers is that a press on a dial actually reaches it.
+///
+/// Not asserted here: that the panel fails to follow a moving band. It could
+/// not fail — the band's screen position comes from a signal `control_view`
+/// refreshes on re-render, and nothing re-renders it mid-drag without the
+/// editor's frame loop, so headless the band does not move during a panel
+/// drag at all and the assertion would pass against no fix.
+#[tokio::test]
+async fn a_press_on_a_panel_dial_does_not_move_the_panel() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let bp = &fx.params.bands[1];
+    let hz_before = bp.freq_hz.value();
+
+    let node = fx.band_point(1);
+    fx.tester.pointer_move(node.0, node.1, false);
+    fx.settle().await;
+    let before_x = fx.panel().expect("panel is not mounted").document_origin().0;
+
+    let (dx, dy) = panel_dial(&fx, "FREQ");
+    fx.tester.pointer_down(dx, dy);
+    fx.settle().await;
+    for step in 1..=6 {
+        fx.tester.pointer_move(dx, dy - f64::from(step) * 3.0, true);
+        fx.settle().await;
+        let x = fx.panel().expect("panel closed mid-drag").document_origin().0;
+        assert!(
+            (x - before_x).abs() < 0.5,
+            "the panel moved {} px while its FREQ dial was being turned",
+            x - before_x,
+        );
+    }
+    fx.tester.pointer_up(dx, dy - 18.0);
+    fx.settle().await;
+
+    assert!(
+        bp.freq_hz.value() > hz_before,
+        "the FREQ dial did not move: still {hz_before} Hz",
+    );
+    Ok(())
+}

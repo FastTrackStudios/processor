@@ -199,7 +199,7 @@ pub fn LeverSwitch(
                 onmousedown: {
                     let handle = handle.clone();
                     move |evt: MouseEvent| {
-                        let x = evt.client_coordinates().x;
+                        let x = evt.screen_coordinates().x;
                         match gesture::press(&evt, &mut drag, &handle, DragAxis::Horizontal, DRAG_SENSITIVITY) {
                             Press::Drag => press_x.set(Some(x)),
                             // A reset or a menu press is not the start of a
@@ -223,7 +223,7 @@ pub fn LeverSwitch(
                         // After a real drag the value is already where the
                         // user put it and must not be bumped one further.
                         let Some(sx) = press_x.take() else { return };
-                        if (evt.client_coordinates().x - sx).abs() > CLICK_SLOP {
+                        if (evt.screen_coordinates().x - sx).abs() > CLICK_SLOP {
                             return;
                         }
                         let next = (selected + 1) % count;

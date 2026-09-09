@@ -329,45 +329,30 @@ fn taper_points(from: f64, to: f64, hub_half: f64, tip_half: f64) -> String {
     )
 }
 
-/// How far a chicken-head's beak overhangs the hub it turns on, and how far
-/// the tail runs the other way, as multiples of the knob's radius.
-///
-/// The overhang is the silhouette. A beak contained inside its own hub is a
-/// blob with a point on it.
-const BEAK_REACH: f64 = 1.15;
-const BEAK_TAIL: f64 = 0.85;
+/// How far a chicken-head's beak reaches past the hub it turns on, and how
+/// big the round body lobe is, as multiples of the knob's radius.
+const BEAK_REACH: f64 = 1.25;
+const BEAK_LOBE: f64 = 0.62;
+/// Half-angle from vertical at which the beak's flanks leave the lobe.
+const BEAK_SHOULDER: f64 = 0.62; // ≈ 35°
 
 /// The chicken-head moulding, as an SVG path in the knob's viewBox, pointing
-/// up before rotation.
+/// up before rotation: a round body lobe **centred on the shaft**, with a
+/// short straight-flanked beak standing off it.
 ///
-/// Proportions off the Fender part: a rounded tail lobe about two thirds of
-/// the length, a waist, and a **short, wide** beak whose flanks are straight.
-/// Curve them and you get a teardrop; make them long and you get a compass
-/// needle. The first two attempts were each of those.
+/// Centred on the shaft is the whole of it. Drawn as one long teardrop the
+/// moulding's mass sits below the origin, so turning it swings the body
+/// around the centre — the knob orbits instead of rotating, which is what it
+/// looked like. A real chicken-head is a disc with a beak on it, and the
+/// shaft goes through the middle of the disc.
 fn beak_path(_hub_r: f64) -> String {
+    let lr = BODY_R * BEAK_LOBE;
     let tip = -(BODY_R * BEAK_REACH);
-    let tail = BODY_R * BEAK_TAIL;
-    // Where the beak's straight flanks meet the body.
-    let (sx, sy) = (BODY_R * 0.29, -BODY_R * 0.42);
-    // The widest part of the tail lobe.
-    let (wx, wy) = (BODY_R * 0.66, BODY_R * 0.16);
+    let (sx, sy) = (lr * BEAK_SHOULDER.sin(), -lr * BEAK_SHOULDER.cos());
     format!(
-        "M 0 {tip:.2} \
-         L {sx:.2} {sy:.2} \
-         Q {c:.2} {d:.2} {wx:.2} {wy:.2} \
-         Q {e:.2} {tail:.2} 0 {tail:.2} \
-         Q {f:.2} {tail:.2} {g:.2} {wy:.2} \
-         Q {h:.2} {d:.2} {i:.2} {sy:.2} \
-         L 0 {tip:.2} Z",
-        // the shoulder, out to the widest part of the lobe
-        c = BODY_R * 0.62,
-        d = -BODY_R * 0.20,
-        // and round the back
-        e = BODY_R * 0.62,
-        f = -BODY_R * 0.62,
-        g = -wx,
-        h = -BODY_R * 0.62,
-        i = -sx,
+        "M 0 {tip:.2} L {l:.2} {sy:.2} \
+         A {lr:.2} {lr:.2} 0 1 0 {sx:.2} {sy:.2} Z",
+        l = -sx,
     )
 }
 
@@ -467,9 +452,9 @@ fn draw_index(index: Index, tint: Option<&str>) -> Element {
             // the first.
             rect {
                 x: "-1.4",
-                y: "{-(BODY_R * (BEAK_REACH - 0.16)):.1}",
+                y: "{-(BODY_R * (BEAK_REACH - 0.14)):.1}",
                 width: "2.8",
-                height: "{BODY_R * (BEAK_REACH - 0.52):.1}",
+                height: "{BODY_R * (BEAK_REACH - 0.30):.1}",
                 rx: "1.4",
                 fill: "{color}",
             }

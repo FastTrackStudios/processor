@@ -73,7 +73,9 @@ pub fn XYPad(
                             return;
                         }
                         let p = evt.element_coordinates();
-                        let c = evt.client_coordinates();
+                        // Screen coords for the drag anchor, to match
+                        // `drag_move` — see `gesture::press`.
+                        let c = evt.screen_coordinates();
                         xh.set_normalized((p.x / s).clamp(0.0, 1.0) as f32);
                         yh.set_normalized((1.0 - p.y / s).clamp(0.0, 1.0) as f32);
                         // One pad pixel = one normalized unit of pad, so the
