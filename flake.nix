@@ -1,43 +1,50 @@
 {
-  description = "FastTrackStudio — one workspace: daw / session / signal / keyflow + THE app";
+  description = "Processor — the DSP, the effects, and the plugins.";
 
-  # Dendritic layout (den): every .nix under nix/modules/ is a
-  # flake-parts module, auto-loaded by import-tree — one file per
-  # concern, no central wiring. Shared values flow through the typed
-  # `fts.*` perSystem options (nix/modules/options.nix); den's aspect
-  # system (nix/modules/den.nix) is the sharing surface with the
-  # system flake.
-  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; }
-    (inputs.import-tree ./nix/modules);
-
+  # Deliberately a single file, unlike signal's dendritic nix/modules tree.
+  # This repo builds Rust and nothing else: no web bundles, no REAPER config,
+  # no deployable images. The shared toolchain hub is what matters — it is
+  # what keeps the Rust pin and `dx` in lockstep across every FTS repo, so
+  # a plugin built here is built by the same compiler as one built in signal.
   inputs = {
-    den.url = "github:denful/den";
-    import-tree.url = "github:vic/import-tree";
-
-    # Shared Dioxus toolchain hub — every FTS Dioxus repo follows its
-    # nixpkgs / rust-overlay pins so `dx` and the Rust toolchain stay
-    # in lockstep.
     dioxus-flake.url = "github:FastTrackStudios/Dioxus-Flake";
     nixpkgs.follows = "dioxus-flake/nixpkgs";
     rust-overlay.follows = "dioxus-flake/rust-overlay";
-    flake-parts.url = "github:hercules-ci/flake-parts";
-
-    # crane — cargo-in-nix builds for the deployable images (task-server
-    # + the dx web bundles). Same pin style the dissolved task flake used.
-    crane.url = "github:ipetkov/crane";
-
-    # Dedicated, current-unstable nixpkgs used ONLY to source `dx`
-    # (dioxus-cli) at the version the workspace Cargo.lock pins (0.7.9)
-    # plus binaryen 129 — see nix/modules/dx.nix.
-    nixpkgs-dx.url = "github:NixOS/nixpkgs/d99b013d5d1931ad77fe3912ed218170dec5d9a4";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
-  nixConfig = {
-    extra-trusted-public-keys = [
-      "fasttrackstudio.cachix.org-1:r7v7WXBeSZ7m5meL6w0wttnvsOltRvTpXeVNItcy9f4="
-    ];
-    extra-substituters = [
-      "https://fasttrackstudio.cachix.org"
-    ];
-  };
+  outputs = { nixpkgs, rust-overlay, flake-utils, ... }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
+        };
+        # The workspace pin. Same as signal's, and it has to stay that way:
+        # these crates are consumed from there as a git dep.
+        toolchain = pkgs.rust-bin.stable."1.94.0".default.override {
+          targets = [ "wasm32-unknown-unknown" ];
+          extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
+        };
+      in
+      {
+        devShells.default = pkgs.mkShell {
+          packages = [
+            toolchain
+            pkgs.just
+            pkgs.cargo-nextest
+            # stylo's build script generates its property tables with a
+            # Python script, so the Blitz stack does not compile without it.
+            pkgs.python3
+          ]
+            # The plugin faces render through wgpu, and the standalone host
+            # opens a real window; on Linux that needs the audio and X11
+            # headers. macOS gets them from the SDK.
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.pkg-config pkgs.alsa-lib pkgs.libjack2 pkgs.pipewire
+              pkgs.xorg.libX11 pkgs.xorg.libXcursor pkgs.xorg.libxcb
+              pkgs.libxkbcommon pkgs.vulkan-loader pkgs.mold
+            ];
+        };
+      });
 }

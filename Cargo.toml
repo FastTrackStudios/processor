@@ -38,7 +38,6 @@ members = [
     "features/fx/eq/spectrum-analyzer/spectrum-analyzer-ui",
     "features/fx/hit-detect/hit-detect-dsp",
     "features/fx/level/level",
-    "features/fx/macromod",
     "features/fx/modulation/chorus-dsp",
     "features/fx/modulation/modulation",
     "features/fx/modulation/modulation-profiles",
@@ -242,7 +241,6 @@ engraver-score = { git = "https://github.com/FastTrackStudios/session", tag = "v
 # workspace dependency unless the workspace entry sets it too. Consumers
 # that need the filesystem scanner opt in with `features = ["native"]`.
 signal-nam = { path = "features/nam" }
-signal-macromod = { path = "features/fx/macromod" }
 
 # ── features/fx — built-in FX (wave 4) ────────────────────────────────
 # Facade crates — the public FX deps (downstream uses these, not `*-dsp`).
