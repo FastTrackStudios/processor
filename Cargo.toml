@@ -65,6 +65,8 @@ members = [
     "features/fx/tune/tune",
     "features/preset-browser/preset-browser",
     "features/preset-browser/preset-browser-ui",
+    "libs/ui/fts-audio-ui",
+    "libs/ui/fts-plug-ui",
 ]
 
 [workspace.package]
@@ -78,8 +80,8 @@ repository = "https://github.com/FastTrackStudios/signal"
 [workspace.dependencies]
 # ── Internal — every moved crate, path declared ONCE here ─────────────
 fts-chrome = { git = "https://github.com/FastTrackStudios/daw", tag = "v0.0.6.3" }
-fts-audio-ui = { git = "https://github.com/FastTrackStudios/daw", tag = "v0.0.6.3" }
-fts-plug-ui = { git = "https://github.com/FastTrackStudios/daw", tag = "v0.0.6.3" }
+fts-audio-ui = { path = "libs/ui/fts-audio-ui" }
+fts-plug-ui = { path = "libs/ui/fts-plug-ui" }
 dock-dioxus = { git = "https://github.com/FastTrackStudios/daw", tag = "v0.0.6.3", default-features = false }
 dock-proto = { git = "https://github.com/FastTrackStudios/daw", tag = "v0.0.6.3" }
 # nice-plug lives in its own fork repo (upstream RustAudio/nice-plug's

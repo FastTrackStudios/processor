@@ -71,18 +71,41 @@ pub fn scene(look: &KnobLook) -> Scene {
 }
 
 /// Paint the knob into an existing scene at the origin.
+///
+/// Drawn back to front: cap, then its lit rim, then the track, then the marks
+/// on the track, then the value arc over it, then the pointer. The order is
+/// the point — the value arc has to sit ON the track, and the track has to be
+/// visible for the arc to mean anything. It was not: `track` resolved to the
+/// theme's `border`, which against a near-black panel is the panel, so every
+/// knob read as a bare white stroke floating in space with no scale behind it.
 pub fn paint(s: &mut Scene, look: &KnobLook) {
     let d = look.diameter;
-    let cx = d / 2.0;
-    let cy = d / 2.0;
+    let (cx, cy) = (d / 2.0, d / 2.0);
     let r = d / 2.0 - 4.0;
     let val = look.value.clamp(0.0, 1.0);
     let cap_r = (r - 7.0).max(2.0);
     let at = Affine::IDENTITY;
+    let track_w = 4.0;
 
-    // Cap disc — anchors the knob and gives the arc something to sit on.
+    // ── The cap ─────────────────────────────────────────────────────────
     let cap = Circle::new((cx, cy), cap_r);
     s.fill(Fill::NonZero, at, look.cap_fill, None, &cap);
+
+    // Lit from above, like every physical knob anyone has photographed: a
+    // bright arc across the top of the rim and a dark one under it. Two
+    // strokes are enough to read as a rounded cap and cost nothing next to a
+    // gradient.
+    let rim = |from: f64, to: f64, c: Color, w: f64| {
+        (
+            arc_path(cx, cy, cap_r - w / 2.0, from, to),
+            Stroke::new(w).with_caps(kurbo::Cap::Butt),
+            c,
+        )
+    };
+    let (top, top_stroke, top_c) = rim(190.0, 350.0, look.pointer.with_alpha(0.22), 1.6);
+    s.stroke(&top_stroke, at, top_c, None, &top);
+    let (bot, bot_stroke, bot_c) = rim(10.0, 170.0, Color::BLACK.with_alpha(0.45), 1.6);
+    s.stroke(&bot_stroke, at, bot_c, None, &bot);
     s.stroke(
         &Stroke::new(0.75),
         at,
@@ -91,25 +114,40 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
         &cap,
     );
 
-    // Track.
+    // ── The track ───────────────────────────────────────────────────────
     let track = arc_path(cx, cy, r, START_ANGLE, START_ANGLE + SWEEP);
     s.stroke(
-        &Stroke::new(4.0).with_caps(kurbo::Cap::Round),
+        &Stroke::new(track_w).with_caps(kurbo::Cap::Round),
         at,
         look.track,
         None,
         &track,
     );
 
-    // Centre detent tick (bipolar only, so the 0 mark is visible).
+    // End stops. A knob with no marks says nothing about where its travel
+    // ends; two ticks say it without the mush a full tick ring becomes at
+    // 44 px.
+    for angle in [START_ANGLE, START_ANGLE + SWEEP] {
+        let (x1, y1) = arc_point(cx, cy, r + track_w / 2.0 + 1.0, angle);
+        let (x2, y2) = arc_point(cx, cy, r + track_w / 2.0 + 3.0, angle);
+        s.stroke(
+            &Stroke::new(1.0),
+            at,
+            look.detent.with_alpha(0.55),
+            None,
+            &Line::new((x1, y1), (x2, y2)),
+        );
+    }
+
+    // Centre detent (bipolar only, so the 0 mark is visible).
     if look.bipolar {
         let centre = START_ANGLE + SWEEP / 2.0;
-        let (x1, y1) = arc_point(cx, cy, r - 6.0, centre);
-        let (x2, y2) = arc_point(cx, cy, r + 1.0, centre);
+        let (x1, y1) = arc_point(cx, cy, r - track_w / 2.0 - 1.0, centre);
+        let (x2, y2) = arc_point(cx, cy, r + track_w / 2.0 + 3.0, centre);
         s.stroke(
             &Stroke::new(1.5),
             at,
-            look.detent.with_alpha(0.7),
+            look.detent.with_alpha(0.9),
             None,
             &Line::new((x1, y1), (x2, y2)),
         );
@@ -119,11 +157,7 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
     if let Some((lo, hi)) = look.mod_range {
         let lo_a = angle_for_value(lo.clamp(0.0, 1.0));
         let hi_a = angle_for_value(hi.clamp(0.0, 1.0));
-        let (a, b) = if lo_a <= hi_a {
-            (lo_a, hi_a)
-        } else {
-            (hi_a, lo_a)
-        };
+        let (a, b) = if lo_a <= hi_a { (lo_a, hi_a) } else { (hi_a, lo_a) };
         let path = arc_path(cx, cy, r - 2.0, a, b);
         s.stroke(
             &Stroke::new(2.5).with_caps(kurbo::Cap::Round),
@@ -134,7 +168,7 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
         );
     }
 
-    // Value arc.
+    // ── The value ───────────────────────────────────────────────────────
     let end_angle = angle_for_value(val);
     let value_path = if look.bipolar {
         let centre = START_ANGLE + SWEEP / 2.0;
@@ -152,17 +186,16 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
     };
     if let Some(path) = value_path {
         if look.active {
-            // Glow: a wider, translucent pass under the arc.
             s.stroke(
-                &Stroke::new(9.0).with_caps(kurbo::Cap::Round),
+                &Stroke::new(10.0).with_caps(kurbo::Cap::Round),
                 at,
-                look.accent.with_alpha(0.28),
+                look.accent.with_alpha(0.30),
                 None,
                 &path,
             );
         }
         s.stroke(
-            &Stroke::new(4.5).with_caps(kurbo::Cap::Round),
+            &Stroke::new(track_w + 0.5).with_caps(kurbo::Cap::Round),
             at,
             look.accent,
             None,
@@ -170,11 +203,22 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
         );
     }
 
-    // Pointer line from the cap edge through the arc.
-    let (tx, ty) = arc_point(cx, cy, r - 6.0, end_angle);
-    let (tx2, ty2) = arc_point(cx, cy, r + 1.0, end_angle);
+    // ── The pointer ─────────────────────────────────────────────────────
+    // Sits on the cap rather than bridging cap and track: bridging made it
+    // read as a spoke joining two rings instead of as the thing pointing at
+    // the value.
+    let (tx, ty) = arc_point(cx, cy, cap_r * 0.32, end_angle);
+    let (tx2, ty2) = arc_point(cx, cy, cap_r - 2.0, end_angle);
+    // A dark under-stroke so the pointer holds up over a pale cap too.
     s.stroke(
-        &Stroke::new(2.25).with_caps(kurbo::Cap::Round),
+        &Stroke::new(3.4).with_caps(kurbo::Cap::Round),
+        at,
+        Color::BLACK.with_alpha(0.35),
+        None,
+        &Line::new((tx, ty), (tx2, ty2)),
+    );
+    s.stroke(
+        &Stroke::new(2.0).with_caps(kurbo::Cap::Round),
         at,
         look.pointer,
         None,

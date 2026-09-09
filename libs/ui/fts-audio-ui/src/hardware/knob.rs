@@ -333,6 +333,28 @@ fn draw_index(index: Index, tint: Option<&str>) -> Element {
 ///
 /// `marks` is the printed scale ring — build it with
 /// [`scale_ring`](crate::hardware::knob_svg::scale_ring).
+/// The marks to print around a knob: the face's own, or a plain scale when it
+/// gave none.
+///
+/// Eleven ticks across the sweep, heavier at the ends and at centre. Not a
+/// guess at the unit's real legend — a face that knows its own numbers should
+/// pass them — but enough that the pointer has something to point at.
+fn default_marks(marks: &[ScaleMark]) -> Vec<ScaleMark> {
+    if !marks.is_empty() {
+        return marks.to_vec();
+    }
+    (0..=10)
+        .map(|i| {
+            let n = f64::from(i) / 10.0;
+            ScaleMark {
+                normalized: n,
+                label: None,
+                major: i == 0 || i == 5 || i == 10,
+            }
+        })
+        .collect()
+}
+
 #[component]
 pub fn HardwareKnob(
     handle: ParamHandle,
@@ -456,7 +478,15 @@ pub fn HardwareKnob(
 
                 // A dial's scale is printed on its own skirt, so it is drawn
                 // with the rotating parts below rather than here on the panel.
-                for mark in marks.iter().filter(|_| !style.numerals_on_knob()) {
+                // A knob with no marks of its own still needs a scale. Real
+                // gear prints one on the panel — that is precisely why an
+                // LA-2A's knobs can be plain black discs and still be
+                // readable — and a face that supplies none was leaving its
+                // knobs with nothing to be read against: pointer angle
+                // measured against bare panel. Eleven evenly spaced ticks,
+                // major at the ends and the middle, is the generic version of
+                // what the panel would have printed.
+                for mark in default_marks(&marks).iter().filter(|_| !style.numerals_on_knob()) {
                     {
                         let (x1, y1) = ring_point(mark.normalized, ring_r - 1.0);
                         let (x2, y2) = ring_point(

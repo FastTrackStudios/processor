@@ -3054,15 +3054,16 @@ checksum = "8878864ba14bb86e818a412bfd6f18f9eabd4ec0f008a28e8f7eb61db532fcf9"
 [[package]]
 name = "fts-audio-ui"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/daw?tag=v0.0.6.3#db690d63aaae8c6dcf9d308754299a144c111b4e"
 dependencies = [
  "anyrender",
  "architect-ui",
  "blitz-dom",
  "dioxus",
  "dioxus-native-dom",
+ "dioxus-test",
  "kurbo",
  "peniko",
+ "tokio",
  "tracing",
 ]
 
@@ -3091,7 +3092,6 @@ dependencies = [
 [[package]]
 name = "fts-plug-ui"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/daw?tag=v0.0.6.3#db690d63aaae8c6dcf9d308754299a144c111b4e"
 dependencies = [
  "architect-ui",
  "atomic_float",

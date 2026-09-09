@@ -35,16 +35,34 @@ const fn solid(css: &'static str, finish: Finish) -> Tier {
 // ─────────────────────────────────────────────────────────────────────────
 // Bakelite — the LA-2A / 1176 knob. Black, with a white blade.
 // ─────────────────────────────────────────────────────────────────────────
-static BAKELITE_TIERS: &[Tier] = &[solid(
-    "radial-gradient(circle at 34% 26%, #4a4a4e 0%, #17171a 62%, #0b0b0d 100%)",
-    Finish::Moulded,
-)];
+static BAKELITE_TIERS: &[Tier] = &[
+    // The base. A hair wider than the body and much darker, with a contact
+    // shadow under it: that pair is what makes the knob read as a truncated
+    // cone standing on the panel instead of a circle printed on it. One
+    // gradient disc on its own cannot, however good the gradient.
+    Tier::new(1.0, Paint::Flat("#070709"), Turns::Cap)
+        .shadowed(0.05)
+        .outlined("rgba(255,255,255,0.07)", 0.7),
+    // The body, with the highlight tighter and higher than a centred wash.
+    Tier::new(
+        0.90,
+        Paint::Surface {
+            css: "radial-gradient(circle at 33% 21%, #5a5a60 0%, #26262b 32%, \
+                  #131316 66%, #0a0a0c 100%)",
+            finish: Finish::Moulded,
+            tint: true,
+        },
+        Turns::Cap,
+    ),
+];
 
 pub static BAKELITE: KnobSpec = KnobSpec {
     tiers: BAKELITE_TIERS,
     index: Index::Blade {
-        to: 0.83,
-        half_width: 0.113,
+        // Slimmer and reaching further out. At 0.113 the blade was a wedge
+        // you read as a shape; a pointer should read as a line.
+        to: 0.86,
+        half_width: 0.070,
         color: LIGHT,
     },
     collar_index: None,
@@ -114,15 +132,53 @@ pub static SKIRTED: KnobSpec = KnobSpec {
 // the only thing the panel's printed 0–10 is read against.
 // ─────────────────────────────────────────────────────────────────────────
 static DAKA_TIERS: &[Tier] = &[
-    Tier::new(1.0, Paint::Flat("#131316"), Turns::Cap)
-        .toothed(22, 0.08)
-        .shadowed(0.06)
-        .outlined("rgba(0,0,0,0.7)", 0.7),
+    // Every tier was a flat fill, which is the one thing this crate's own
+    // notes say cannot read as a material: five grey discs stacked up look
+    // like five grey discs. Phenolic is dark and slightly glossy, and each
+    // step of the stack catches the light at its own angle.
+    Tier::new(
+        1.0,
+        Paint::Surface {
+            css: "radial-gradient(circle at 36% 22%, #2a2a30 0%, #17171b 46%, #0c0c0f 100%)",
+            finish: Finish::Moulded,
+            tint: false,
+        },
+        Turns::Cap,
+    )
+    .toothed(22, 0.08)
+    .shadowed(0.06)
+    .outlined("rgba(0,0,0,0.7)", 0.7),
     // The step up to the body, read as a shadowed wall rather than an edge.
-    Tier::new(0.74, Paint::Flat("#0d0d10"), Turns::Cap),
-    Tier::new(0.70, Paint::Flat("#242429"), Turns::Cap),
-    Tier::new(0.52, Paint::Flat("#2b2b31"), Turns::Cap),
-    Tier::new(0.30, Paint::Flat("#313138"), Turns::Cap),
+    Tier::new(0.74, Paint::Flat("#08080a"), Turns::Cap),
+    Tier::new(
+        0.70,
+        Paint::Surface {
+            css: "radial-gradient(circle at 34% 24%, #3d3d45 0%, #24242a 48%, #131317 100%)",
+            finish: Finish::Moulded,
+            tint: false,
+        },
+        Turns::Cap,
+    )
+    .outlined("rgba(255,255,255,0.06)", 0.6),
+    Tier::new(
+        0.52,
+        Paint::Surface {
+            css: "radial-gradient(circle at 34% 24%, #46464f 0%, #2b2b32 52%, #191920 100%)",
+            finish: Finish::Moulded,
+            tint: false,
+        },
+        Turns::Cap,
+    ),
+    // The dome on top, lit hardest — it is the nearest thing to the light.
+    Tier::new(
+        0.30,
+        Paint::Surface {
+            css: "radial-gradient(circle at 32% 22%, #5a5a64 0%, #34343c 56%, #1d1d24 100%)",
+            finish: Finish::Moulded,
+            tint: false,
+        },
+        Turns::Cap,
+    ),
 ];
 
 pub static DAKA: KnobSpec = KnobSpec {

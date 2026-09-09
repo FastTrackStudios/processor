@@ -255,14 +255,22 @@ pub struct Specular {
 /// whose face is a cap inside a collar gets a highlight sized to the cap.
 pub const fn dome(body: f64) -> Specular {
     Specular {
-        w: 0.62 * body,
-        h: 0.42 * body,
-        dx: -0.46 * body,
-        dy: -0.40 * body,
-        fill: "radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.15) 0%, \
-               rgba(255,255,255,0.0) 70%)",
-        rotate: 0.0,
-        rim: None,
+        // Tighter and brighter than a broad wash, and tilted off the screen
+        // axes. A wide, faint blob centred on the knob is what a flat disc
+        // looks like; a small hot spot up and to the left, falling off fast,
+        // is what a curved surface under one light looks like.
+        w: 0.46 * body,
+        h: 0.30 * body,
+        dx: -0.32 * body,
+        dy: -0.34 * body,
+        fill: "radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.30) 0%, \
+               rgba(255,255,255,0.10) 46%, rgba(255,255,255,0.0) 76%)",
+        rotate: -18.0,
+        // The edge catching the same light. Every knob had this off, which is
+        // most of why they read as circles painted on the panel rather than
+        // objects standing on it — a lit rim is the cheapest depth cue there
+        // is and the one the eye reads first.
+        rim: Some("rgba(255,255,255,0.22)"),
     }
 }
 
