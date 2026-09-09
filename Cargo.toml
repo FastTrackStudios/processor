@@ -810,20 +810,14 @@ blitz-html = { git = "https://github.com/FastTrackStudios/blitz", rev = "c82dd23
 # Vendored one-line fix: quote scalars containing `<`/`>` — upstream
 # (facet-rs/facet) styx-format emits them bare but styx-parse rejects
 # them, so serialized keybind configs (`keys "<C-s>"`) could not be
-# re-parsed. Drop the vendor once upstream fixes can_be_bare.
-styx-format = { git = "https://github.com/FastTrackStudios/vendor", tag = "v0.1.0" }
 # Vendored phon rc.5 + derive support for parse/display opaque scalars
 # (Uuid, chrono DateTime/NaiveDate, url, …). Upstream rc.5 PANICS (and the
 # reply path aborts the process) the first time a vox RPC reply contains
 # such a field — every task-server list/stats call died. Drop the vendor
-# once upstream phon derives these scalars.
-phon = { git = "https://github.com/FastTrackStudios/vendor", tag = "v0.1.0" }
 # Vendored phon-jit rc.5 with a one-line build.rs fix: force the stable,
 # call-based stencils. Upstream's nightly detection can be true while no real
 # nightly is present (the pinned nix toolchain), so it compiled the `become`
 # (explicit tail calls) stencils on stable rustc 1.94 → E0658, breaking the
-# macOS-aarch64 build. Drop the vendor once phon-jit builds on stable.
-phon-jit = { git = "https://github.com/FastTrackStudios/vendor", tag = "v0.1.0" }
 
 # ── Lints — merged union of the dissolved workspaces' policies ─────────
 
@@ -1026,13 +1020,7 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.daw-standalone]
 opt-level = 3
-[profile.dev.package.neural-amp-modeler]
-opt-level = 3
-[profile.dev.package.signal-sampler]
-opt-level = 3
-[profile.dev.package.signal-guitar]
-opt-level = 3
-[profile.dev.package.signal-fx]
+[profile.dev.package.fx-blocks]
 opt-level = 3
 [profile.dev.package.eq-dsp]
 opt-level = 3
