@@ -8,6 +8,14 @@
 use super::knob_kit::{dome, Finish, Flutes, Index, KnobSpec, Paint, Specular, Tier, Turns};
 
 // ── Inks ─────────────────────────────────────────────────────────────────
+/// Turned aluminium.
+///
+/// Anisotropic on purpose. A lathe leaves two bright lobes opposite each
+/// other and goes near-black at ninety degrees to them, and that sweep is the
+/// whole difference between metal and pale plastic — a radial gradient, which
+/// is what every metal knob here used to have, can only say "light dome".
+const BRUSHED_METAL: &str = "conic-gradient(from 210deg, #e6e6e2 0deg, #8f8f8b 42deg, #d2d2ce 90deg, #868682 140deg, #dededa 180deg, #90908c 222deg, #d6d6d2 270deg, #7e7e7a 320deg, #e6e6e2 360deg), radial-gradient(circle at 34% 26%, rgba(255,255,255,0.34) 0%, rgba(255,255,255,0.0) 60%)";
+
 /// The two index colours nearly every knob uses: a painted white line, or a
 /// dark groove on a light face.
 const LIGHT: &str = "#f2f2f0";
@@ -76,10 +84,21 @@ pub static BAKELITE: KnobSpec = KnobSpec {
 // ─────────────────────────────────────────────────────────────────────────
 // Metal — brushed, with a dark blade.
 // ─────────────────────────────────────────────────────────────────────────
-static METAL_TIERS: &[Tier] = &[solid(
-    "radial-gradient(circle at 34% 26%, #d8d8d4 0%, #9a9a96 58%, #6d6d69 100%)",
-    Finish::Brushed,
-)];
+static METAL_TIERS: &[Tier] = &[
+    // A dark seat so the metal has an edge to end at rather than fading into
+    // the panel.
+    Tier::new(1.0, Paint::Flat("#3a3a38"), Turns::Cap).shadowed(0.05),
+    Tier::new(
+        0.93,
+        Paint::Surface {
+            css: BRUSHED_METAL,
+            finish: Finish::Brushed,
+            tint: true,
+        },
+        Turns::Cap,
+    )
+    .outlined("rgba(255,255,255,0.16)", 0.7),
+];
 
 pub static METAL: KnobSpec = KnobSpec {
     tiers: METAL_TIERS,
@@ -101,12 +120,24 @@ pub static METAL: KnobSpec = KnobSpec {
 // cap inside it, read by a short bar on the rim.
 // ─────────────────────────────────────────────────────────────────────────
 static SKIRTED_TIERS: &[Tier] = &[
+    Tier::new(1.0, Paint::Flat("#08080a"), Turns::Cap).shadowed(0.05),
     solid(
-        "radial-gradient(circle at 38% 24%, #4c4c50 0%, #232326 38%, #101012 72%, #0a0a0c 100%)",
+        "radial-gradient(circle at 36% 22%, #5c5c62 0%, #2b2b30 36%, #141417 72%, #0b0b0d 100%)",
         Finish::Moulded,
     ),
-    Tier::new(0.62, Paint::Flat("rgba(255,255,255,0.035)"), Turns::Cap)
-        .outlined("rgba(0,0,0,0.45)", 0.8),
+    // The cap, as its own lit surface. A 3.5%-white wash over the body read
+    // as nothing at all, which is why this knob looked like one black disc
+    // when it is meant to be a cap sunk into a skirt.
+    Tier::new(
+        0.62,
+        Paint::Surface {
+            css: "radial-gradient(circle at 36% 24%, #4a4a51 0%, #26262c 54%, #131317 100%)",
+            finish: Finish::Moulded,
+            tint: false,
+        },
+        Turns::Cap,
+    )
+    .outlined("rgba(0,0,0,0.55)", 0.9),
 ];
 
 pub static SKIRTED: KnobSpec = KnobSpec {
@@ -149,7 +180,8 @@ static DAKA_TIERS: &[Tier] = &[
     .shadowed(0.06)
     .outlined("rgba(0,0,0,0.7)", 0.7),
     // The step up to the body, read as a shadowed wall rather than an edge.
-    Tier::new(0.74, Paint::Flat("#08080a"), Turns::Cap),
+    Tier::new(0.74, Paint::Flat("#08080a"), Turns::Cap)
+        .outlined("rgba(255,255,255,0.11)", 0.6),
     Tier::new(
         0.70,
         Paint::Surface {
@@ -159,7 +191,7 @@ static DAKA_TIERS: &[Tier] = &[
         },
         Turns::Cap,
     )
-    .outlined("rgba(255,255,255,0.06)", 0.6),
+    .outlined("rgba(255,255,255,0.11)", 0.7),
     Tier::new(
         0.52,
         Paint::Surface {
@@ -168,7 +200,8 @@ static DAKA_TIERS: &[Tier] = &[
             tint: false,
         },
         Turns::Cap,
-    ),
+    )
+    .outlined("rgba(255,255,255,0.11)", 0.6),
     // The dome on top, lit hardest — it is the nearest thing to the light.
     Tier::new(
         0.30,
@@ -223,7 +256,7 @@ static MARCONI_TIERS: &[Tier] = &[
     Tier::new(
         1.0,
         Paint::Surface {
-            css: "radial-gradient(circle at 44% 36%, #202024 0%, #101013 58%, #08080a 100%)",
+            css: "radial-gradient(circle at 36% 22%, #4e4e55 0%, #232328 40%, #0f0f12 100%)",
             finish: Finish::Moulded,
             tint: false,
         },
@@ -322,7 +355,7 @@ static SILVER_TOP_TIERS: &[Tier] = &[
     Tier::new(
         0.56,
         Paint::Surface {
-            css: "linear-gradient(148deg, #e2e2e0 0%, #b4b4b2 34%, #8e8e8c 62%, #cfcfcd 100%)",
+            css: BRUSHED_METAL,
             finish: Finish::Brushed,
             tint: true,
         },
@@ -378,10 +411,7 @@ pub static SILVER_TOP: KnobSpec = KnobSpec {
 // dark centre cap, read by a line across the metal.
 // ─────────────────────────────────────────────────────────────────────────
 static METAL_FLUTED_TIERS: &[Tier] = &[
-    solid(
-        "linear-gradient(152deg, #e8e8e6 0%, #c0c0be 30%, #979795 62%, #d2d2d0 100%)",
-        Finish::Brushed,
-    ),
+    solid(BRUSHED_METAL, Finish::Brushed),
     Tier::new(0.42, Paint::Flat("#3a3c40"), Turns::Cap).outlined("rgba(0,0,0,0.5)", 0.8),
 ];
 
@@ -503,8 +533,7 @@ static DIAL_TIERS: &[Tier] = &[
     Tier::new(
         1.0,
         Paint::Surface {
-            css: "radial-gradient(circle at 40% 26%, #e8e8e6 0%, #c2c2c0 44%, \
-                  #9a9a98 78%, #cbcbc9 100%)",
+            css: BRUSHED_METAL,
             finish: Finish::Brushed,
             tint: false,
         },

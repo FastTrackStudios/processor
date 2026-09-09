@@ -75,9 +75,24 @@ impl Finish {
                 "linear-gradient(160deg, color-mix(in oklab, {color} 88%, white) 0%, \
                  {color} 38%, color-mix(in oklab, {color} 82%, black) 100%)"
             ),
+            // Brushed metal is anisotropic: turned on a lathe, it throws two
+            // bright lobes opposite each other and goes dark at ninety
+            // degrees to them. A radial gradient cannot say that — it was
+            // making every metal knob read as pale plastic — so the sheen is
+            // a conic sweep with the dome laid over it.
             Self::Brushed => format!(
-                "radial-gradient(circle at 34% 26%, color-mix(in oklab, {color} 55%, white) 0%, \
-                 {color} 58%, color-mix(in oklab, {color} 70%, black) 100%)"
+                "conic-gradient(from 210deg, \
+                 color-mix(in oklab, {color} 58%, white) 0deg, \
+                 color-mix(in oklab, {color} 88%, black) 42deg, \
+                 color-mix(in oklab, {color} 70%, white) 90deg, \
+                 color-mix(in oklab, {color} 92%, black) 140deg, \
+                 color-mix(in oklab, {color} 62%, white) 180deg, \
+                 color-mix(in oklab, {color} 88%, black) 222deg, \
+                 color-mix(in oklab, {color} 72%, white) 270deg, \
+                 color-mix(in oklab, {color} 94%, black) 320deg, \
+                 color-mix(in oklab, {color} 58%, white) 360deg), \
+                 radial-gradient(circle at 34% 26%, rgba(255,255,255,0.30) 0%, \
+                 rgba(255,255,255,0.0) 62%)"
             ),
         }
     }
