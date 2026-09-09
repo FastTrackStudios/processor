@@ -92,6 +92,77 @@ pub fn ParamKnob(
     }
 }
 
+/// A timing control that can run in milliseconds or lock to the tempo.
+///
+/// The picker REPLACES the dial rather than sitting beside it: while the time
+/// is a note there is no milliseconds value to enter, and a knob that turns
+/// without changing anything is worse than no knob. Same rule the delay and
+/// the reverb follow.
+///
+/// `resolved_ms` is computed by the caller from the same call the audio
+/// thread makes, so the face cannot state a timing the compressor is not
+/// using.
+#[component]
+pub fn SyncableTimeKnob(
+    /// The milliseconds parameter — the dial, when the control is free.
+    handle: ParamHandle,
+    /// The mode switch and the note picker.
+    sync: ParamHandle,
+    division: ParamHandle,
+    resolved_ms: f64,
+    /// The host's tempo, if it has one. `None` greys NOTE out.
+    #[props(default)]
+    tempo: Option<f64>,
+    testid: String,
+    skin: ProfileSkin,
+    #[props(default)] size: KnobSize,
+) -> Element {
+    let synced = sync.normalized() >= 0.5;
+    rsx! {
+        div {
+            "data-testid": "time-{testid}",
+            style: "display:flex; flex-direction:column; align-items:center; gap:4px;",
+
+            if synced {
+                div {
+                    "data-testid": "knob-{testid}",
+                    style: "display:flex; align-items:center; justify-content:center; \
+                            min-height:44px;",
+                    musical_time_ui::NotePicker {
+                        handle: division,
+                        testid: "{testid}-note",
+                        ink: skin.text.to_string(),
+                        accent: skin.accent.to_string(),
+                    }
+                }
+            } else {
+                div {
+                    "data-testid": "knob-{testid}",
+                    Knob { handle, size }
+                }
+            }
+
+            musical_time_ui::TimeModeSwitch {
+                sync,
+                tempo,
+                testid: "{testid}-mode",
+                ink: skin.text.to_string(),
+                accent: skin.accent.to_string(),
+            }
+
+            div {
+                "data-testid": "time-{testid}-resolved",
+                style: format!(
+                    "font-size:9px; color:{}; opacity:0.75; \
+                     font-variant-numeric:tabular-nums;",
+                    skin.text
+                ),
+                "{musical_time_ui::format_ms(resolved_ms)}"
+            }
+        }
+    }
+}
+
 /// A segmented selector under a small caption — used where the choices are
 /// few enough to show at once (Style's four detector models).
 #[component]

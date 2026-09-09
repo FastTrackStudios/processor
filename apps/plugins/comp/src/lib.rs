@@ -56,7 +56,7 @@ impl CompStage {
 
     /// Push one stage's params into its chain (no allocation; every setter
     /// early-outs on an unchanged value).
-    fn sync(&mut self, p: &CompStageParams) {
+    fn sync(&mut self, p: &CompStageParams, tempo: Option<f64>) {
         // The LA-2A face selects a DSP model and writes native dial positions.
         // Other profiles still use the extended host processor.
         if p.profile.value() == 2 {
@@ -82,8 +82,11 @@ impl CompStage {
         let c = &mut self.chain.comp;
         c.set_threshold(f64::from(p.threshold_db.value()));
         c.set_ratio(f64::from(p.ratio.value()));
-        c.set_attack_ms(f64::from(p.attack_ms.value()));
-        c.set_release_ms(f64::from(p.release_ms.value()));
+        // Either the dialled milliseconds or the note against the host's
+        // tempo; the params own that decision so the face and the audio
+        // thread cannot disagree about what a control currently means.
+        c.set_attack_ms(p.attack_ms_at(tempo));
+        c.set_release_ms(p.release_ms_at(tempo));
         c.set_knee(f64::from(p.knee_db.value()));
         c.set_fold(f64::from(p.mix.value()));
         c.output_gain_db = f64::from(p.makeup_db.value());
@@ -192,13 +195,13 @@ impl Default for FtsComp {
 
 impl FtsComp {
     /// Push params into every stage and the pool topology (no allocation).
-    fn sync_params(&mut self) {
+    fn sync_params(&mut self, tempo: Option<f64>) {
         for i in 0..MAX_STAGES {
             let sp = self.params.stage(i);
             let in_use = sp.in_use.value();
             if in_use {
                 if let Some(stage) = self.pool.stage_mut(i) {
-                    stage.sync(sp);
+                    stage.sync(sp, tempo);
                 }
             }
             self.pool.set_slot(
@@ -291,7 +294,9 @@ impl Plugin for FtsComp {
             .prepare(buffer_config.max_buffer_size as usize, max_latency);
         self.buf_l = vec![0.0; buffer_config.max_buffer_size as usize];
         self.buf_r = vec![0.0; buffer_config.max_buffer_size as usize];
-        self.sync_params();
+        // No transport at initialize time — the first `process` call brings
+        // the tempo, and until then a synced stage runs at its free times.
+        self.sync_params(None);
         self.last_latency = self.pool.latency();
         context.set_latency_samples(self.last_latency as u32);
         true
@@ -305,9 +310,17 @@ impl Plugin for FtsComp {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.sync_params();
+        // The host's tempo, published for the face as well as used here: it
+        // has to show what a note currently works out to, and this is the
+        // only thread the host tells.
+        let tempo = context.transport().tempo;
+        self.ui_state.tempo_bpm.store(
+            tempo.map_or(0.0, |t| t as f32),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.sync_params(tempo);
 
         let n = buffer.samples();
         let mut input_peak: f32 = 0.0;
@@ -405,7 +418,7 @@ impl Plugin for FtsComp {
         let latency = self.pool.latency();
         if latency != self.last_latency {
             self.last_latency = latency;
-            _context.set_latency_samples(latency as u32);
+            context.set_latency_samples(latency as u32);
         }
 
         ProcessStatus::Normal

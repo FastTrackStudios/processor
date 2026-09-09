@@ -1262,6 +1262,8 @@ dependencies = [
  "eq-ui",
  "fts-audio-ui",
  "fts-plug-ui",
+ "musical-time",
+ "musical-time-ui",
  "nice-plug",
  "nice-plug-dioxus",
  "parking_lot",

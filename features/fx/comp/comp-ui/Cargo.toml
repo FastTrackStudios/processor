@@ -46,6 +46,8 @@ atomic_float = { workspace = true, optional = true }
 # `#[persist]` wants a field with interior mutability.
 parking_lot = { workspace = true, optional = true }
 comp-profiles = { path = "../comp-profiles" }
+musical-time = { workspace = true, features = ["params"] }
+musical-time-ui = { workspace = true }
 eq-ui = { workspace = true, optional = true }
 # Not dev-only: the preset surfaces are part of the editor, so the crate
 # needs `rsx!`/`Signal` in its own source and not just in its tests.
@@ -74,4 +76,8 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 
 [[test]]
 name = "param_round_trip"
+required-features = ["native"]
+
+[[test]]
+name = "tempo_sync"
 required-features = ["native"]

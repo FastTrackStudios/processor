@@ -60,6 +60,10 @@ impl WaveRing {
 /// Audio-thread → UI metering data.
 pub struct CompUiState {
     pub params: Arc<CompParams>,
+    /// The host's tempo, as the audio thread last saw it. Zero means the host
+    /// has no transport — the face shows the free-running times then, because
+    /// a note value with no tempo behind it is not a duration.
+    pub tempo_bpm: AtomicF32,
     /// The stage the editor is focused on (`fx.stack.focus`) — written by the
     /// editor, read by the audio thread so the meters and traces below
     /// describe the stage the user is looking at.
@@ -79,6 +83,7 @@ impl CompUiState {
     pub fn new(params: Arc<CompParams>) -> Self {
         Self {
             params,
+            tempo_bpm: AtomicF32::new(0.0),
             focused_stage: AtomicUsize::new(0),
             gain_reduction_db: AtomicF32::new(0.0),
             input_peak_db: AtomicF32::new(-100.0),
@@ -161,6 +166,25 @@ pub struct CompStageParams {
     /// Stereo detector link (1 = fully linked max of both channels).
     #[id = "link"]
     pub stereo_link: FloatParam,
+
+    // Tempo sync for the two timings. Declared after the classic eight
+    // rather than beside the controls they belong to: stage 1's first eight
+    // ids are the pre-stack plugin's, in order, and that is asserted.
+    /// Read the attack as a note against the host's tempo. Niche next to
+    /// release — an attack is usually set by ear against the transient — but
+    /// a stage doing rhythmic pumping wants both ends on the grid.
+    #[id = "atk_sync"]
+    pub attack_sync: BoolParam,
+    #[id = "atk_div"]
+    pub attack_div: IntParam,
+
+    /// Read the release as a note against the host's tempo. This is the one
+    /// that earns its keep: a release timed to the beat is how a compressor
+    /// breathes with the track instead of against it.
+    #[id = "rel_sync"]
+    pub release_sync: BoolParam,
+    #[id = "rel_div"]
+    pub release_div: IntParam,
 
     // ── Extended surface (appended — never reorder the eight above) ──────
     /// Detector/ballistics model — see [`STYLE_LABELS`].
@@ -290,6 +314,71 @@ pub struct CompStageParams {
     /// lane, stages run serially in stage-number order.
     #[id = "lane"]
     pub lane: IntParam,
+}
+
+/// What the timing controls can reach, in milliseconds — the same bounds
+/// their parameters declare. Named so the sync clamp cannot drift from them:
+/// a whole note at 60 BPM is four seconds and the release stops at three.
+pub const MIN_ATTACK_MS: f64 = 0.005;
+pub const MAX_ATTACK_MS: f64 = 300.0;
+pub const MIN_RELEASE_MS: f64 = 10.0;
+pub const MAX_RELEASE_MS: f64 = 3000.0;
+
+/// The note the attack locks to until someone picks another. A 1/32 — 62 ms
+/// at 120 BPM, which is the short end where an attack lives.
+pub const ATTACK_DEFAULT_DIV: musical_time::MusicalTime = musical_time::MusicalTime::new(
+    musical_time::NoteValue::ThirtySecond,
+    musical_time::Flavour::Straight,
+);
+
+/// The note the release locks to until someone picks another. An eighth —
+/// 250 ms at 120 BPM, next to the 100 ms free default and squarely where a
+/// release that breathes with the track sits.
+pub const RELEASE_DEFAULT_DIV: musical_time::MusicalTime = musical_time::MusicalTime::new(
+    musical_time::NoteValue::Eighth,
+    musical_time::Flavour::Straight,
+);
+
+impl CompStageParams {
+    /// The attack as the audio thread should read it: milliseconds, with the
+    /// note already resolved against `tempo` if its Sync is on.
+    ///
+    /// `tempo` is an `Option` because that is how a host reports it. With no
+    /// transport there is no tempo, and the honest answer is the number the
+    /// user dialled — a synced stage in a host without one should keep
+    /// compressing rather than snap to zero.
+    #[must_use]
+    pub fn attack_ms_at(&self, tempo: Option<f64>) -> f64 {
+        Self::synced(
+            self.attack_sync.value(),
+            self.attack_ms.value(),
+            self.attack_div.value(),
+        )
+        .resolve_ms_clamped(tempo, MIN_ATTACK_MS, MAX_ATTACK_MS)
+    }
+
+    /// The release, the same way.
+    #[must_use]
+    pub fn release_ms_at(&self, tempo: Option<f64>) -> f64 {
+        Self::synced(
+            self.release_sync.value(),
+            self.release_ms.value(),
+            self.release_div.value(),
+        )
+        .resolve_ms_clamped(tempo, MIN_RELEASE_MS, MAX_RELEASE_MS)
+    }
+
+    fn synced(sync: bool, free_ms: f32, div: i32) -> musical_time::SyncedTime {
+        musical_time::SyncedTime {
+            mode: if sync {
+                musical_time::TimeMode::Synced
+            } else {
+                musical_time::TimeMode::Free
+            },
+            free_ms: f64::from(free_ms),
+            division: musical_time::MusicalTime::from_param(div),
+        }
+    }
 }
 
 impl CompStageParams {
@@ -635,6 +724,16 @@ impl CompStageParams {
             )
             .with_unit(" ms")
             .with_value_to_string(formatters::v2s_f32_rounded(1)),
+            // Both off by default. A compressor that silently re-times itself
+            // when it lands on a track is a surprise, and these are opt-in
+            // even by the standards of a plugin with eight stages.
+            attack_sync: musical_time::params::sync_param("Attack Sync", false),
+            // A 1/32 — at 120 BPM, 62 ms. The short end is where an attack
+            // lives, and the range only reaches 300 ms anyway.
+            attack_div: musical_time::params::division_param(
+                "Attack Div",
+                ATTACK_DEFAULT_DIV,
+            ),
             release_ms: FloatParam::new(
                 "Release",
                 100.0,
@@ -646,6 +745,13 @@ impl CompStageParams {
             )
             .with_unit(" ms")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
+            release_sync: musical_time::params::sync_param("Release Sync", false),
+            // An eighth — at 120 BPM, 250 ms, near the 100 ms free default
+            // and squarely where a release that breathes with the track sits.
+            release_div: musical_time::params::division_param(
+                "Release Div",
+                RELEASE_DEFAULT_DIV,
+            ),
             knee_db: FloatParam::new(
                 "Knee",
                 6.0,

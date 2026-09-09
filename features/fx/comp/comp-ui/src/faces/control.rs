@@ -36,6 +36,12 @@ pub fn ControlFace(
     // The face edits the FOCUSED stage (`fx.stack.focus`).
     let params = ui.params.stage(crate::focus::use_focused_stage());
     let skin = profile_skin("control");
+    // Zero is how the audio thread says "this host has no transport"; a note
+    // value means nothing then, so it becomes `None` rather than 0 BPM.
+    let tempo = {
+        let bpm = ui.tempo_bpm.load(std::sync::atomic::Ordering::Relaxed);
+        (bpm > 0.0).then(|| f64::from(bpm))
+    };
 
     let is_advanced = advanced;
     let (graph_w, graph_h) = crate::comp_graph::graph_size();
@@ -186,13 +192,28 @@ pub fn ControlFace(
                         handle: param_handle(params.ratio.as_ptr(), ctx.clone()),
                         testid: "ratio".to_string(),
                     }
-                    ParamKnob {
+                    // Attack and release can lock to the tempo. Release is
+                    // the one that earns it — a release timed to the beat is
+                    // how a compressor breathes with the track — but both
+                    // switch independently, because the common pairing is a
+                    // synced release over an attack still set by ear.
+                    crate::sections::SyncableTimeKnob {
                         handle: param_handle(params.attack_ms.as_ptr(), ctx.clone()),
+                        sync: param_handle(params.attack_sync.as_ptr(), ctx.clone()),
+                        division: param_handle(params.attack_div.as_ptr(), ctx.clone()),
+                        resolved_ms: params.attack_ms_at(tempo),
+                        tempo,
                         testid: "attack".to_string(),
+                        skin,
                     }
-                    ParamKnob {
+                    crate::sections::SyncableTimeKnob {
                         handle: param_handle(params.release_ms.as_ptr(), ctx.clone()),
+                        sync: param_handle(params.release_sync.as_ptr(), ctx.clone()),
+                        division: param_handle(params.release_div.as_ptr(), ctx.clone()),
+                        resolved_ms: params.release_ms_at(tempo),
+                        tempo,
                         testid: "release".to_string(),
+                        skin,
                     }
                     ParamKnob {
                         handle: param_handle(params.knee_db.as_ptr(), ctx.clone()),
