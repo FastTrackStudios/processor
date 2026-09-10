@@ -486,6 +486,7 @@ fn AppShell() -> Element {
             // `autofocus` as an attribute *mutation*, so an element born with
             // it never gets focus — the same two-render dance the band label
             // field does.
+            autofocus: "{frame_counter > 0}",
             onkeydown: move |evt: KeyboardEvent| on_key.call(evt),
 
             PluginShell {
