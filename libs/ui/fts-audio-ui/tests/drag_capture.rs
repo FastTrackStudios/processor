@@ -214,3 +214,32 @@ async fn leaving_the_centre_detent_is_continuous() {
     );
     assert!(last > 0.5, "the drag did not leave the detent at all");
 }
+
+/// The whole range has to stay reachable through the detent.
+///
+/// The dead zone shifts the value by its own width, so it has to be applied
+/// to the raw travel and clamped afterwards. Clamp first and the raw value
+/// pins at 1.0 while the shift keeps taking the zone off it — the top of the
+/// range goes missing. On the EQ's ±30 dB band gain that showed up as a knob
+/// that stopped at 26.4 dB.
+#[tokio::test]
+async fn a_full_sweep_still_reaches_the_end_of_a_detented_range() {
+    let fx = mount().await;
+    let (x, y) = fx.dial();
+
+    fx.tester.pointer_down(x, y);
+    fx.settle().await;
+    // Half a sweep is 75 px; the detent costs six more.
+    for step in 1..=30 {
+        fx.tester.pointer_move(x, y - f64::from(step) * 4.0, true);
+        fx.settle().await;
+    }
+    fx.tester.pointer_up(x, y - 120.0);
+    fx.settle().await;
+
+    assert!(
+        value() >= 1.0,
+        "a full sweep up stopped at {} — the detent ate the top of the range",
+        value(),
+    );
+}

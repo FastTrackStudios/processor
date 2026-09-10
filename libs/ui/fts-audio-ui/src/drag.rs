@@ -158,7 +158,9 @@ pub fn drag_move(evt: &MouseEvent, drag: &mut Signal<DragState>) {
         let dy = (state.start_y - pos.y) / sens;
         hy.set_normalized((state.start_value_y as f64 + dy).clamp(0.0, 1.0) as f32);
     }
-    let mut new_val = (state.start_value as f64 + delta).clamp(0.0, 1.0);
+    // Deliberately unclamped: the detent below shifts the value, and clamping
+    // before that shift throws away the end of the range. See there.
+    let mut new_val = state.start_value as f64 + delta;
 
     // Soft detent at a bipolar parameter's default (0 dB, centre): within
     // DETENT_PX of drag around it the value sticks, so landing on it by hand
@@ -171,6 +173,13 @@ pub fn drag_move(evt: &MouseEvent, drag: &mut Signal<DragState>) {
     // anything between. Subtracting the zone on the way out makes the value
     // continuous — you pay six pixels of travel for the detent, which is
     // what a detent is, and pay it once.
+    //
+    // The travel has to be measured before the clamp, though. Clamp first and
+    // the raw value pins at 1.0 while the subtraction keeps taking the dead
+    // zone off it, so the top of the range becomes unreachable: a ±30 dB gain
+    // stopped at 26.4. Shift, then clamp — the detent costs six pixels of
+    // extra travel to reach the end, which is the right price and the only
+    // one.
     if handle.is_bipolar() && mult == 1.0 {
         let detent = handle.default_normalized() as f64;
         let half = crate::gesture::DETENT_PX / state.sensitivity;
@@ -178,9 +187,10 @@ pub fn drag_move(evt: &MouseEvent, drag: &mut Signal<DragState>) {
         new_val = if off.abs() < half {
             detent
         } else {
-            (detent + off - half.copysign(off)).clamp(0.0, 1.0)
+            detent + off - half.copysign(off)
         };
     }
+    let new_val = new_val.clamp(0.0, 1.0);
 
     handle.set_normalized(new_val as f32);
     state.move_count += 1;
