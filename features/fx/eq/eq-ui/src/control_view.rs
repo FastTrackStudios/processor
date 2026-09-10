@@ -473,6 +473,19 @@ fn AppShell() -> Element {
             // wiring, and it lives on the root because that is where Blitz
             // delivers a key when no text field has focus.
             tabindex: "0",
+            // Take focus once, a frame after mount.
+            //
+            // Blitz routes a key to the focused node and falls back to the
+            // document root, which is above anything Dioxus renders — so with
+            // nothing focused, every key is lost. Focus is only *set* by
+            // clicking, which is why the keyboard appeared to work after a
+            // lasso and not after a hover: pressing anywhere on the editor had
+            // quietly fixed it. Claiming it at startup closes that gap.
+            //
+            // `frame_counter > 0` rather than a plain `true`: blitz applies
+            // `autofocus` as an attribute *mutation*, so an element born with
+            // it never gets focus — the same two-render dance the band label
+            // field does.
             onkeydown: move |evt: KeyboardEvent| on_key.call(evt),
 
             PluginShell {

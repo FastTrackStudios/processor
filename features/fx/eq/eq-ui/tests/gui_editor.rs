@@ -2277,10 +2277,6 @@ async fn drag_select_then_delete_removes_every_selected_band() -> dioxus_test::R
 }
 
 /// Same key, targeted by hover instead of by selection.
-///
-/// Blocked by the same thing as the test below: with the band panel open, no
-/// key reaches a Dioxus handler at all.
-#[ignore = "no key reaches a handler while the band panel is open"]
 #[tokio::test]
 async fn a_letter_routes_the_band_under_the_pointer() -> dioxus_test::Result<()> {
     let fx = mount();
@@ -2301,34 +2297,27 @@ async fn a_letter_routes_the_band_under_the_pointer() -> dioxus_test::Result<()>
     Ok(())
 }
 
-/// Does *any* key reach the handler while the band panel is open?
+/// A key has to work without a click first.
 ///
-/// It does not — and that is the whole of the keyboard problem, which is
-/// worth stating separately because it is not what it first looked like.
-/// Letters are fine: `a_letter_routes_the_band_under_the_pointer` fails for
-/// this reason and not because printable keys are special, and Delete works
-/// perfectly well when nothing is hovered
-/// (`drag_select_then_delete_removes_every_selected_band`). Open the panel —
-/// which merely hovering a band does — and every key goes somewhere else.
-///
-/// Blitz routes a key to `focus_node_id`, falling back to the root element,
-/// and a Dioxus handler only fires for the target and its ancestors. So
-/// something the open panel puts on screen is taking focus, and it is below
-/// both places the handler is hung. Where exactly is not yet pinned down: the
-/// panel has no text input, no `tabindex` and no `autofocus` of its own.
-#[ignore = "diagnostic: shows keys are lost while the panel is open"]
+/// Blitz routes a key to the focused node and falls back to the *document*
+/// root, which sits above anything Dioxus renders — so with nothing focused
+/// every key is quietly lost. Focus is only ever *set* by clicking, which is
+/// what made this so confusing: the delete test passed because its lasso had
+/// pressed the pointer down somewhere first, and the placement test failed
+/// because hovering never clicks. The editor claims focus a frame after mount
+/// instead.
 #[tokio::test]
-async fn a_key_reaches_the_handler_while_the_panel_is_open() -> dioxus_test::Result<()> {
+async fn a_key_works_without_clicking_the_editor_first() -> dioxus_test::Result<()> {
     let fx = mount();
     let enabled = |fx: &support::Fixture| {
         (0..eq_ui::params::NUM_BANDS)
             .filter(|i| fx.params.bands[*i].enabled.value() > 0.5)
             .count()
     };
+    // Hover only. No press anywhere, ever.
     let (x, y) = fx.band_point(1);
     fx.tester.pointer_move(x, y, false);
     fx.settle().await;
-    assert!(fx.panel().is_some(), "band 1 is not hovered");
     let before = enabled(&fx);
 
     fx.tester
@@ -2336,7 +2325,8 @@ async fn a_key_reaches_the_handler_while_the_panel_is_open() -> dioxus_test::Res
     fx.settle().await;
     assert!(
         enabled(&fx) < before,
-        "Delete did not reach the handler with the panel open either",
+        "Delete did nothing — the editor never took focus, so the key went to \
+         the document root where nothing is listening",
     );
     Ok(())
 }
