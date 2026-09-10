@@ -22,8 +22,8 @@ use nice_plug_dioxus::widget::CustomWidgetAttr;
 use super::eq_graph_interaction::{
     GraphMapper, bands_in_rect, drag_gain_for_shape, filter_type_for_position, nearest_band,
     wheel_band,
-    CreateMode, DotAction, DragMode, Mods, WheelTarget, create_mode, dot_action, drag_mode, dyn_range_step, fine_scale, gain_step,
-    wheel_target,
+    CreateMode, DotAction, DragMode, Mods, WheelTarget, create_mode, dot_action, drag_mode,
+    dyn_range_step, fine_scale, gain_step, wheel_target,
 };
 pub use super::eq_graph_model::{
     BAND_COLORS, EqBand, EqBandShape, EqGraphRenderState, GraphConfig, InteractionState, MAX_BANDS,
@@ -165,6 +165,19 @@ pub fn EqGraph(
     /// `EqGraph` writes the focused band index to this signal from event handlers.
     #[props(default)]
     focused_band_out: Option<Signal<Option<usize>>>,
+    /// Mirrors of the graph's own selection and hover, for whoever owns the
+    /// keyboard.
+    ///
+    /// Blitz sends a key to the focused node, and falls back to the **root**
+    /// element when nothing is focused — and only a text input can take focus
+    /// by being clicked. So the graph cannot receive keys where it sits, and
+    /// the editor root has to handle them instead. It has the parameters
+    /// already; what it does not have is which bands the pointer is on or
+    /// lassoed, which is what these carry up.
+    #[props(default)]
+    selected_bands_out: Option<Signal<Vec<usize>>>,
+    #[props(default)]
+    hovered_band_out: Option<Signal<Option<usize>>>,
     /// Optional external signal for the cheat-sheet overlay selection, so a
     /// parent (e.g. the inspector) can drive it too. If omitted, the graph owns
     /// its own internal selection (defaulting to `Auto`).
@@ -245,6 +258,22 @@ pub fn EqGraph(
     };
     // Selected bands for multi-selection (can be multiple)
     let mut selected_bands: Signal<Vec<usize>> = use_signal(Vec::new);
+    // Both are mirrored out the way focus is, and for the same reason: the
+    // editor root owns the keyboard because Blitz will not give a plain div
+    // focus. Written through these setters rather than a `use_effect` —
+    // effects never run inside a plugin editor.
+    let mut set_selected = move |val: Vec<usize>| {
+        if let Some(mut ext) = selected_bands_out {
+            ext.set(val.clone());
+        }
+        selected_bands.set(val);
+    };
+    let mut set_hovered = move |val: Option<usize>| {
+        if let Some(mut ext) = hovered_band_out {
+            ext.set(val);
+        }
+        hovered_band.set(val);
+    };
     // Selection rectangle state: (start_x, start_y, current_x, current_y)
     let mut selection_rect: Signal<Option<(f64, f64, f64, f64)>> = use_signal(|| None);
     // Track last click for double-click detection on mousedown
@@ -615,7 +644,7 @@ pub fn EqGraph(
 
     rsx! {
         div {
-            style: "position:absolute; top:0; left:0; right:0; bottom:0; user-select:none;",
+            style: "position:absolute; top:0; left:0; right:0; bottom:0; user-select:none; outline:none;",
             onmounted: move |event: MountedEvent| {
                 mounted.set(Some(event.data()));
             },
@@ -686,7 +715,7 @@ pub fn EqGraph(
                 // resumes when the cursor re-enters (onmousemove). If the button
                 // was actually released outside the window, onmousemove detects
                 // the missing held button and ends the drag then.
-                hovered_band.set(None);
+                set_hovered(None);
             },
 
             // Mouse move: drag, hover hit-test, focus detection
@@ -866,7 +895,7 @@ pub fn EqGraph(
                     let bv = bands.read();
                     nearest_band(&bv, mapper, x, y, 15.0).map(|(i, _)| i)
                 };
-                if *hovered_band.peek() != new_hover { hovered_band.set(new_hover); }
+                if *hovered_band.peek() != new_hover { set_hovered(new_hover); }
 
                 // Focus detection (drives popup visibility)
                 let closest_for_focus = {
@@ -944,7 +973,7 @@ pub fn EqGraph(
                         let bv = bands.read();
                         bands_in_rect(&bv, mapper, sx, sy, x, y)
                     };
-                    selected_bands.set(newly);
+                    set_selected(newly);
                     selection_rect.set(None);
                     return;
                 }
@@ -1056,7 +1085,7 @@ pub fn EqGraph(
                     } else {
                         context_menu.set(Some((None, x, y)));
                         set_focused(None);
-                        selected_bands.set(Vec::new());
+                        set_selected(Vec::new());
                     }
                     evt.stop_propagation();
                     evt.prevent_default();
@@ -1138,7 +1167,7 @@ pub fn EqGraph(
                         _ if !cur_sel.contains(&idx) => vec![idx],
                         _ => cur_sel,
                     };
-                    selected_bands.set(new_sel.clone());
+                    set_selected(new_sel.clone());
 
                     drag_start.set(Some((x, y)));
                     drag_start_q.set(bands.read().get(idx).map_or(1.0, |b| b.q));
@@ -1204,7 +1233,7 @@ pub fn EqGraph(
                 } else {
                     last_click.set(Some((now, x, y)));
                     if !evt.modifiers().shift() {
-                        selected_bands.set(Vec::new());
+                        set_selected(Vec::new());
                         // A selected band's panel is sticky (see the focus
                         // logic in onmousemove); clicking empty graph is how the
                         // user dismisses it.

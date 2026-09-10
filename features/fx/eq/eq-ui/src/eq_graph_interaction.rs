@@ -568,3 +568,104 @@ mod gesture_tests {
         assert!((gain_step(-1.0, SHIFT) - 0.25).abs() < 1e-9);
     }
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// The keyboard layer
+// ─────────────────────────────────────────────────────────────────────────
+
+/// What a key on the graph asks for.
+///
+/// A pure decision, so the map is one table to read and one table to test —
+/// the pointer gestures learned that lesson already (see [`create_mode`] and
+/// [`DragMode`]), and a key map spread through an event handler is the same
+/// mistake with more branches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyAction {
+    /// Remove every selected band.
+    DeleteSelected,
+    /// Route the band under the pointer — or every selected band — to one
+    /// side of the stereo field.
+    Place(crate::eq_graph_model::StereoMode),
+    /// Hold a narrow, loud bell under the pointer to hunt with, the way you
+    /// sweep a parametric to find what is ringing. Released on key-up.
+    Sweep { cut: bool },
+    /// Listen to the selected band alone, or to the whole EQ's difference
+    /// when nothing is selected.
+    Delta,
+    /// Not ours: let it through.
+    Pass,
+}
+
+/// The key map.
+///
+/// `held` is what a key means while it is down (the sweep); everything else
+/// fires once on the press.
+#[must_use]
+pub fn key_action(key: &str, mods: Mods) -> KeyAction {
+    use crate::eq_graph_model::StereoMode;
+    // A modified key belongs to the host or to a text field, with the one
+    // exception the spec asks for: shift picks the sweep's direction.
+    if mods.cmd || (mods.alt && !key.eq_ignore_ascii_case("b")) {
+        return KeyAction::Pass;
+    }
+    match key {
+        "Delete" | "Backspace" => KeyAction::DeleteSelected,
+        _ if key.eq_ignore_ascii_case("m") => KeyAction::Place(StereoMode::Mid),
+        _ if key.eq_ignore_ascii_case("s") => KeyAction::Place(StereoMode::Side),
+        _ if key.eq_ignore_ascii_case("l") => KeyAction::Place(StereoMode::Left),
+        _ if key.eq_ignore_ascii_case("r") => KeyAction::Place(StereoMode::Right),
+        // Stereo is the way back from any of the four.
+        _ if key.eq_ignore_ascii_case("n") => KeyAction::Place(StereoMode::Stereo),
+        _ if key.eq_ignore_ascii_case("d") => KeyAction::Delta,
+        _ if key.eq_ignore_ascii_case("b") => KeyAction::Sweep { cut: mods.shift },
+        _ => KeyAction::Pass,
+    }
+}
+
+#[cfg(test)]
+mod key_map_tests {
+    use super::*;
+    use crate::eq_graph_model::StereoMode;
+
+    const PLAIN: Mods = Mods::new(false, false, false);
+    const SHIFT: Mods = Mods::new(false, true, false);
+    const CMD: Mods = Mods::new(false, false, true);
+
+    #[test]
+    fn the_placement_keys_are_the_initials() {
+        assert_eq!(key_action("m", PLAIN), KeyAction::Place(StereoMode::Mid));
+        assert_eq!(key_action("s", PLAIN), KeyAction::Place(StereoMode::Side));
+        assert_eq!(key_action("l", PLAIN), KeyAction::Place(StereoMode::Left));
+        assert_eq!(key_action("r", PLAIN), KeyAction::Place(StereoMode::Right));
+        assert_eq!(key_action("n", PLAIN), KeyAction::Place(StereoMode::Stereo));
+    }
+
+    /// Caps lock, or a shifted letter, still means the letter — except for
+    /// the sweep, where shift is the whole point.
+    #[test]
+    fn case_does_not_change_what_a_key_means() {
+        assert_eq!(key_action("M", PLAIN), KeyAction::Place(StereoMode::Mid));
+        assert_eq!(key_action("S", SHIFT), KeyAction::Place(StereoMode::Side));
+    }
+
+    #[test]
+    fn shift_turns_the_sweep_into_a_cut() {
+        assert_eq!(key_action("b", PLAIN), KeyAction::Sweep { cut: false });
+        assert_eq!(key_action("B", SHIFT), KeyAction::Sweep { cut: true });
+    }
+
+    #[test]
+    fn both_delete_keys_clear_the_selection() {
+        assert_eq!(key_action("Delete", PLAIN), KeyAction::DeleteSelected);
+        assert_eq!(key_action("Backspace", PLAIN), KeyAction::DeleteSelected);
+    }
+
+    /// A command-modified key is the host's — ⌘S is Save, not Side.
+    #[test]
+    fn the_command_key_hands_everything_back() {
+        for k in ["m", "s", "l", "r", "d", "b", "Delete"] {
+            assert_eq!(key_action(k, CMD), KeyAction::Pass, "cmd+{k} was claimed");
+        }
+    }
+}

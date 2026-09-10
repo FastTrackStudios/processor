@@ -19,6 +19,7 @@ use fts_audio_ui::prelude::*;
 use nice_plug::editor::ResizeHint;
 use nice_plug::editor::dpi::LogicalSize;
 
+use crate::eq_graph_interaction::{KeyAction, Mods, key_action};
 use crate::dynamics::{BandDynamicsPanel, BandHandles, DynState, ModKnob};
 use crate::eq_graph::{EqBand, EqBandShape, EqGraph, OverlayChoice};
 
@@ -259,6 +260,13 @@ fn AppShell() -> Element {
     });
 
     let focused_band: Signal<Option<usize>> = use_signal(|| None);
+    // What the graph has selected and what the pointer is over. Mirrored up
+    // here because the *root* is where keys arrive: Blitz sends a key to the
+    // focused node and falls back to the root element when nothing is
+    // focused, and only a text input can take focus by being clicked — so a
+    // handler on the graph's own div would never fire.
+    let mut selected_bands: Signal<Vec<usize>> = use_signal(Vec::new);
+    let mut hovered_band: Signal<Option<usize>> = use_signal(|| None);
     let mut inspector_tab: Signal<String> = use_signal(|| "band".to_string());
     // Cheat-sheet overlay/profile selection, shared between the inspector
     // selector below and the EqGraph (passed as a prop). `Auto` resolves from
@@ -385,13 +393,77 @@ fn AppShell() -> Element {
     // the EqGraph wrapper).
     let frame_counter = *app_tick.read();
 
+    // The keyboard layer's own handles, taken before the rsx hands `ctx` and
+    // `ui.params` to the closures below.
+    let key_ctx = ctx.clone();
+    let key_params = ui.params.clone();
+
     rsx! {
         document::Style { {base_css} }
 
         DragProvider {
         div {
-            style: format!("{root_style} overflow:hidden;"),
+            style: format!("{root_style} overflow:hidden; outline:none;"),
             "data-frame": "{frame_counter}",
+            // The editor's keyboard layer. What each key means is
+            // `eq_graph_interaction::key_action`, one table; this is the
+            // wiring, and it lives on the root because that is where Blitz
+            // delivers a key when no text field has focus.
+            tabindex: "0",
+            onkeydown: {
+                let params = key_params;
+                let ctx = key_ctx;
+                move |evt: KeyboardEvent| {
+                    let m = evt.modifiers();
+                    let mods = Mods::new(m.alt(), m.shift(), m.ctrl() || m.meta());
+                    let action = key_action(&evt.key().to_string(), mods);
+                    if action == KeyAction::Pass {
+                        return;
+                    }
+                    // Selection first, then whatever the pointer is on: you
+                    // should not have to lasso one band to act on it.
+                    let mut targets = { selected_bands.read().clone() };
+                    if targets.is_empty() {
+                        targets.extend(hovered_band.read().iter().copied());
+                    }
+                    if targets.is_empty() {
+                        targets.extend(focused_band.read().iter().copied());
+                    }
+
+                    match action {
+                        KeyAction::DeleteSelected => {
+                            for idx in targets.iter().filter(|i| **i < NUM_BANDS) {
+                                let bp = &params.bands[*idx];
+                                ctx.begin_set_raw(bp.enabled.as_ptr());
+                                ctx.set_normalized_raw(bp.enabled.as_ptr(), 0.0);
+                                ctx.end_set_raw(bp.enabled.as_ptr());
+                            }
+                            selected_bands.set(Vec::new());
+                        }
+                        KeyAction::Place(mode) => {
+                            let place = match mode {
+                                crate::eq_graph_model::StereoMode::Left => 1,
+                                crate::eq_graph_model::StereoMode::Right => 2,
+                                crate::eq_graph_model::StereoMode::Mid => 3,
+                                crate::eq_graph_model::StereoMode::Side => 4,
+                                crate::eq_graph_model::StereoMode::Stereo => 0,
+                            };
+                            for idx in targets.iter().filter(|i| **i < NUM_BANDS) {
+                                let bp = &params.bands[*idx];
+                                ctx.begin_set_raw(bp.placement.as_ptr());
+                                ctx.set_normalized_raw(
+                                    bp.placement.as_ptr(),
+                                    bp.placement.preview_normalized(place),
+                                );
+                                ctx.end_set_raw(bp.placement.as_ptr());
+                            }
+                        }
+                        KeyAction::Delta | KeyAction::Sweep { .. } | KeyAction::Pass => {}
+                    }
+                    evt.prevent_default();
+                    evt.stop_propagation();
+                }
+            },
 
             PluginShell {
                 title: "FTS EQ".to_string(),
@@ -579,6 +651,8 @@ fn AppShell() -> Element {
                         band_dynamics: Some(band_dynamics.clone()),
                         band_handles: Some(band_handles.clone()),
                         focused_band_out: focused_band,
+                        selected_bands_out: selected_bands,
+                        hovered_band_out: hovered_band,
                         overlay_sel: overlay_sel,
                         disabled: hardware_mode_active,
 

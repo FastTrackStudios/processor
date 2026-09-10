@@ -2186,3 +2186,92 @@ async fn double_clicking_empty_graph_twice_adds_two_bands() -> dioxus_test::Resu
     );
     Ok(())
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// The keyboard layer
+// ─────────────────────────────────────────────────────────────────────────
+
+/// `m`, `s`, `l` and `r` route the band under the pointer.
+///
+/// Blocked on the transport, not on the mapping. Blitz sends a key to the
+/// focused node and falls back to the root element when nothing is focused —
+/// and a **printable** key never reaches a Dioxus handler at all: `Delete`
+/// does (the test below proves it end to end), `Character("m")` does not.
+/// Something consumes it on the way, most likely the text-input/KeyPress
+/// path, which Blitz does not forward to the UI at all
+/// (`DomEventData::KeyPress(_) => None`).
+///
+/// The key map itself is tested in `eq_graph_interaction::key_map_tests`, and
+/// the acting code is shared with delete. What is missing is a way for a
+/// letter to arrive — probably the same window-level interception
+/// `nice-plug-dioxus` already does for space and backspace.
+#[ignore = "printable keys do not reach a Dioxus handler in this Blitz; Delete does"]
+#[tokio::test]
+async fn the_placement_keys_route_the_hovered_band() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let bp = &fx.params.bands[1];
+    assert_eq!(bp.placement.value(), 0, "band 1 did not start in stereo");
+
+    // 3 = Mid, in the placement parameter's own order.
+    for (key, expected) in [("m", 3), ("s", 4), ("l", 1), ("r", 2), ("n", 0)] {
+        let (x, y) = fx.band_point(1);
+        fx.tester.pointer_move(x, y, false);
+        fx.settle().await;
+        assert!(
+            fx.panel().is_some(),
+            "{key}: the pointer is not on band 1 — nothing is hovered to route",
+        );
+        fx.tester
+            .key_down(dioxus_test::keyboard_types::Key::Character(key.to_string()), Modifiers::empty());
+        fx.settle().await;
+        assert_eq!(
+            bp.placement.value(),
+            expected,
+            "{key} did not route the band",
+        );
+    }
+    Ok(())
+}
+
+/// Lasso a group of bands, then delete them all with one key.
+#[tokio::test]
+async fn drag_select_then_delete_removes_every_selected_band() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let enabled = |fx: &support::Fixture| {
+        (0..eq_ui::params::NUM_BANDS)
+            .filter(|i| fx.params.bands[*i].enabled.value() > 0.5)
+            .count()
+    };
+    let before = enabled(&fx);
+    assert!(before >= 2, "fixture has only {before} bands to select");
+
+    // Lasso the whole plot.
+    let (ox, oy) = fx.graph_origin();
+    fx.tester.pointer_down(ox + 4.0, oy + 4.0);
+    fx.settle().await;
+    for step in 1..=6 {
+        let t = f64::from(step) / 6.0;
+        fx.tester
+            .pointer_move(ox + 4.0 + 780.0 * t, oy + 4.0 + 330.0 * t, true);
+        fx.settle().await;
+    }
+    fx.tester.pointer_up(ox + 784.0, oy + 334.0);
+    fx.settle().await;
+    let after_lasso = enabled(&fx);
+    assert_eq!(
+        after_lasso, before,
+        "the lasso itself removed bands ({before} → {after_lasso}); the key \
+         press below would then be proving nothing",
+    );
+
+    fx.tester
+        .key_down(dioxus_test::keyboard_types::Key::Delete, Modifiers::empty());
+    fx.settle().await;
+
+    let after = enabled(&fx);
+    assert_eq!(
+        after, 0,
+        "delete left {after} of {before} bands enabled",
+    );
+    Ok(())
+}
