@@ -2275,3 +2275,68 @@ async fn drag_select_then_delete_removes_every_selected_band() -> dioxus_test::R
     );
     Ok(())
 }
+
+/// Same key, targeted by hover instead of by selection.
+///
+/// Blocked by the same thing as the test below: with the band panel open, no
+/// key reaches a Dioxus handler at all.
+#[ignore = "no key reaches a handler while the band panel is open"]
+#[tokio::test]
+async fn a_letter_routes_the_band_under_the_pointer() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let bp = &fx.params.bands[1];
+    assert_eq!(bp.placement.value(), 0);
+
+    let (x, y) = fx.band_point(1);
+    fx.tester.pointer_move(x, y, false);
+    fx.settle().await;
+    assert!(fx.panel().is_some(), "band 1 is not hovered");
+
+    fx.tester.key_down(
+        dioxus_test::keyboard_types::Key::Character("m".to_string()),
+        Modifiers::empty(),
+    );
+    fx.settle().await;
+    assert_eq!(bp.placement.value(), 3, "hover did not name a target for `m`");
+    Ok(())
+}
+
+/// Does *any* key reach the handler while the band panel is open?
+///
+/// It does not — and that is the whole of the keyboard problem, which is
+/// worth stating separately because it is not what it first looked like.
+/// Letters are fine: `a_letter_routes_the_band_under_the_pointer` fails for
+/// this reason and not because printable keys are special, and Delete works
+/// perfectly well when nothing is hovered
+/// (`drag_select_then_delete_removes_every_selected_band`). Open the panel —
+/// which merely hovering a band does — and every key goes somewhere else.
+///
+/// Blitz routes a key to `focus_node_id`, falling back to the root element,
+/// and a Dioxus handler only fires for the target and its ancestors. So
+/// something the open panel puts on screen is taking focus, and it is below
+/// both places the handler is hung. Where exactly is not yet pinned down: the
+/// panel has no text input, no `tabindex` and no `autofocus` of its own.
+#[ignore = "diagnostic: shows keys are lost while the panel is open"]
+#[tokio::test]
+async fn a_key_reaches_the_handler_while_the_panel_is_open() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let enabled = |fx: &support::Fixture| {
+        (0..eq_ui::params::NUM_BANDS)
+            .filter(|i| fx.params.bands[*i].enabled.value() > 0.5)
+            .count()
+    };
+    let (x, y) = fx.band_point(1);
+    fx.tester.pointer_move(x, y, false);
+    fx.settle().await;
+    assert!(fx.panel().is_some(), "band 1 is not hovered");
+    let before = enabled(&fx);
+
+    fx.tester
+        .key_down(dioxus_test::keyboard_types::Key::Delete, Modifiers::empty());
+    fx.settle().await;
+    assert!(
+        enabled(&fx) < before,
+        "Delete did not reach the handler with the panel open either",
+    );
+    Ok(())
+}

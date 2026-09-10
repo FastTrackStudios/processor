@@ -398,22 +398,19 @@ fn AppShell() -> Element {
     let key_ctx = ctx.clone();
     let key_params = ui.params.clone();
 
-    rsx! {
-        document::Style { {base_css} }
+    // One handler, hung on more than one element.
+    //
+    // Blitz sends a key to the focused node and falls back to the root when
+    // nothing is focused, and a Dioxus handler only fires for the target and
+    // its ancestors. With the band panel open something inside the graph
+    // takes focus, so a handler on the root alone never fires — the key is
+    // already below it. Hanging the same callback on the graph's container
+    // covers that subtree; between the two there is no path a key can take
+    // that misses both.
+    let on_key = use_callback(move |evt: KeyboardEvent| {
+        let params = key_params.clone();
+        let ctx = key_ctx.clone();
 
-        DragProvider {
-        div {
-            style: format!("{root_style} overflow:hidden; outline:none;"),
-            "data-frame": "{frame_counter}",
-            // The editor's keyboard layer. What each key means is
-            // `eq_graph_interaction::key_action`, one table; this is the
-            // wiring, and it lives on the root because that is where Blitz
-            // delivers a key when no text field has focus.
-            tabindex: "0",
-            onkeydown: {
-                let params = key_params;
-                let ctx = key_ctx;
-                move |evt: KeyboardEvent| {
                     let m = evt.modifiers();
                     let mods = Mods::new(m.alt(), m.shift(), m.ctrl() || m.meta());
                     let action = key_action(&evt.key().to_string(), mods);
@@ -460,10 +457,23 @@ fn AppShell() -> Element {
                         }
                         KeyAction::Delta | KeyAction::Sweep { .. } | KeyAction::Pass => {}
                     }
-                    evt.prevent_default();
-                    evt.stop_propagation();
-                }
-            },
+        evt.prevent_default();
+        evt.stop_propagation();
+    });
+
+    rsx! {
+        document::Style { {base_css} }
+
+        DragProvider {
+        div {
+            style: format!("{root_style} overflow:hidden; outline:none;"),
+            "data-frame": "{frame_counter}",
+            // The editor's keyboard layer. What each key means is
+            // `eq_graph_interaction::key_action`, one table; this is the
+            // wiring, and it lives on the root because that is where Blitz
+            // delivers a key when no text field has focus.
+            tabindex: "0",
+            onkeydown: move |evt: KeyboardEvent| on_key.call(evt),
 
             PluginShell {
                 title: "FTS EQ".to_string(),
@@ -620,6 +630,8 @@ fn AppShell() -> Element {
                 div {
                     class: "flex-1 min-w-0 relative rounded-md border border-border bg-card/30 overflow-hidden",
                     style: "background-image:linear-gradient(180deg, color-mix(in oklab, var(--card) 30%, transparent) 0%, color-mix(in oklab, var(--background) 60%, transparent) 100%);",
+                    // The other half of the keyboard layer — see `on_key`.
+                    onkeydown: move |evt: KeyboardEvent| on_key.call(evt),
                     EqGraph {
                         bands: graph_bands_signal,
                         db_range: db_range,
