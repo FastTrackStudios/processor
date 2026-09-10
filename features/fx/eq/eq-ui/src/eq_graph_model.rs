@@ -321,6 +321,19 @@ pub const DB_RANGE_STEPS: [f64; 6] = [3.0, 6.0, 12.0, 18.0, 24.0, 30.0];
 /// your first gesture.
 pub const DEFAULT_DB_RANGE: f64 = DB_RANGE_STEPS[1];
 
+/// The frequency axis the plot shows by default.
+///
+/// The top matches the frequency parameter's own ceiling, and has to: a
+/// control that can reach past the plot puts bands where they cannot be seen
+/// or grabbed. It is 24 kHz because that is Nyquist at the usual 48 kHz
+/// session rate, above which there is no filter to design.
+///
+/// Read these rather than repeating their values — the pointer fixtures in
+/// `tests/gui_editor.rs` compute where band nodes are, and a fixture with its
+/// own copy of the axis silently tests where nodes *used* to be.
+pub const DEFAULT_MIN_FREQ: f64 = 20.0;
+pub const DEFAULT_MAX_FREQ: f64 = 24_000.0;
+
 /// The dB range a `db_range` param index selects.
 #[must_use]
 pub fn db_range_for_index(index: i32) -> f64 {
@@ -370,8 +383,8 @@ impl Default for GraphConfig {
     fn default() -> Self {
         Self {
             db_range: DEFAULT_DB_RANGE,
-            min_freq: 20.0,
-            max_freq: 20000.0,
+            min_freq: DEFAULT_MIN_FREQ,
+            max_freq: DEFAULT_MAX_FREQ,
             sample_rate: 48000.0,
             show_grid: true,
             show_freq_labels: true,

@@ -7,6 +7,15 @@ use eq_dsp::{
     Steepness,
 };
 
+/// The highest frequency a filter can actually be designed at, as a fraction
+/// of the sample rate.
+///
+/// A biquad's centre has to sit below Nyquist; at exactly Nyquist the design
+/// degenerates. Sessions cross sample rates — one saved at 96 kHz and opened
+/// at 44.1 has bands the new rate cannot realise — so the graph designs them
+/// where they can be designed rather than refusing to draw.
+const DESIGN_CEILING: f64 = 0.499;
+
 fn config(band: &EqBand) -> BandConfig {
     let frequency_hz = f64::from(band.frequency);
     let gain_db = f64::from(band.gain);
@@ -108,14 +117,37 @@ fn config(band: &EqBand) -> BandConfig {
         })
 }
 
-pub fn prepare_band(band: &EqBand, sample_rate: f64) -> Result<PreparedFilter, eq_dsp::Error> {
-    config(band).filter.prepare(sample_rate)
+/// The band as the graph will design it: its own frequency, or the highest
+/// this sample rate can realise.
+fn realisable(band: &EqBand, sample_rate: f64) -> EqBand {
+    let ceiling = (sample_rate * DESIGN_CEILING) as f32;
+    if band.frequency <= ceiling {
+        return band.clone();
+    }
+    EqBand {
+        frequency: ceiling,
+        ..band.clone()
+    }
 }
 
+pub fn prepare_band(band: &EqBand, sample_rate: f64) -> Result<PreparedFilter, eq_dsp::Error> {
+    config(&realisable(band, sample_rate))
+        .filter
+        .prepare(sample_rate)
+}
+
+/// Prepare the visible EQ.
+///
+/// A band the sample rate cannot realise is designed at Nyquist, and one that
+/// still will not design is left out. Neither may take the curve with it: the
+/// whole combined response used to come back `NaN` if any single band was
+/// out of range, so one band parked above Nyquist blanked the display for all
+/// eight — and at 48 kHz the frequency control could reach 30 kHz, so getting
+/// there was a drag, not an edge case.
 pub fn prepare_graph(bands: &[EqBand], sample_rate: f64) -> Result<PreparedEq, eq_dsp::Error> {
     let mut eq = EqConfig::with_capacity(bands.len());
     for band in bands.iter().filter(|b| b.used && b.enabled) {
-        eq.add_band(config(band))?;
+        let _ = eq.add_band(config(&realisable(band, sample_rate)));
     }
     eq.prepare(ProcessSpec::new(sample_rate, 1)?)
 }
@@ -354,6 +386,61 @@ mod parity_tests {
                 - calculate_combined_response(&[different_q], 1000.0, 48000.0))
             .abs()
                 > 1.0
+        );
+    }
+}
+
+#[cfg(test)]
+mod nyquist_tests {
+    use super::*;
+
+    fn bell(hz: f32) -> EqBand {
+        EqBand {
+            index: 0,
+            used: true,
+            enabled: true,
+            frequency: hz,
+            gain: 6.0,
+            q: 1.0,
+            slope: None,
+            shape: EqBandShape::Bell,
+            solo: false,
+            stereo_mode: StereoMode::Stereo,
+            name: String::new(),
+        }
+    }
+
+    /// One band the sample rate cannot realise must not take the curve with
+    /// it.
+    ///
+    /// `prepare_graph` returned `Err` if *any* band failed to design, and the
+    /// callers turn that into `NaN` — so a single band above Nyquist blanked
+    /// the whole display, every other band's response included. At 48 kHz the
+    /// frequency control could reach 30 kHz, which made getting there a drag
+    /// rather than an edge case; sessions crossing sample rates get there
+    /// without touching anything.
+    #[test]
+    fn a_band_above_nyquist_does_not_erase_the_curve() {
+        for hz in [25_000.0_f32, 29_000.0] {
+            let at_1k = calculate_combined_response(&[bell(hz)], 1000.0, 48_000.0);
+            assert!(
+                at_1k.is_finite(),
+                "a band at {hz} Hz blanked the response at 1 kHz",
+            );
+        }
+    }
+
+    /// And it must not erase its neighbours either — the case that actually
+    /// looks like the bug, because seven bands vanish along with the one you
+    /// dragged.
+    #[test]
+    fn a_band_above_nyquist_leaves_its_neighbours_alone() {
+        let alone = calculate_combined_response(&[bell(1000.0)], 1000.0, 48_000.0);
+        let with_stray =
+            calculate_combined_response(&[bell(1000.0), bell(29_000.0)], 1000.0, 48_000.0);
+        assert!(
+            (with_stray - alone).abs() < 0.2,
+            "a stray band above Nyquist moved its neighbour from {alone} to {with_stray} dB",
         );
     }
 }

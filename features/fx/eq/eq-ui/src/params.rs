@@ -231,9 +231,13 @@ impl BandParams {
             freq_hz: FloatParam::new(
                 format!("B{} Freq", idx + 1),
                 default_freq,
+                // 24 kHz, not 30. Nyquist at the usual 48 kHz session rate:
+                // above it there is no filter to design, and the control was
+                // happily driving bands into a region where the DSP could not
+                // realise them and the graph could not draw them.
                 FloatRange::Skewed {
                     min: 20.0,
-                    max: 30000.0,
+                    max: 24000.0,
                     factor: FloatRange::skew_factor(-2.0),
                 },
             )

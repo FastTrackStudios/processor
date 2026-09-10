@@ -118,10 +118,15 @@ pub fn EqGraph(
     #[props(default)]
     on_db_range_change: Option<EventHandler<f64>>,
     /// Minimum frequency in Hz.
-    #[props(default = 20.0)]
+    #[props(default = crate::eq_graph_model::DEFAULT_MIN_FREQ)]
     min_freq: f64,
     /// Maximum frequency in Hz.
-    #[props(default = 20000.0)]
+    ///
+    /// Matches the frequency parameter's own ceiling on purpose. When the plot
+    /// stopped at 20 kHz and the control reached beyond it, a band dragged up
+    /// there left the graph — node, handle and all — with no way to see it or
+    /// get it back except by typing.
+    #[props(default = crate::eq_graph_model::DEFAULT_MAX_FREQ)]
     max_freq: f64,
     /// Sample rate for filter calculations.
     #[props(default = 48000.0)]

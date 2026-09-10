@@ -183,14 +183,16 @@ mod support {
         /// default 20 Hz–20 kHz range, and whatever the default display range
         /// currently is.
         ///
-        /// Reads `DEFAULT_DB_RANGE` rather than repeating its value: this was
-        /// hardcoded to 3.0, and changing the default to ±6 dB made every
-        /// pointer test miss its band node by half the graph — the fixture was
-        /// computing where nodes *used* to be.
+        /// Reads the graph's own constants rather than repeating their
+        /// values. The dB range was hardcoded to 3.0 once, and changing the
+        /// default to ±6 dB made every pointer test miss its band node by half
+        /// the graph — the fixture was computing where nodes *used* to be. The
+        /// frequency axis then did exactly the same thing when its top moved
+        /// from 20 kHz to Nyquist.
         pub fn mapper(&self) -> GraphMapper {
             GraphMapper::new(
-                20.0,
-                20_000.0,
+                eq_ui::eq_graph_model::DEFAULT_MIN_FREQ,
+                eq_ui::eq_graph_model::DEFAULT_MAX_FREQ,
                 eq_ui::eq_graph_model::DEFAULT_DB_RANGE,
                 800.0,
                 350.0,
