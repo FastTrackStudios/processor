@@ -248,9 +248,27 @@ impl BandParams {
             gain_db: FloatParam::new(
                 format!("B{} Gain", idx + 1),
                 0.0,
-                FloatRange::Linear {
+                // Skewed about 0 dB, not linear.
+                //
+                // The dial still sweeps evenly — that part was never the
+                // problem — but 60 dB spread evenly across it makes every
+                // pixel worth 0.4 dB, and the moves that matter most on an EQ
+                // are the first two or three. Linear, 1 dB arrived 8 px off
+                // centre and 6 dB by 21 px; you asked for 1.5 and were handed
+                // 2. Skewed, in pixels of drag from centre:
+                //
+                //   0.5 dB   1 dB   3 dB   6 dB   12 dB   30 dB
+                //     11      14     22     32      47      81
+                //
+                // About a tenth of a dB per pixel where the work is, and the
+                // far end still lands at the end of the sweep. ±30 dB exists
+                // for the one band in a mix that needs it, not for the other
+                // seven.
+                FloatRange::SymmetricalSkewed {
                     min: -30.0,
                     max: 30.0,
+                    factor: FloatRange::skew_factor(-0.6),
+                    center: 0.0,
                 },
             )
             .with_unit(" dB")
@@ -1036,4 +1054,44 @@ fn index_string(labels: &'static [&'static str]) -> Arc<dyn Fn(i32) -> String + 
             .unwrap_or("Unknown")
             .to_string()
     })
+}
+
+#[cfg(test)]
+mod gain_curve_tests {
+    use super::*;
+
+    /// The band gain's resolution has to be where the work is.
+    ///
+    /// Linear over ±30 dB, every pixel of a 150 px sweep is worth 0.4 dB: you
+    /// ask for 1.5 dB and are handed 2, and the first usable step off centre
+    /// is bigger than most of the moves an EQ is actually asked to make. The
+    /// dial's travel stays even — it is the dB it maps to that is skewed.
+    #[test]
+    fn the_first_few_db_are_finer_than_the_last_few() {
+        let params = FtsEqParams::default();
+        let gain = &params.bands[0].gain_db;
+
+        // A tenth of the sweep off centre is still inside a couple of dB.
+        let near = gain.preview_plain(0.6);
+        assert!(
+            (0.5..3.5).contains(&near),
+            "a tenth of the sweep gave {near} dB, which is not fine control",
+        );
+
+        // The far end is still the far end: a range you cannot reach is not a
+        // range, and this one exists for the band in a mix that needs it.
+        let far = gain.preview_plain(1.0);
+        assert!(
+            (far - 30.0).abs() < 0.01,
+            "the top of the sweep gave {far} dB, not +30",
+        );
+
+        // Symmetrical: cut and boost have to feel the same, or a band reads
+        // as two different controls depending on which way you turn it.
+        let below = gain.preview_plain(0.4);
+        assert!(
+            (below + near).abs() < 0.01,
+            "cut and boost are not mirrored: {below} vs {near}",
+        );
+    }
 }

@@ -163,12 +163,23 @@ pub fn drag_move(evt: &MouseEvent, drag: &mut Signal<DragState>) {
     // Soft detent at a bipolar parameter's default (0 dB, centre): within
     // DETENT_PX of drag around it the value sticks, so landing on it by hand
     // is reliable. Fine drags skip it.
+    //
+    // The dead zone has to be *dead*, not a step. Forcing the value to the
+    // detent while inside and then letting the raw travel through the moment
+    // you leave means the first pixel past the zone jumps the whole width of
+    // it: on a ±30 dB band gain that was 0 → 2.4 dB with no way to ask for
+    // anything between. Subtracting the zone on the way out makes the value
+    // continuous — you pay six pixels of travel for the detent, which is
+    // what a detent is, and pay it once.
     if handle.is_bipolar() && mult == 1.0 {
         let detent = handle.default_normalized() as f64;
         let half = crate::gesture::DETENT_PX / state.sensitivity;
-        if (new_val - detent).abs() < half {
-            new_val = detent;
-        }
+        let off = new_val - detent;
+        new_val = if off.abs() < half {
+            detent
+        } else {
+            (detent + off - half.copysign(off)).clamp(0.0, 1.0)
+        };
     }
 
     handle.set_normalized(new_val as f32);
