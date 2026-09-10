@@ -281,12 +281,19 @@ impl BandParams {
             q: FloatParam::new(
                 format!("B{} Q", idx + 1),
                 1.0,
+                // Pro-Q's Q runs 0.025 to 40, and that is what the editor
+                // shows — but this parameter carries √2 times it, so the
+                // endpoints have to be scaled or the two disagree.
+                //
+                // They did. At 0.025..60 the *displayed* Q ran 0.018 to 42.4,
+                // and both ends were outside the 0.025..40 the engine will
+                // design: the widest and narrowest settings the control could
+                // reach were settings it could not realise. A band parked
+                // there used to blank the whole curve and now quietly drops
+                // out of it, which is not much better.
                 FloatRange::Skewed {
-                    // Pro-Q's Q runs 0.025 to 40 and this parameter carries
-                    // √2 times it, so anything narrower silently rounds a
-                    // surgical notch off into a wide dip on load.
-                    min: 0.025,
-                    max: 60.0,
+                    min: 0.025 * std::f32::consts::SQRT_2,
+                    max: 40.0 * std::f32::consts::SQRT_2,
                     factor: FloatRange::skew_factor(-2.0),
                 },
             )

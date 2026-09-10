@@ -444,3 +444,118 @@ mod nyquist_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod default_state_tests {
+    use super::*;
+    use crate::params::{FtsEqParams, NUM_BANDS};
+
+    /// The band shapes, by the engine's canonical order. A local copy: the
+    /// two in the editor are private, and this test is about the numbers the
+    /// parameters ship with, not about the editor.
+    fn shape_of(v: i32) -> EqBandShape {
+        match v {
+            1 => EqBandShape::LowShelf,
+            2 => EqBandShape::LowCut,
+            3 => EqBandShape::HighShelf,
+            4 => EqBandShape::HighCut,
+            5 => EqBandShape::Notch,
+            6 => EqBandShape::BandPass,
+            7 => EqBandShape::TiltShelf,
+            8 => EqBandShape::FlatTilt,
+            9 => EqBandShape::AllPass,
+            _ => EqBandShape::Bell,
+        }
+    }
+
+    /// Loading the plugin must not change the audio.
+    ///
+    /// Bands 0 and 1 ship enabled — a low shelf at 400 Hz and a high shelf at
+    /// 2.5 kHz, both at 0 dB, so they sit ready to pull. "Ready to pull" is
+    /// only defensible if it is inaudible, which is what this asserts.
+    #[test]
+    fn the_default_state_is_unity() {
+        let params = FtsEqParams::default();
+        let bands: Vec<EqBand> = (0..NUM_BANDS)
+            .map(|i| {
+                let bp = &params.bands[i];
+                EqBand {
+                    index: i,
+                    used: bp.enabled.value() > 0.5,
+                    enabled: bp.enabled.value() > 0.5,
+                    frequency: bp.freq_hz.value(),
+                    gain: bp.gain_db.value(),
+                    q: bp.q.value() * std::f32::consts::FRAC_1_SQRT_2,
+                    slope: Some(bp.slope.value()),
+                    shape: shape_of(bp.filter_type.value()),
+                    solo: bp.solo.value() > 0.5,
+                    stereo_mode: StereoMode::Stereo,
+                    name: String::new(),
+                }
+            })
+            .collect();
+
+        assert!(
+            !bands.iter().any(|b| b.solo),
+            "a band ships soloed, which mutes everything else",
+        );
+
+        for hz in [30.0, 100.0, 400.0, 1000.0, 2500.0, 8000.0, 18_000.0] {
+            let db = calculate_combined_response(&bands, hz, 48_000.0);
+            assert!(
+                db.abs() < 0.01,
+                "the default state is {db:+.3} dB at {hz} Hz — loading the \
+                 plugin changes the sound",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod q_range_tests {
+    use super::*;
+    use crate::params::FtsEqParams;
+
+    /// Both ends of the Q control have to be settings the engine will design.
+    ///
+    /// A control that can reach past what the DSP accepts is the same fault
+    /// as the frequency one: the band drops out of the curve at the very
+    /// settings — the widest and the most surgical — you reached for it to
+    /// get. The editor shows Q at 1/√2 of the parameter, which is where the
+    /// two ends came apart.
+    #[test]
+    fn the_q_controls_extremes_are_designable() {
+        let params = FtsEqParams::default();
+        let range = params.bands[0].q.range();
+        let shown_at = |n: f32| range.unnormalize(n) * std::f32::consts::FRAC_1_SQRT_2;
+
+        for (label, normalized) in [("narrowest", 1.0_f32), ("widest", 0.0)] {
+            let shown = shown_at(normalized);
+            let band = EqBand {
+                index: 0,
+                used: true,
+                enabled: true,
+                frequency: 1000.0,
+                gain: 6.0,
+                q: shown,
+                slope: None,
+                shape: EqBandShape::Bell,
+                solo: false,
+                stereo_mode: StereoMode::Stereo,
+                name: String::new(),
+            };
+            let db = calculate_combined_response(&[band], 1000.0, 48_000.0);
+            assert!(
+                db.is_finite(),
+                "the {label} Q the control can reach (shown as {shown:.3}) is \
+                 one the engine will not design",
+            );
+        }
+
+        // And the shown range is Pro-Q's, which is the point of the scaling.
+        let widest = shown_at(0.0);
+        let narrowest = shown_at(1.0);
+        assert!((widest - 0.025).abs() < 0.001, "widest Q shows as {widest}");
+        assert!((narrowest - 40.0).abs() < 0.01, "narrowest Q shows as {narrowest}");
+    }
+}

@@ -2157,3 +2157,32 @@ async fn a_press_on_a_panel_dial_does_not_move_the_panel() -> dioxus_test::Resul
     );
     Ok(())
 }
+
+/// Adding a band by double-clicking empty graph, twice.
+///
+/// The second one crashed the host.
+#[tokio::test]
+async fn double_clicking_empty_graph_twice_adds_two_bands() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let (ox, oy) = fx.graph_origin();
+
+    let used = |fx: &support::Fixture| {
+        (0..eq_ui::params::NUM_BANDS)
+            .filter(|i| fx.params.bands[*i].enabled.value() > 0.5)
+            .count()
+    };
+    let before = used(&fx);
+
+    for (dx, dy) in [(-260.0_f64, 60.0_f64), (240.0, -70.0)] {
+        let (x, y) = (ox + 400.0 + dx, oy + 175.0 + dy);
+        fx.tap(x, y).await;
+        fx.tap(x, y).await;
+    }
+
+    let after = used(&fx);
+    assert!(
+        after > before,
+        "double-clicking empty graph added nothing: {before} → {after} bands",
+    );
+    Ok(())
+}
