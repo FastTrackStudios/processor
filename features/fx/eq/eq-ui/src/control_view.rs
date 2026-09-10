@@ -407,6 +407,25 @@ fn AppShell() -> Element {
     // already below it. Hanging the same callback on the graph's container
     // covers that subtree; between the two there is no path a key can take
     // that misses both.
+    let key_ctx_up = ctx.clone();
+    let key_params_up = ui.params.clone();
+    // Focus is momentary: what goes down on `f` has to come back up.
+    let on_key_up = use_callback(move |evt: KeyboardEvent| {
+        let mods = Mods::new(false, false, false);
+        if key_action(&evt.key().to_string(), mods) != KeyAction::Focus {
+            return;
+        }
+        let params = key_params_up.clone();
+        let ctx = key_ctx_up.clone();
+        for bp in params.bands.iter().take(NUM_BANDS) {
+            if bp.solo.value() > 0.5 {
+                ctx.begin_set_raw(bp.solo.as_ptr());
+                ctx.set_normalized_raw(bp.solo.as_ptr(), 0.0);
+                ctx.end_set_raw(bp.solo.as_ptr());
+            }
+        }
+    });
+
     let on_key = use_callback(move |evt: KeyboardEvent| {
         let params = key_params.clone();
         let ctx = key_ctx.clone();
@@ -455,7 +474,28 @@ fn AppShell() -> Element {
                                 ctx.end_set_raw(bp.placement.as_ptr());
                             }
                         }
-                        KeyAction::Delta | KeyAction::Sweep { .. } | KeyAction::Pass => {}
+                        KeyAction::Focus => {
+                            // Held, not latched: the key-up below clears it.
+                            // Only one band can be focused at a time — the
+                            // engine listens to one region — so the first
+                            // target wins.
+                            for (i, bp) in params.bands.iter().enumerate().take(NUM_BANDS) {
+                                let want = f32::from(u8::from(targets.first() == Some(&i)));
+                                if (bp.solo.value() - want).abs() > 0.01 {
+                                    ctx.begin_set_raw(bp.solo.as_ptr());
+                                    ctx.set_normalized_raw(bp.solo.as_ptr(), want);
+                                    ctx.end_set_raw(bp.solo.as_ptr());
+                                }
+                            }
+                        }
+                        KeyAction::Delta => {
+                            let now = params.delta.value();
+                            let want = if now > 0.5 { 0.0 } else { 1.0 };
+                            ctx.begin_set_raw(params.delta.as_ptr());
+                            ctx.set_normalized_raw(params.delta.as_ptr(), want);
+                            ctx.end_set_raw(params.delta.as_ptr());
+                        }
+                        KeyAction::Sweep { .. } | KeyAction::Pass => {}
                     }
         evt.prevent_default();
         evt.stop_propagation();
@@ -488,6 +528,7 @@ fn AppShell() -> Element {
             // field does.
             autofocus: "{frame_counter > 0}",
             onkeydown: move |evt: KeyboardEvent| on_key.call(evt),
+            onkeyup: move |evt: KeyboardEvent| on_key_up.call(evt),
 
             PluginShell {
                 title: "FTS EQ".to_string(),
@@ -646,6 +687,7 @@ fn AppShell() -> Element {
                     style: "background-image:linear-gradient(180deg, color-mix(in oklab, var(--card) 30%, transparent) 0%, color-mix(in oklab, var(--background) 60%, transparent) 100%);",
                     // The other half of the keyboard layer — see `on_key`.
                     onkeydown: move |evt: KeyboardEvent| on_key.call(evt),
+                    onkeyup: move |evt: KeyboardEvent| on_key_up.call(evt),
                     EqGraph {
                         bands: graph_bands_signal,
                         db_range: db_range,

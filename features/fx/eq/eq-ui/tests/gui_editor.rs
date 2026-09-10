@@ -2330,3 +2330,53 @@ async fn a_key_works_without_clicking_the_editor_first() -> dioxus_test::Result<
     );
     Ok(())
 }
+
+/// `f` focuses the band under the pointer while it is held, and lets go.
+#[tokio::test]
+async fn holding_f_focuses_the_hovered_band() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let bp = &fx.params.bands[1];
+    assert!(bp.solo.value() < 0.5, "band 1 started focused");
+
+    let (x, y) = fx.band_point(1);
+    fx.tester.pointer_move(x, y, false);
+    fx.settle().await;
+
+    let f = || dioxus_test::keyboard_types::Key::Character("f".to_string());
+    fx.tester.key_down(f(), Modifiers::empty());
+    fx.settle().await;
+    assert!(bp.solo.value() > 0.5, "holding f did not focus the band");
+
+    fx.tester.key_up(f(), Modifiers::empty());
+    fx.settle().await;
+    assert!(
+        bp.solo.value() < 0.5,
+        "focus latched instead of releasing on key-up",
+    );
+    Ok(())
+}
+
+/// `d` toggles delta listening for the whole EQ, and is not per band.
+#[tokio::test]
+async fn d_toggles_delta_listening() -> dioxus_test::Result<()> {
+    let fx = mount();
+    assert!(fx.params.delta.value() < 0.5, "delta started on");
+
+    let d = || dioxus_test::keyboard_types::Key::Character("d".to_string());
+    fx.tester.key_down(d(), Modifiers::empty());
+    fx.settle().await;
+    assert!(fx.params.delta.value() > 0.5, "d did not turn delta on");
+
+    fx.tester.key_up(d(), Modifiers::empty());
+    fx.settle().await;
+    fx.tester.key_down(d(), Modifiers::empty());
+    fx.settle().await;
+    assert!(fx.params.delta.value() < 0.5, "d did not turn delta back off");
+
+    // Nothing was hovered or selected: delta is a statement about the EQ.
+    assert!(
+        (0..eq_ui::params::NUM_BANDS).all(|i| fx.params.bands[i].solo.value() < 0.5),
+        "delta focused a band as a side effect",
+    );
+    Ok(())
+}

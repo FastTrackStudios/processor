@@ -85,18 +85,31 @@ impl FtsEqPlugin {
     /// coherent band instead of a partial one — the engine does its own
     /// comparison downstream.
     fn sync_params(&mut self) {
-        // Solo: while any band is soloed the rest are muted.
-        let any_solo = (0..NUM_BANDS).any(|i| self.params.bands[i].solo.value() > 0.5);
+        // Focus and delta, the engine's two listen modes — neither of which
+        // the plugin used to reach at all.
+        //
+        // Focus auditions a *region*: a bandpass at the focused band's
+        // frequency and Q, or the whole reach of a shelf or cut. It was
+        // previously wired as a solo — every other band muted, so what you
+        // heard was this band's processing rather than the signal it sits in —
+        // which is a different thing and not the one that helps you find what
+        // is ringing.
+        //
+        // Delta is the other question: the EQ's input subtracted from its
+        // output, so you hear what it is doing rather than what it makes. It
+        // wins when both are asked for, because it is a statement about the
+        // whole EQ.
+        let focused = (0..NUM_BANDS).find(|i| self.params.bands[*i].solo.value() > 0.5);
+        self.engine.set_listen(if self.params.delta.value() > 0.5 {
+            Some((0, 2))
+        } else {
+            focused.map(|i| (i, 1))
+        });
         let scale = f64::from(self.params.gain_scale.value()) / 100.0;
 
         for i in 0..NUM_BANDS {
             let bp = &self.params.bands[i];
-            let band_enabled = bp.enabled.value() > 0.5;
-            let enabled = if any_solo {
-                band_enabled && bp.solo.value() > 0.5
-            } else {
-                band_enabled
-            };
+            let enabled = bp.enabled.value() > 0.5;
 
             self.engine.set_canonical_band(
                 i,

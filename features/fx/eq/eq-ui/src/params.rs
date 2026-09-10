@@ -347,8 +347,19 @@ impl BandParams {
                 })
             })),
 
+            // "Focus", not "Solo".
+            //
+            // What it drives is the engine's band listen: a bandpass at the
+            // band's frequency and Q, or the whole reach of a shelf or cut —
+            // the region you sweep to find what is ringing. Nothing is muted
+            // and the band's own gain is not what you hear, so calling it a
+            // solo described neither what it does nor what it is for.
+            //
+            // The parameter *id* stays `solo`: saved sessions and automation
+            // lanes are keyed on it, and a rename there would silently drop
+            // both.
             solo: FloatParam::new(
-                format!("B{} Solo", idx + 1),
+                format!("B{} Focus", idx + 1),
                 0.0,
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
@@ -574,6 +585,14 @@ pub struct FtsEqParams {
     #[id = "output_gain"]
     pub output_gain_db: FloatParam,
 
+    /// Delta listen: hear what the EQ is *doing* rather than what it makes.
+    ///
+    /// The engine's `Listen::Delta` — its input subtracted from its output. A
+    /// different question from focus, which auditions a *region* of the
+    /// signal and is per band.
+    #[id = "delta"]
+    pub delta: FloatParam,
+
     /// Display dB range for the EQ graph (0=6dB, 1=12dB, 2=18dB, 3=24dB, 4=30dB).
     #[id = "db_range"]
     pub db_range: IntParam,
@@ -761,6 +780,16 @@ impl Default for FtsEqParams {
             // shelf-first baseline moves. Ascending: 3/6/12/18/24/30.
             // Index 1 = ±6 dB. See `DEFAULT_DB_RANGE` — the two must agree, or
             // the graph opens at a different range than the param reports.
+            delta: FloatParam::new("Delta", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_value_to_string(Arc::new(|v| {
+                    if v > 0.5 { "On".to_string() } else { "Off".to_string() }
+                }))
+                .with_string_to_value(Arc::new(|s| match s.trim().to_lowercase().as_str() {
+                    "on" | "1" | "true" => Some(1.0),
+                    "off" | "0" | "false" => Some(0.0),
+                    _ => s.parse().ok(),
+                })),
+
             db_range: IntParam::new("dB Range", 1, IntRange::Linear { min: 0, max: 5 })
                 .with_value_to_string(Arc::new(|v| match v {
                     0 => "3 dB".to_string(),

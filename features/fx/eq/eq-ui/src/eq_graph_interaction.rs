@@ -590,8 +590,15 @@ pub enum KeyAction {
     /// Hold a narrow, loud bell under the pointer to hunt with, the way you
     /// sweep a parametric to find what is ringing. Released on key-up.
     Sweep { cut: bool },
-    /// Listen to the selected band alone, or to the whole EQ's difference
-    /// when nothing is selected.
+    /// Hear the band's *region* — a bandpass at its frequency and Q, or the
+    /// whole reach of a shelf or cut. Held, not latched.
+    ///
+    /// Not a solo: nothing is muted and the band's own gain is not what you
+    /// are hearing. It is the sweep you do to find what is ringing, so it is
+    /// called focus and it lives on `f`.
+    Focus,
+    /// Hear what the EQ is *doing* — the difference between its input and its
+    /// output.
     Delta,
     /// Not ours: let it through.
     Pass,
@@ -617,6 +624,7 @@ pub fn key_action(key: &str, mods: Mods) -> KeyAction {
         _ if key.eq_ignore_ascii_case("r") => KeyAction::Place(StereoMode::Right),
         // Stereo is the way back from any of the four.
         _ if key.eq_ignore_ascii_case("n") => KeyAction::Place(StereoMode::Stereo),
+        _ if key.eq_ignore_ascii_case("f") => KeyAction::Focus,
         _ if key.eq_ignore_ascii_case("d") => KeyAction::Delta,
         _ if key.eq_ignore_ascii_case("b") => KeyAction::Sweep { cut: mods.shift },
         _ => KeyAction::Pass,
@@ -655,6 +663,14 @@ mod key_map_tests {
         assert_eq!(key_action("B", SHIFT), KeyAction::Sweep { cut: true });
     }
 
+    /// Focus and delta are different questions and get different keys: focus
+    /// asks "what is in this region", delta asks "what is this EQ doing".
+    #[test]
+    fn focus_and_delta_are_separate() {
+        assert_eq!(key_action("f", PLAIN), KeyAction::Focus);
+        assert_eq!(key_action("d", PLAIN), KeyAction::Delta);
+    }
+
     #[test]
     fn both_delete_keys_clear_the_selection() {
         assert_eq!(key_action("Delete", PLAIN), KeyAction::DeleteSelected);
@@ -664,7 +680,7 @@ mod key_map_tests {
     /// A command-modified key is the host's — ⌘S is Save, not Side.
     #[test]
     fn the_command_key_hands_everything_back() {
-        for k in ["m", "s", "l", "r", "d", "b", "Delete"] {
+        for k in ["m", "s", "l", "r", "d", "f", "b", "Delete"] {
             assert_eq!(key_action(k, CMD), KeyAction::Pass, "cmd+{k} was claimed");
         }
     }
