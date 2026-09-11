@@ -404,7 +404,7 @@ mod nyquist_tests {
             q: 1.0,
             slope: None,
             shape: EqBandShape::Bell,
-            solo: false,
+            focus: false,
             stereo_mode: StereoMode::Stereo,
             name: String::new(),
         }
@@ -488,7 +488,7 @@ mod default_state_tests {
                     q: bp.q.value() * std::f32::consts::FRAC_1_SQRT_2,
                     slope: Some(bp.slope.value()),
                     shape: shape_of(bp.filter_type.value()),
-                    solo: bp.solo.value() > 0.5,
+                    focus: bp.focus.value() > 0.5,
                     stereo_mode: StereoMode::Stereo,
                     name: String::new(),
                 }
@@ -496,8 +496,8 @@ mod default_state_tests {
             .collect();
 
         assert!(
-            !bands.iter().any(|b| b.solo),
-            "a band ships soloed, which mutes everything else",
+            !bands.iter().any(|b| b.focus),
+            "a band ships focused, which mutes everything else",
         );
 
         for hz in [30.0, 100.0, 400.0, 1000.0, 2500.0, 8000.0, 18_000.0] {
@@ -540,7 +540,7 @@ mod q_range_tests {
                 q: shown,
                 slope: None,
                 shape: EqBandShape::Bell,
-                solo: false,
+                focus: false,
                 stereo_mode: StereoMode::Stereo,
                 name: String::new(),
             };

@@ -593,7 +593,7 @@ pub enum KeyAction {
     /// Hear the band's *region* — a bandpass at its frequency and Q, or the
     /// whole reach of a shelf or cut. Held, not latched.
     ///
-    /// Not a solo: nothing is muted and the band's own gain is not what you
+    /// Not a focus: nothing is muted and the band's own gain is not what you
     /// are hearing. It is the sweep you do to find what is ringing, so it is
     /// called focus and it lives on `f`.
     Focus,

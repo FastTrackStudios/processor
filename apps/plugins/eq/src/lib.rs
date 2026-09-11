@@ -90,7 +90,7 @@ impl FtsEqPlugin {
         //
         // Focus auditions a *region*: a bandpass at the focused band's
         // frequency and Q, or the whole reach of a shelf or cut. It was
-        // previously wired as a solo — every other band muted, so what you
+        // previously wired as a focus — every other band muted, so what you
         // heard was this band's processing rather than the signal it sits in —
         // which is a different thing and not the one that helps you find what
         // is ringing.
@@ -99,7 +99,7 @@ impl FtsEqPlugin {
         // output, so you hear what it is doing rather than what it makes. It
         // wins when both are asked for, because it is a statement about the
         // whole EQ.
-        let focused = (0..NUM_BANDS).find(|i| self.params.bands[*i].solo.value() > 0.5);
+        let focused = (0..NUM_BANDS).find(|i| self.params.bands[*i].focus.value() > 0.5);
         self.engine.set_listen(if self.params.delta.value() > 0.5 {
             Some((0, 2))
         } else {

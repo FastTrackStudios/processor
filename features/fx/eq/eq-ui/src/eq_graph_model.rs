@@ -71,8 +71,8 @@ pub struct EqBand {
     pub slope: Option<f32>,
     /// Filter shape (bell, shelf, cut, etc.).
     pub shape: EqBandShape,
-    /// Whether this band is soloed (only this band audible).
-    pub solo: bool,
+    /// Whether this band is focused (only this band audible).
+    pub focus: bool,
     /// Stereo placement mode.
     pub stereo_mode: StereoMode,
     /// User-assigned short name (e.g. "Honk"). Empty if unnamed. Snapshot of the

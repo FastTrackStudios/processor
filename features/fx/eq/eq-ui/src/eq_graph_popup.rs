@@ -111,7 +111,7 @@ pub fn EmptyGraphContextMenu(
                                     q: 1.0,
                                     slope: None,
                                     shape,
-                                    solo: false,
+                                    focus: false,
                                     stereo_mode: StereoMode::default(),
                                     name: String::new(),
                                 });
@@ -313,7 +313,7 @@ pub fn BandPopup(
     };
     let band_color = crate::eq_graph_model::freq_to_color(f64::from(band.frequency));
     let band_enabled = band.enabled;
-    let band_solo = band.solo;
+    let band_focus = band.focus;
     let band_gain = band.gain;
 
     let stereo_mode = band.stereo_mode;
@@ -542,7 +542,7 @@ pub fn BandPopup(
                         }
                         Button {
                             size: ButtonSize::Small,
-                            variant: if band_solo { ButtonVariant::Secondary } else { ButtonVariant::Outline },
+                            variant: if band_focus { ButtonVariant::Secondary } else { ButtonVariant::Outline },
                             class: "px-0 h-5".to_string(),
                             on_click: {
                                 let cb = on_band_change;
@@ -550,7 +550,7 @@ pub fn BandPopup(
                                     let updated = {
                                         let mut bv = bands.write();
                                         if band_idx < bv.len() {
-                                            bv[band_idx].solo = !bv[band_idx].solo;
+                                            bv[band_idx].focus = !bv[band_idx].focus;
                                             Some(bv[band_idx].clone())
                                         } else { None }
                                     };
@@ -831,9 +831,9 @@ pub fn BandContextMenu(
                 div {
                     style: menu_row(hover() == Some(1), false),
                     onmouseenter: move |_| { hover.set(Some(1)); open_sub.set(None); },
-                    onclick: move |_| { apply(&|b: &mut EqBand| b.solo = !b.solo); on_dismiss.call(()); },
-                    span { style: "width:12px;", if band.solo { "✓" } else { "" } }
-                    span { "Solo" }
+                    onclick: move |_| { apply(&|b: &mut EqBand| b.focus = !b.focus); on_dismiss.call(()); },
+                    span { style: "width:12px;", if band.focus { "✓" } else { "" } }
+                    span { "Focus" }
                 }
                 div {
                     style: menu_row(hover() == Some(2), false),

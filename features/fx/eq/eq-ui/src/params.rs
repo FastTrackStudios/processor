@@ -91,9 +91,9 @@ pub struct BandParams {
     #[id = "slope"]
     pub slope: FloatParam,
 
-    /// Solo this band (mutes all other bands when active).
-    #[id = "solo"]
-    pub solo: FloatParam,
+    /// Focus this band (mutes all other bands when active).
+    #[id = "focus"]
+    pub focus: FloatParam,
 
     /// User-assigned short name for this band (e.g. "Honk", "Air"). Persisted
     /// (not automatable) — serialized per band as `name_1`..`name_24`.
@@ -347,18 +347,14 @@ impl BandParams {
                 })
             })),
 
-            // "Focus", not "Solo".
+            // Focus: the engine's band listen.
             //
-            // What it drives is the engine's band listen: a bandpass at the
-            // band's frequency and Q, or the whole reach of a shelf or cut —
-            // the region you sweep to find what is ringing. Nothing is muted
-            // and the band's own gain is not what you hear, so calling it a
-            // solo described neither what it does nor what it is for.
-            //
-            // The parameter *id* stays `solo`: saved sessions and automation
-            // lanes are keyed on it, and a rename there would silently drop
-            // both.
-            solo: FloatParam::new(
+            // A bandpass at the band's frequency and Q, or the whole reach of
+            // a shelf or cut — the region you sweep to find what is ringing.
+            // Nothing is muted and the band's own gain is not what you hear,
+            // which is why the name it carried before ("solo") described
+            // neither what it does nor what it is for.
+            focus: FloatParam::new(
                 format!("B{} Focus", idx + 1),
                 0.0,
                 FloatRange::Linear { min: 0.0, max: 1.0 },

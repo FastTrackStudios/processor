@@ -600,37 +600,37 @@ async fn interacting_with_the_panel_does_not_move_the_band() -> dioxus_test::Res
     Ok(())
 }
 
-/// The panel's solo control is reachable by a hit-tested click and actually
+/// The panel's focus control is reachable by a hit-tested click and actually
 /// drives the parameter through a host automation gesture.
 #[tokio::test]
-async fn panel_solo_control_is_clickable() -> dioxus_test::Result<()> {
+async fn panel_focus_control_is_clickable() -> dioxus_test::Result<()> {
     let fx = mount();
     let bp = &fx.params.bands[1];
-    let solo_key = ptr_key(bp.solo.as_ptr());
+    let focus_key = ptr_key(bp.focus.as_ptr());
     let node = fx.band_point(1);
 
     fx.tester.pointer_move(node.0, node.1, false);
     fx.settle().await;
-    assert!(bp.solo.value() < 0.5, "band 2 starts soloed");
+    assert!(bp.focus.value() < 0.5, "band 2 starts focused");
 
     let target = fx.panel_center();
     fx.glide(node, target, 6, false).await;
 
-    let solo = fx.panel_control("S");
-    let (bx, by) = solo.document_origin();
-    let (bw, bh) = solo.size();
-    assert!(bw > 0.0 && bh > 0.0, "solo control has no layout box");
+    let focus = fx.panel_control("S");
+    let (bx, by) = focus.document_origin();
+    let (bw, bh) = focus.size();
+    assert!(bw > 0.0 && bh > 0.0, "focus control has no layout box");
     fx.tap(bx + bw as f64 / 2.0, by + bh as f64 / 2.0).await;
 
     assert!(
-        bp.solo.value() > 0.5,
-        "clicking the panel's solo control did not solo the band",
+        bp.focus.value() > 0.5,
+        "clicking the panel's focus control did not focus the band",
     );
     let log = fx.log.lock().unwrap();
     assert!(
         log.iter()
-            .any(|g| matches!(g, Gesture::Set(k, v) if *k == solo_key && *v > 0.5)),
-        "no host automation gesture for solo: {log:?}",
+            .any(|g| matches!(g, Gesture::Set(k, v) if *k == focus_key && *v > 0.5)),
+        "no host automation gesture for focus: {log:?}",
     );
     Ok(())
 }
@@ -2336,7 +2336,7 @@ async fn a_key_works_without_clicking_the_editor_first() -> dioxus_test::Result<
 async fn holding_f_focuses_the_hovered_band() -> dioxus_test::Result<()> {
     let fx = mount();
     let bp = &fx.params.bands[1];
-    assert!(bp.solo.value() < 0.5, "band 1 started focused");
+    assert!(bp.focus.value() < 0.5, "band 1 started focused");
 
     let (x, y) = fx.band_point(1);
     fx.tester.pointer_move(x, y, false);
@@ -2345,12 +2345,12 @@ async fn holding_f_focuses_the_hovered_band() -> dioxus_test::Result<()> {
     let f = || dioxus_test::keyboard_types::Key::Character("f".to_string());
     fx.tester.key_down(f(), Modifiers::empty());
     fx.settle().await;
-    assert!(bp.solo.value() > 0.5, "holding f did not focus the band");
+    assert!(bp.focus.value() > 0.5, "holding f did not focus the band");
 
     fx.tester.key_up(f(), Modifiers::empty());
     fx.settle().await;
     assert!(
-        bp.solo.value() < 0.5,
+        bp.focus.value() < 0.5,
         "focus latched instead of releasing on key-up",
     );
     Ok(())
@@ -2375,7 +2375,7 @@ async fn d_toggles_delta_listening() -> dioxus_test::Result<()> {
 
     // Nothing was hovered or selected: delta is a statement about the EQ.
     assert!(
-        (0..eq_ui::params::NUM_BANDS).all(|i| fx.params.bands[i].solo.value() < 0.5),
+        (0..eq_ui::params::NUM_BANDS).all(|i| fx.params.bands[i].focus.value() < 0.5),
         "delta focused a band as a side effect",
     );
     Ok(())

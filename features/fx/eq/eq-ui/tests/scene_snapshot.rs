@@ -69,7 +69,7 @@ fn band(idx: usize, freq: f32, gain: f32, q: f32, shape: EqBandShape) -> EqBand 
         q,
         shape,
         slope: Some(2.0),
-        solo: false,
+        focus: false,
         stereo_mode: StereoMode::default(),
         name: String::new(),
     }

@@ -1204,7 +1204,7 @@ pub fn EqGraph(
                     let shape = filter_type_for_position(f64::from(freq), f64::from(gain), db_range);
                     let final_gain = if shape.uses_gain() { gain } else { 0.0 };
                     let new_band = EqBand { index: new_idx, used: true, enabled: true, frequency: freq,
-                        gain: final_gain, q: 1.0, slope: None, shape, solo: false, stereo_mode: StereoMode::default(),
+                        gain: final_gain, q: 1.0, slope: None, shape, focus: false, stereo_mode: StereoMode::default(),
                         name: String::new() };
                     if let Some(cb) = &on_band_add { cb.call(new_band); }
 

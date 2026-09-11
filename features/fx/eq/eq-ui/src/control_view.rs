@@ -330,7 +330,7 @@ fn AppShell() -> Element {
             q: bp.q.value() * std::f32::consts::FRAC_1_SQRT_2,
             slope: Some(bp.slope.value()),
             shape: int_to_shape(bp.filter_type.value()),
-            solo: bp.solo.value() > 0.5,
+            focus: bp.focus.value() > 0.5,
             stereo_mode: match bp.placement.value() {
                 1 => crate::eq_graph_model::StereoMode::Left,
                 2 => crate::eq_graph_model::StereoMode::Right,
@@ -418,10 +418,10 @@ fn AppShell() -> Element {
         let params = key_params_up.clone();
         let ctx = key_ctx_up.clone();
         for bp in params.bands.iter().take(NUM_BANDS) {
-            if bp.solo.value() > 0.5 {
-                ctx.begin_set_raw(bp.solo.as_ptr());
-                ctx.set_normalized_raw(bp.solo.as_ptr(), 0.0);
-                ctx.end_set_raw(bp.solo.as_ptr());
+            if bp.focus.value() > 0.5 {
+                ctx.begin_set_raw(bp.focus.as_ptr());
+                ctx.set_normalized_raw(bp.focus.as_ptr(), 0.0);
+                ctx.end_set_raw(bp.focus.as_ptr());
             }
         }
     });
@@ -481,10 +481,10 @@ fn AppShell() -> Element {
                             // target wins.
                             for (i, bp) in params.bands.iter().enumerate().take(NUM_BANDS) {
                                 let want = f32::from(u8::from(targets.first() == Some(&i)));
-                                if (bp.solo.value() - want).abs() > 0.01 {
-                                    ctx.begin_set_raw(bp.solo.as_ptr());
-                                    ctx.set_normalized_raw(bp.solo.as_ptr(), want);
-                                    ctx.end_set_raw(bp.solo.as_ptr());
+                                if (bp.focus.value() - want).abs() > 0.01 {
+                                    ctx.begin_set_raw(bp.focus.as_ptr());
+                                    ctx.set_normalized_raw(bp.focus.as_ptr(), want);
+                                    ctx.end_set_raw(bp.focus.as_ptr());
                                 }
                             }
                         }
@@ -774,13 +774,13 @@ fn AppShell() -> Element {
                                     );
                                     ctx.end_set_raw(bp.enabled.as_ptr());
 
-                                    let solo_val = if band.solo { 1.0_f32 } else { 0.0 };
-                                    ctx.begin_set_raw(bp.solo.as_ptr());
+                                    let focus_val = if band.focus { 1.0_f32 } else { 0.0 };
+                                    ctx.begin_set_raw(bp.focus.as_ptr());
                                     ctx.set_normalized_raw(
-                                        bp.solo.as_ptr(),
-                                        bp.solo.preview_normalized(solo_val),
+                                        bp.focus.as_ptr(),
+                                        bp.focus.preview_normalized(focus_val),
                                     );
-                                    ctx.end_set_raw(bp.solo.as_ptr());
+                                    ctx.end_set_raw(bp.focus.as_ptr());
 
                                     // Stereo placement. This was missing: the
                                     // model READ `placement` when building the
@@ -949,7 +949,7 @@ fn AppShell() -> Element {
                                         let slope = bp.slope.value();
                                         let shape = int_to_shape(bp.filter_type.value());
                                         let enabled = bp.enabled.value() > 0.5;
-                                        let solo = bp.solo.value() > 0.5;
+                                        let focus = bp.focus.value() > 0.5;
                                         let color = crate::eq_graph_model::freq_to_color(f64::from(freq));
                                         let freq_str = format_freq(freq);
                                         let current_shape_value = shape_to_int(shape).to_string();
@@ -961,10 +961,10 @@ fn AppShell() -> Element {
                                         if *enabled_sig.read() != enabled {
                                             enabled_sig.set(enabled);
                                         }
-                                        let mut solo_value = use_signal(|| if solo { "solo".to_string() } else { "normal".to_string() });
-                                        let desired_solo = if solo { "solo".to_string() } else { "normal".to_string() };
-                                        if *solo_value.read() != desired_solo {
-                                            solo_value.set(desired_solo);
+                                        let mut focus_value = use_signal(|| if focus { "focus".to_string() } else { "normal".to_string() });
+                                        let desired_focus = if focus { "focus".to_string() } else { "normal".to_string() };
+                                        if *focus_value.read() != desired_focus {
+                                            focus_value.set(desired_focus);
                                         }
                                         let slope_value = slope.to_string();
                                         let mut slope_sig = use_signal(|| slope_value.clone());
@@ -1094,19 +1094,19 @@ fn AppShell() -> Element {
                                                     div { class: "rounded-md border border-border bg-muted/20 p-2",
                                                         div { class: "text-[10px] uppercase tracking-wider text-muted-foreground mb-2", "Monitor" }
                                                         SegmentedControl {
-                                                            value: solo_value(),
+                                                            value: focus_value(),
                                                             size: SegmentedControlSize::Small,
                                                             options: vec![
                                                                 ("normal".to_string(), "Normal".to_string()),
-                                                                ("solo".to_string(), "Solo".to_string()),
+                                                                ("focus".to_string(), "Focus".to_string()),
                                                             ],
                                                             on_change: {
-                                                                let ctx_solo = ctx.clone();
-                                                                let solo_ptr = bp.solo.as_ptr();
+                                                                let ctx_focus = ctx.clone();
+                                                                let focus_ptr = bp.focus.as_ptr();
                                                                 move |value: String| {
-                                                                    ctx_solo.begin_set_raw(solo_ptr);
-                                                                    ctx_solo.set_normalized_raw(solo_ptr, if value == "solo" { 1.0 } else { 0.0 });
-                                                                    ctx_solo.end_set_raw(solo_ptr);
+                                                                    ctx_focus.begin_set_raw(focus_ptr);
+                                                                    ctx_focus.set_normalized_raw(focus_ptr, if value == "focus" { 1.0 } else { 0.0 });
+                                                                    ctx_focus.end_set_raw(focus_ptr);
                                                                 }
                                                             },
                                                         }
@@ -1204,7 +1204,7 @@ fn AppShell() -> Element {
                                         rsx! {
                                             div { class: "pt-3",
                                                 div { class: "rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground",
-                                                    "Select or add a band to edit frequency, gain, Q, slope, type, bypass, and solo."
+                                                    "Select or add a band to edit frequency, gain, Q, slope, type, bypass, and focus."
                                                 }
                                             }
                                         }
