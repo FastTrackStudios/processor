@@ -322,7 +322,7 @@ pub fn BandPopup(
     // graph, so it has to feed this itself — see the handlers below.
     let mut drag: Signal<fts_audio_ui::drag::DragState> = use_context();
 
-    let (live_x, popup_y, popup_w, popup_h) =
+    let (live_x, _popup_y, popup_w, popup_h) =
         band_popup_rect(bx, by, graph_w, graph_h, is_dragging);
 
     // Where the panel is pinned while it is being used. Set from the panel's
@@ -345,7 +345,16 @@ pub fn BandPopup(
                 // than left to the content, so the region the graph treats as
                 // "still on the band" and the box the pointer actually hits are
                 // the same rectangle.
-                "position:absolute; left:{popup_x}px; top:{popup_y}px; \
+                // Docked with `bottom`, not with a computed `top`.
+                //
+                // The y in `band_popup_rect` is `graph_h - h - gap`, and
+                // `graph_h` is the painted canvas box with a 350 px fallback
+                // for before the first paint. Whenever that fallback is in
+                // force the panel lands a third of the way up a full-height
+                // plot instead of sitting on the floor of it. The wrapper this
+                // sits in spans the graph exactly, so `bottom` needs no
+                // measurement and cannot be stale.
+                "position:absolute; left:{popup_x}px; bottom:{POPUP_GAP}px; \
                  width:{popup_w}px; height:{popup_h}px; \
                  z-index:10; pointer-events:{pe};",
                 pe = if is_dragging { "none" } else { "auto" },

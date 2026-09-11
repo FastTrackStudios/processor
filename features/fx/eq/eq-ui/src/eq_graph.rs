@@ -555,14 +555,27 @@ pub fn EqGraph(
     // `observed_max` one-way ratchet was removed: it never shrank, so after
     // making the window smaller it kept the stale (larger) size and hit-tests
     // drifted. Fall back to the viewBox default only before the first paint.
-    let _ = (obs_x, obs_y, act_rw, act_rh);
+    let _ = (obs_x, obs_y);
+    // Before the first paint there is no canvas box, so fall back to the
+    // element's own measured rect and only then to the viewBox.
+    //
+    // Falling straight to the viewBox meant that on any frame before the
+    // widget had painted — every frame of a headless render, and the first
+    // frames of a real editor — the whole graph was laid out for an 800×350
+    // plot inside an element twice that size. Everything crowded into the top
+    // left: 20 kHz a third of the way across, the band panel a third of the
+    // way up instead of docked to the floor.
     let graph_width = if canvas_w_css > 1.0 {
         canvas_w_css
+    } else if act_rw > 1.0 {
+        act_rw
     } else {
         vb_width
     };
     let graph_height = if canvas_h_css > 1.0 {
         canvas_h_css
+    } else if act_rh > 1.0 {
+        act_rh
     } else {
         vb_height
     };
