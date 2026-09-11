@@ -178,6 +178,13 @@ pub fn EqGraph(
     selected_bands_out: Option<Signal<Vec<usize>>>,
     #[props(default)]
     hovered_band_out: Option<Signal<Option<usize>>>,
+    /// The band a held sweep is driving, if one is held.
+    ///
+    /// The key that starts it is handled at the editor root, but the
+    /// frequency it should sit at is the pointer's — and the pointer lives
+    /// here. So the root says *which* band, and the graph moves it.
+    #[props(default)]
+    sweep_band: Option<Signal<Option<usize>>>,
     /// Optional external signal for the cheat-sheet overlay selection, so a
     /// parent (e.g. the inspector) can drive it too. If omitted, the graph owns
     /// its own internal selection (defaulting to `Auto`).
@@ -390,7 +397,7 @@ pub fn EqGraph(
     // AND remembers the chord; the first real movement cancels the chord
     // (this is a drag), and a release with no movement fires it (this was a
     // click). Acting on press instead made every Alt+drag impossible, which is
-    // what `alt_drag_locks_the_band_to_one_axis` caught.
+    // what `alt_drag_pins_the_gain_and_moves_only_the_frequency` caught.
     let mut pending_chord: Signal<Option<(usize, DotAction)>> = use_signal(|| None);
     // Dropdown states for the popup
     // Right-click context menu state: (band_idx, viewBox_x, viewBox_y)
@@ -888,6 +895,25 @@ pub fn EqGraph(
                         if let (Some((i, b)), Some(cb)) = (updated, &on_band_change) { cb.call((i, b)); }
                     }
                     return;
+                }
+
+                // A held sweep follows the pointer: that is the whole gesture,
+                // a loud narrow bell you drag across the spectrum until the
+                // thing that is ringing rings louder.
+                if let Some(i) = sweep_band.and_then(|s| *s.read()) {
+                    let hz = mapper.x_to_freq(x).clamp(20.0, 24_000.0) as f32;
+                    let updated = {
+                        let mut bv = bands.write();
+                        if i < bv.len() && (bv[i].frequency - hz).abs() > 0.5 {
+                            bv[i].frequency = hz;
+                            Some(bv[i].clone())
+                        } else {
+                            None
+                        }
+                    };
+                    if let (Some(b), Some(cb)) = (updated, &on_band_change) {
+                        cb.call((i, b));
+                    }
                 }
 
                 // Hover hit-test (replaces invisible SVG circles)

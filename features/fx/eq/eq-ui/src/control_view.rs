@@ -267,6 +267,9 @@ fn AppShell() -> Element {
     // handler on the graph's own div would never fire.
     let mut selected_bands: Signal<Vec<usize>> = use_signal(Vec::new);
     let mut hovered_band: Signal<Option<usize>> = use_signal(|| None);
+    // The band a held sweep is driving. The graph moves it with the pointer;
+    // this is only which slot it borrowed, so the key-up can give it back.
+    let mut sweep_band: Signal<Option<usize>> = use_signal(|| None);
     let mut inspector_tab: Signal<String> = use_signal(|| "band".to_string());
     // Cheat-sheet overlay/profile selection, shared between the inspector
     // selector below and the EqGraph (passed as a prop). `Auto` resolves from
@@ -411,18 +414,29 @@ fn AppShell() -> Element {
     let key_params_up = ui.params.clone();
     // Focus is momentary: what goes down on `f` has to come back up.
     let on_key_up = use_callback(move |evt: KeyboardEvent| {
-        let mods = Mods::new(false, false, false);
-        if key_action(&evt.key().to_string(), mods) != KeyAction::Focus {
-            return;
-        }
         let params = key_params_up.clone();
         let ctx = key_ctx_up.clone();
-        for bp in params.bands.iter().take(NUM_BANDS) {
-            if bp.focus.value() > 0.5 {
-                ctx.begin_set_raw(bp.focus.as_ptr());
-                ctx.set_normalized_raw(bp.focus.as_ptr(), 0.0);
-                ctx.end_set_raw(bp.focus.as_ptr());
+        // Shift state is irrelevant on the way up: what matters is which key
+        // was let go, and `b` released with shift still down is still `b`.
+        match key_action(&evt.key().to_string(), Mods::new(false, false, false)) {
+            KeyAction::Focus => {
+                for bp in params.bands.iter().take(NUM_BANDS) {
+                    if bp.focus.value() > 0.5 {
+                        ctx.begin_set_raw(bp.focus.as_ptr());
+                        ctx.set_normalized_raw(bp.focus.as_ptr(), 0.0);
+                        ctx.end_set_raw(bp.focus.as_ptr());
+                    }
+                }
             }
+            KeyAction::Sweep { .. } => {
+                if let Some(idx) = sweep_band.take() {
+                    let bp = &params.bands[idx];
+                    ctx.begin_set_raw(bp.enabled.as_ptr());
+                    ctx.set_normalized_raw(bp.enabled.as_ptr(), 0.0);
+                    ctx.end_set_raw(bp.enabled.as_ptr());
+                }
+            }
+            _ => {}
         }
     });
 
@@ -495,7 +509,43 @@ fn AppShell() -> Element {
                             ctx.set_normalized_raw(params.delta.as_ptr(), want);
                             ctx.end_set_raw(params.delta.as_ptr());
                         }
-                        KeyAction::Sweep { .. } | KeyAction::Pass => {}
+                        KeyAction::Sweep { cut } => {
+                            // A Massenburg sweep: borrow a free band, make it
+                            // narrow and loud, and let the pointer drag it
+                            // across the spectrum until what is ringing rings
+                            // louder. The key-up hands the slot back.
+                            //
+                            // A borrowed band, not a phantom overlay, because
+                            // the thing you are listening to has to be the
+                            // real filter — anything else is a picture of a
+                            // sweep.
+                            if sweep_band.peek().is_some() {
+                                return;
+                            }
+                            let Some(idx) = (0..NUM_BANDS)
+                                .find(|i| params.bands[*i].enabled.value() < 0.5)
+                            else {
+                                return;
+                            };
+                            let bp = &params.bands[idx];
+                            let hz = hovered_band
+                                .read()
+                                .map_or(1000.0, |i| params.bands[i].freq_hz.value());
+                            let gain = if cut { -15.0 } else { 15.0 };
+                            for (ptr, want) in [
+                                (bp.enabled.as_ptr(), bp.enabled.preview_normalized(1.0)),
+                                (bp.filter_type.as_ptr(), bp.filter_type.preview_normalized(0)),
+                                (bp.gain_db.as_ptr(), bp.gain_db.preview_normalized(gain)),
+                                (bp.q.as_ptr(), bp.q.preview_normalized(8.0)),
+                                (bp.freq_hz.as_ptr(), bp.freq_hz.preview_normalized(hz)),
+                            ] {
+                                ctx.begin_set_raw(ptr);
+                                ctx.set_normalized_raw(ptr, want);
+                                ctx.end_set_raw(ptr);
+                            }
+                            sweep_band.set(Some(idx));
+                        }
+                        KeyAction::Pass => {}
                     }
         evt.prevent_default();
         evt.stop_propagation();
@@ -720,6 +770,7 @@ fn AppShell() -> Element {
                         band_handles: Some(band_handles.clone()),
                         focused_band_out: focused_band,
                         selected_bands_out: selected_bands,
+                        sweep_band: sweep_band,
                         hovered_band_out: hovered_band,
                         overlay_sel: overlay_sel,
                         disabled: hardware_mode_active,

@@ -1316,7 +1316,7 @@ async fn alt_shift_click_cycles_the_slope() -> dioxus_test::Result<()> {
 }
 
 #[tokio::test]
-async fn alt_drag_locks_the_band_to_one_axis() -> dioxus_test::Result<()> {
+async fn alt_drag_pins_the_gain_and_moves_only_the_frequency() -> dioxus_test::Result<()> {
     let fx = mount();
     let bp = &fx.params.bands[0];
     let (sx, sy) = fx.band_point(0);
@@ -1324,9 +1324,10 @@ async fn alt_drag_locks_the_band_to_one_axis() -> dioxus_test::Result<()> {
     let freq_before = bp.freq_hz.value();
     let gain_before = bp.gain_db.value();
 
-    // Mostly horizontal travel, with enough vertical that an unconstrained
-    // drag would visibly move the gain too.
-    let (dx, dy) = (60.0, -24.0);
+    // Mostly *vertical* travel, which is the case that matters: the old rule
+    // locked to whichever axis the pointer committed to, so a grab like this
+    // pinned the frequency and let the gain run — the opposite of the gesture.
+    let (dx, dy) = (24.0, -60.0);
     fx.tester.pointer_down_mods(sx, sy, Modifiers::ALT);
     fx.settle().await;
     for step in 1..=4 {
@@ -1341,12 +1342,12 @@ async fn alt_drag_locks_the_band_to_one_axis() -> dioxus_test::Result<()> {
 
     assert!(
         (bp.freq_hz.value() - freq_before).abs() > 1.0,
-        "the committed axis should move: {freq_before} -> {}",
+        "frequency should follow the pointer under Alt: {freq_before} -> {}",
         bp.freq_hz.value()
     );
     assert!(
         (bp.gain_db.value() - gain_before).abs() < 0.01,
-        "the other axis must stay put under Alt: {gain_before} -> {}",
+        "Alt must pin the gain the band was already at: {gain_before} -> {}",
         bp.gain_db.value()
     );
     Ok(())
@@ -2377,6 +2378,131 @@ async fn d_toggles_delta_listening() -> dioxus_test::Result<()> {
     assert!(
         (0..eq_ui::params::NUM_BANDS).all(|i| fx.params.bands[i].focus.value() < 0.5),
         "delta focused a band as a side effect",
+    );
+    Ok(())
+}
+
+/// Alt-creating a band makes it dynamic; Alt+Shift makes it spectral.
+///
+/// The mapping has been in `create_mode` all along and the double-click
+/// handler has always called `set_mode` — what was never checked is that a
+/// band created that way comes out the other side actually dynamic.
+#[tokio::test]
+async fn alt_creating_a_band_makes_it_dynamic() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let (ox, oy) = fx.graph_origin();
+
+    let fresh = |fx: &support::Fixture| {
+        (0..eq_ui::params::NUM_BANDS)
+            .find(|i| fx.params.bands[*i].enabled.value() < 0.5)
+            .expect("no free band slot")
+    };
+
+    for (mods, label, spectral) in [
+        (Modifiers::ALT, "alt", false),
+        (Modifiers::ALT | Modifiers::SHIFT, "alt+shift", true),
+    ] {
+        let idx = fresh(&fx);
+        let (x, y) = (ox + 200.0 + f64::from(u8::from(spectral)) * 240.0, oy + 120.0);
+        fx.tester.pointer_down_mods(x, y, mods);
+        fx.settle().await;
+        fx.tester.pointer_up_mods(x, y, mods);
+        fx.settle().await;
+        fx.tester.pointer_down_mods(x, y, mods);
+        fx.settle().await;
+        fx.tester.pointer_up_mods(x, y, mods);
+        fx.settle().await;
+
+        let bp = &fx.params.bands[idx];
+        assert!(
+            bp.enabled.value() > 0.5,
+            "{label}-double-click did not create a band in slot {idx}",
+        );
+        assert!(
+            bp.dyn_range_db.value().abs() > 0.05,
+            "{label}-created band {idx} has no dynamic range: {}",
+            bp.dyn_range_db.value(),
+        );
+        assert_eq!(
+            bp.spectral.value() > 0.5,
+            spectral,
+            "{label}-created band {idx} has the wrong spectral flag",
+        );
+    }
+    Ok(())
+}
+
+/// Holding `b` puts a loud narrow bell under the pointer and drags it along.
+#[tokio::test]
+async fn holding_b_sweeps_a_bell_across_the_spectrum() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let (ox, oy) = fx.graph_origin();
+
+    let fresh = (0..eq_ui::params::NUM_BANDS)
+        .find(|i| fx.params.bands[*i].enabled.value() < 0.5)
+        .expect("no free band slot");
+    let bp = &fx.params.bands[fresh];
+
+    fx.tester.pointer_move(ox + 200.0, oy + 100.0, false);
+    fx.settle().await;
+
+    let b = || dioxus_test::keyboard_types::Key::Character("b".to_string());
+    fx.tester.key_down(b(), Modifiers::empty());
+    fx.settle().await;
+
+    assert!(bp.enabled.value() > 0.5, "holding b created no bell");
+    assert!(
+        bp.gain_db.value() > 10.0,
+        "the sweep bell is only {} dB — too quiet to hunt with",
+        bp.gain_db.value(),
+    );
+    assert!(
+        bp.q.value() > 4.0,
+        "the sweep bell is too wide to identify anything: Q {}",
+        bp.q.value(),
+    );
+
+    // It follows the pointer.
+    let at_start = bp.freq_hz.value();
+    fx.tester.pointer_move(ox + 600.0, oy + 100.0, false);
+    fx.settle().await;
+    assert!(
+        bp.freq_hz.value() > at_start * 1.5,
+        "the bell did not follow the pointer: {at_start} -> {}",
+        bp.freq_hz.value(),
+    );
+
+    // And it hands the slot back.
+    fx.tester.key_up(b(), Modifiers::empty());
+    fx.settle().await;
+    assert!(
+        bp.enabled.value() < 0.5,
+        "the sweep bell stayed behind after the key came up",
+    );
+    Ok(())
+}
+
+/// Shift makes it a cut, which is the other half of the technique.
+#[tokio::test]
+async fn shift_b_sweeps_a_cut() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let (ox, oy) = fx.graph_origin();
+    let fresh = (0..eq_ui::params::NUM_BANDS)
+        .find(|i| fx.params.bands[*i].enabled.value() < 0.5)
+        .expect("no free band slot");
+
+    fx.tester.pointer_move(ox + 300.0, oy + 100.0, false);
+    fx.settle().await;
+    fx.tester.key_down(
+        dioxus_test::keyboard_types::Key::Character("B".to_string()),
+        Modifiers::SHIFT,
+    );
+    fx.settle().await;
+
+    assert!(
+        fx.params.bands[fresh].gain_db.value() < -10.0,
+        "shift+b boosted instead of cutting: {} dB",
+        fx.params.bands[fresh].gain_db.value(),
     );
     Ok(())
 }

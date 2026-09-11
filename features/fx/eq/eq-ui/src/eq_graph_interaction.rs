@@ -314,26 +314,22 @@ pub enum DragMode {
 
 /// Resolve a drag.
 ///
-/// Alt constrains to whichever axis the pointer has committed to — decided
-/// once from the travel so far, rather than re-decided every frame, which is
-/// what stops a constrained drag flipping axis mid-gesture. Below the
-/// threshold the drag is still free, so a constrained drag that has not moved
-/// yet does not lock to an arbitrary axis.
+/// Alt pins the **gain**, so the band keeps the level it was at when you took
+/// hold of it and only its frequency moves. That is the move you actually
+/// want on an existing band: you found the right amount of cut, and now you
+/// are hunting for exactly where it belongs.
+///
+/// It used to constrain to whichever axis the pointer committed to first,
+/// which meant a slightly vertical grab silently locked the frequency
+/// instead — the opposite of the gesture, and not something you would notice
+/// until the band had moved the wrong way.
 #[must_use]
-pub fn drag_mode(mods: Mods, dx: f64, dy: f64) -> DragMode {
+pub fn drag_mode(mods: Mods, _dx: f64, _dy: f64) -> DragMode {
     if mods.cmd {
         return DragMode::Resonance;
     }
     if mods.alt {
-        const COMMIT: f64 = 3.0;
-        if dx.abs().max(dy.abs()) < COMMIT {
-            return DragMode::Free;
-        }
-        return if dx.abs() >= dy.abs() {
-            DragMode::FreqOnly
-        } else {
-            DragMode::GainOnly
-        };
+        return DragMode::FreqOnly;
     }
     DragMode::Free
 }
@@ -525,15 +521,17 @@ mod gesture_tests {
         assert_eq!(create_mode(SHIFT), CreateMode::Static);
     }
 
+    /// Alt pins the gain, whichever way the pointer goes.
+    ///
+    /// It used to commit to the dominant axis, so a grab with any vertical
+    /// bias locked the *frequency* and let the gain run — the opposite of the
+    /// gesture. The move you want is: keep the level I found, help me place
+    /// it.
     #[test]
-    fn alt_drag_commits_to_the_dominant_axis() {
-        // Below the commit threshold the drag stays free, so a constrained
-        // drag that has barely moved does not lock to a coin-flip axis.
-        assert_eq!(drag_mode(ALT, 1.0, 1.0), DragMode::Free);
+    fn alt_drag_pins_the_gain_whichever_way_the_pointer_goes() {
         assert_eq!(drag_mode(ALT, 20.0, 2.0), DragMode::FreqOnly);
-        assert_eq!(drag_mode(ALT, 2.0, 20.0), DragMode::GainOnly);
-        // And it stays committed as the drag continues along that axis.
-        assert_eq!(drag_mode(ALT, 40.0, 6.0), DragMode::FreqOnly);
+        assert_eq!(drag_mode(ALT, 2.0, 20.0), DragMode::FreqOnly);
+        assert_eq!(drag_mode(ALT, 1.0, 1.0), DragMode::FreqOnly);
     }
 
     #[test]
