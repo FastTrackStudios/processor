@@ -77,17 +77,22 @@ struct Fixture {
 }
 
 fn mount_sized(width: u32, height: u32) -> Fixture {
-    mount_with(Arc::new(FtsEqParams::default()), width, height)
+    mount_with(Arc::new(FtsEqParams::default()), width, height, None)
 }
 
-fn mount_with(params: Arc<FtsEqParams>, width: u32, height: u32) -> Fixture {
+fn mount_with(
+    params: Arc<FtsEqParams>,
+    width: u32,
+    height: u32,
+    canvas: Option<eq_ui::eq_graph_model::GraphCanvasSize>,
+) -> Fixture {
     let ui_state = Arc::new(EqUiState::new(params.clone()));
     let gui = GuiContext::new(Arc::new(ApplyingGuiContext));
     let param_ctx = ParamContext::new(gui, Arc::new(AtomicBool::new(true)));
     let track: Arc<dyn eq_ui::cheatsheet::TrackInfoProvider> =
         Arc::new(eq_ui::cheatsheet::StaticTrackProvider::none());
 
-    let tester = render(Harness)
+    let builder = render(Harness)
         .with_window_size(width, height)
         // The panels size themselves from the window `nice-plug-dioxus` puts
         // in context on resize; a headless mount has no window, so state it.
@@ -97,8 +102,15 @@ fn mount_with(params: Arc<FtsEqParams>, width: u32, height: u32) -> Fixture {
         ))
         .with_root_context(param_ctx)
         .with_root_context(SharedState::new(ui_state))
-        .with_root_context(track)
-        .build();
+        .with_root_context(track);
+    // Only when there is one: providing `Option<GraphCanvasSize>` registers
+    // *that* type, and the graph asks for the bare one — so the context was
+    // there and never found.
+    let builder = match canvas {
+        Some(c) => builder.with_root_context(c),
+        None => builder,
+    };
+    let tester = builder.build();
 
     Fixture { tester, params }
 }
@@ -160,7 +172,26 @@ async fn mount_model(model: i32) -> Fixture {
             .as_ptr()
             ._internal_set_normalized_value(model as f32 / 5.0)
     };
-    let mut fx = mount_with(params, w, h);
+    // Two passes, because nothing paints headless.
+    //
+    // The graph learns its drawing box from `EqGraphWidget::paint`, which never
+    // runs here, so on the first pass it falls back to an 800×350 viewBox
+    // inside an element twice that size: mapper-derived positions land in the
+    // top-left corner while anything anchored to the real edges sits where it
+    // belongs, and the two disagree. Mount once to measure the surface, then
+    // mount again having stated it. Only the second fixture is returned.
+    let mut fx = mount_with(params.clone(), w, h, None);
+    fx.settle().await;
+    let stated = fx
+        .tester
+        .query(by_testid("eq-graph-surface"))
+        .immediately()
+        .ok()
+        .map(|el| {
+            let (gw, gh) = el.size();
+            eq_ui::eq_graph_model::GraphCanvasSize(f64::from(gw), f64::from(gh))
+        });
+    let mut fx = mount_with(params, w, h, stated);
     fx.settle().await;
     fx
 }
@@ -205,7 +236,7 @@ async fn shot_every_editor_form() {
         };
         eq_ui::faces::store_model_id(&params, 1);
         eq_ui::faces::store_form(&params, *form);
-        let mut fx = mount_with(params, w, h);
+        let mut fx = mount_with(params, w, h, None);
         fx.settle().await;
         shot(&fx, &format!("form-{}", form.id().replace('_', "-")));
     }
@@ -242,8 +273,8 @@ async fn shot_the_band_panel() {
         .unwrap_or((0.0, 0.0));
     // Sweep along the plot until a band node opens its panel.
     let mut found = false;
-    for bx in (60..760).step_by(20) {
-        for by in [90.0_f64, 130.0, 170.0, 210.0] {
+    for bx in (40..1160).step_by(20) {
+        for by in (40..660).step_by(20).map(f64::from) {
             fx.tester
                 .pointer_move(graph.0 + f64::from(bx), graph.1 + by, false);
             fx.settle().await;

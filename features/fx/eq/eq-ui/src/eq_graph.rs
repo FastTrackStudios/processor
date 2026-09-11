@@ -556,6 +556,11 @@ pub fn EqGraph(
     // making the window smaller it kept the stale (larger) size and hit-tests
     // drifted. Fall back to the viewBox default only before the first paint.
     let _ = (obs_x, obs_y);
+    // A host that does not paint can state the box instead — see
+    // `GraphCanvasSize`. `layout_rect` is never written (measuring it panics in
+    // this blitz), so `act_rw`/`act_rh` are always zero and cannot serve here;
+    // an earlier commit of mine claimed they could.
+    let stated = try_consume_context::<crate::eq_graph_model::GraphCanvasSize>();
     // Before the first paint there is no canvas box, so fall back to the
     // element's own measured rect and only then to the viewBox.
     //
@@ -565,19 +570,16 @@ pub fn EqGraph(
     // plot inside an element twice that size. Everything crowded into the top
     // left: 20 kHz a third of the way across, the band panel a third of the
     // way up instead of docked to the floor.
+    let _ = (act_rw, act_rh);
     let graph_width = if canvas_w_css > 1.0 {
         canvas_w_css
-    } else if act_rw > 1.0 {
-        act_rw
     } else {
-        vb_width
+        stated.map_or(vb_width, |s| s.0)
     };
     let graph_height = if canvas_h_css > 1.0 {
         canvas_h_css
-    } else if act_rh > 1.0 {
-        act_rh
     } else {
-        vb_height
+        stated.map_or(vb_height, |s| s.1)
     };
 
     // Resolve the cheat-sheet overlay each render: `Auto` reads the track name
@@ -682,6 +684,9 @@ pub fn EqGraph(
 
     rsx! {
         div {
+            // The graph's own box. Addressable so a headless host can measure
+            // it and state it back through `GraphCanvasSize`.
+            "data-testid": "eq-graph-surface",
             style: "position:absolute; top:0; left:0; right:0; bottom:0; user-select:none; outline:none;",
             onmounted: move |event: MountedEvent| {
                 mounted.set(Some(event.data()));

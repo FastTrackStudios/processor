@@ -2663,3 +2663,25 @@ async fn releasing_a_sweep_mid_drag_returns_the_gain_to_the_pointer() -> dioxus_
     fx.settle().await;
     Ok(())
 }
+
+/// Diagnostic: where the graph actually puts things.
+#[ignore = "diagnostic"]
+#[tokio::test]
+async fn where_is_everything() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let surf = fx.graph_origin();
+    eprintln!("graph origin {surf:?}");
+    for sel in ["eq-db-label", "eq-freq-label"] {
+        let all = fx.tester.query_all(dioxus_test::by_testid(sel)).immediately();
+        let ys: Vec<(f64, f64)> = all.iter().map(|e| e.document_origin()).collect();
+        eprintln!("{sel}: {ys:?}");
+    }
+    let (bx, by) = fx.band_point(1);
+    eprintln!("band 1 node (mapper, from the fixture) = ({bx}, {by})");
+    eprintln!(
+        "band 1 params: {} Hz {} dB",
+        fx.params.bands[1].freq_hz.value(),
+        fx.params.bands[1].gain_db.value()
+    );
+    Ok(())
+}

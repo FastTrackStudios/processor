@@ -331,6 +331,19 @@ pub const DEFAULT_DB_RANGE: f64 = DB_RANGE_STEPS[1];
 /// Read these rather than repeating their values — the pointer fixtures in
 /// `tests/gui_editor.rs` compute where band nodes are, and a fixture with its
 /// own copy of the axis silently tests where nodes *used* to be.
+/// The graph's drawing box, for hosts that do not paint it.
+///
+/// `EqGraphWidget::paint` publishes the real canvas size every frame, which is
+/// where the editor gets it — but a headless render never paints, so the graph
+/// falls back to its 800×350 viewBox while its element is twice that. Nothing
+/// is *wrong* on screen in the plugin; it is wrong in every screenshot, which
+/// is worse, because screenshots are how the layout gets judged.
+///
+/// Provide this as a root context and the graph will use it until a real paint
+/// supersedes it. The plugin does not provide it and does not need to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphCanvasSize(pub f64, pub f64);
+
 pub const DEFAULT_MIN_FREQ: f64 = 20.0;
 pub const DEFAULT_MAX_FREQ: f64 = 24_000.0;
 
@@ -392,8 +405,15 @@ impl Default for GraphConfig {
             fill_curve: true,
             rect_x: 0.0,
             rect_y: 0.0,
-            rect_w: 800.0,
-            rect_h: 350.0,
+            // Zero, not the viewBox.
+            //
+            // These are "what the widget last painted into", and the graph
+            // asks `rect_w > 1.0` to mean "it has painted". Defaulting them to
+            // 800×350 made that question always answer yes, so every fallback
+            // behind it was dead code and the graph laid itself out for a
+            // viewBox-sized plot no matter how big its element was.
+            rect_w: 0.0,
+            rect_h: 0.0,
             scale: 1.0,
         }
     }
