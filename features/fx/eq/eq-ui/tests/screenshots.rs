@@ -273,8 +273,10 @@ async fn shot_the_band_panel() {
         .unwrap_or((0.0, 0.0));
     // Sweep along the plot until a band node opens its panel.
     let mut found = false;
-    for bx in (40..1160).step_by(20) {
-        for by in (40..660).step_by(20).map(f64::from) {
+    // Band 0 sits at 400 Hz / 0 dB, which is mid-plot now that the graph knows
+    // its own size. Sweep the middle band rather than the whole surface.
+    for bx in (400..700).step_by(10) {
+        for by in (300..420).step_by(10).map(f64::from) {
             fx.tester
                 .pointer_move(graph.0 + f64::from(bx), graph.1 + by, false);
             fx.settle().await;
