@@ -178,6 +178,9 @@ pub fn EqGraph(
     selected_bands_out: Option<Signal<Vec<usize>>>,
     #[props(default)]
     hovered_band_out: Option<Signal<Option<usize>>>,
+    /// The band currently under the hand, if one is being dragged.
+    #[props(default)]
+    dragging_band_out: Option<Signal<Option<usize>>>,
     /// The band a held sweep is driving, if one is held.
     ///
     /// The key that starts it is handled at the editor root, but the
@@ -283,6 +286,12 @@ pub fn EqGraph(
             ext.set(val.clone());
         }
         selected_bands.set(val);
+    };
+    let mut set_dragging = move |val: Option<usize>| {
+        if let Some(mut ext) = dragging_band_out {
+            ext.set(val);
+        }
+        dragging_band.set(val);
     };
     let mut set_hovered = move |val: Option<usize>| {
         if let Some(mut ext) = hovered_band_out {
@@ -767,7 +776,7 @@ pub fn EqGraph(
                 // getting events. End the drag instead of resuming it on re-entry.
                 if let Some(band_idx) = drag_idx {
                     if !evt.held_buttons().contains(MouseButton::Primary) {
-                        dragging_band.set(None);
+                        set_dragging(None);
                         drag_start.set(None);
                         drag_start_bands.set(Vec::new());
                         if let Some(cb) = &on_end {
@@ -831,7 +840,18 @@ pub fn EqGraph(
                         if pending_chord.peek().is_some() && (x - sx).hypot(y - sy) > 3.0 {
                             pending_chord.set(None);
                         }
-                        let mode = drag_mode(mods, x - sx, y - sy);
+                        // A held sweep owns the band's gain: it is up at ±15
+                        // so you can hear what you are hunting for, and the
+                        // drag must not write the pointer's height over it
+                        // every frame. That is what "it locks itself to where
+                        // the mouse is" was — the boost and the drag fighting
+                        // at frame rate, with the drag winning.
+                        let sweeping = sweep_band.and_then(|s| *s.read()) == Some(band_idx);
+                        let mode = if sweeping {
+                            DragMode::FreqOnly
+                        } else {
+                            drag_mode(mods, x - sx, y - sy)
+                        };
 
                         // Cmd-drag: vertical travel is resonance, not gain.
                         // Scaled from the Q at press so the gesture is
@@ -1050,7 +1070,7 @@ pub fn EqGraph(
                     if !mapper.is_inside(x, y) {
                         if let Some(cb) = &on_band_remove { cb.call(band_idx); }
                     }
-                    dragging_band.set(None);
+                    set_dragging(None);
                     drag_start.set(None);
                     drag_start_bands.set(Vec::new());
                     if let Some(cb) = &on_end { cb.call(band_idx); }
@@ -1214,7 +1234,7 @@ pub fn EqGraph(
                     };
                     drag_start_bands.set(start_bands);
                     selection_rect.set(None);
-                    dragging_band.set(Some(idx));
+                    set_dragging(Some(idx));
                     set_focused(Some(idx));
                     if let Some(cb) = &on_begin { cb.call(idx); }
                     evt.stop_propagation();
@@ -1263,7 +1283,7 @@ pub fn EqGraph(
                         });
                     }
 
-                    dragging_band.set(Some(new_idx));
+                    set_dragging(Some(new_idx));
                     if let Some(cb) = &on_begin { cb.call(new_idx); }
                     evt.stop_propagation();
                     evt.prevent_default();

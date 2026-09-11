@@ -267,6 +267,7 @@ fn AppShell() -> Element {
     // handler on the graph's own div would never fire.
     let mut selected_bands: Signal<Vec<usize>> = use_signal(Vec::new);
     let mut hovered_band: Signal<Option<usize>> = use_signal(|| None);
+    let dragging_band: Signal<Option<usize>> = use_signal(|| None);
     // The band a held sweep is driving, and what it looked like before the
     // sweep took it over: `(index, gain_db, q, filter_type)`.
     //
@@ -466,9 +467,15 @@ fn AppShell() -> Element {
                     if action == KeyAction::Pass {
                         return;
                     }
-                    // Selection first, then whatever the pointer is on: you
-                    // should not have to lasso one band to act on it.
-                    let mut targets = { selected_bands.read().clone() };
+                    // The band in your hand first — if you are dragging one,
+                    // that is unambiguously the one you mean. Then the
+                    // selection, then whatever the pointer is merely over:
+                    // you should not have to lasso a band to act on it.
+                    let mut targets: Vec<usize> =
+                        dragging_band.read().iter().copied().collect();
+                    if targets.is_empty() {
+                        targets = selected_bands.read().clone();
+                    }
                     if targets.is_empty() {
                         targets.extend(hovered_band.read().iter().copied());
                     }
@@ -801,6 +808,7 @@ fn AppShell() -> Element {
                             }
                         },
                         hovered_band_out: hovered_band,
+                        dragging_band_out: dragging_band,
                         overlay_sel: overlay_sel,
                         disabled: hardware_mode_active,
 

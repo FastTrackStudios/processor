@@ -2550,3 +2550,86 @@ async fn shift_b_sweeps_a_cut() -> dioxus_test::Result<()> {
     );
     Ok(())
 }
+
+/// Holding `b` *while dragging a band* must keep the boost.
+///
+/// This is how the gesture is actually used — you have hold of the band, you
+/// want it loud and narrow while you hunt, and you drag it across the
+/// spectrum. The drag writes gain from the pointer's height every frame, so
+/// it overwrites the boost as fast as the sweep applies it: the band locks
+/// itself to wherever the mouse is instead of staying up at +15.
+#[tokio::test]
+async fn a_sweep_held_during_a_drag_keeps_its_boost() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let bp = &fx.params.bands[1];
+    let (sx, sy) = fx.band_point(1);
+
+    // Take hold of the band first, the way a hand does.
+    fx.tester.pointer_down(sx, sy);
+    fx.settle().await;
+    fx.tester.pointer_move(sx + 8.0, sy - 4.0, true);
+    fx.settle().await;
+
+    let b = || dioxus_test::keyboard_types::Key::Character("b".to_string());
+    fx.tester.key_down(b(), Modifiers::empty());
+    fx.settle().await;
+    assert!(
+        bp.gain_db.value() > 10.0,
+        "holding b mid-drag did not boost: {} dB",
+        bp.gain_db.value(),
+    );
+
+    // Now sweep, with the button still down and the pointer wandering in y.
+    for step in 1..=5 {
+        let t = f64::from(step);
+        fx.tester.pointer_move(sx + t * 70.0, sy - 4.0 + t * 14.0, true);
+        fx.settle().await;
+        assert!(
+            bp.gain_db.value() > 10.0,
+            "the sweep locked to the pointer: {} dB after {step} moves",
+            bp.gain_db.value(),
+        );
+    }
+
+    fx.tester.key_up(b(), Modifiers::empty());
+    fx.settle().await;
+    fx.tester.pointer_up(sx + 350.0, sy + 66.0);
+    fx.settle().await;
+    Ok(())
+}
+
+/// And releasing the sweep mid-drag hands the gain back to the pointer.
+///
+/// The drag is still running, so the band should answer the mouse again
+/// immediately — a sweep that left the gain stuck would be worse than one
+/// that never held it.
+#[tokio::test]
+async fn releasing_a_sweep_mid_drag_returns_the_gain_to_the_pointer() -> dioxus_test::Result<()> {
+    let fx = mount();
+    let bp = &fx.params.bands[1];
+    let (sx, sy) = fx.band_point(1);
+
+    fx.tester.pointer_down(sx, sy);
+    fx.settle().await;
+    let b = || dioxus_test::keyboard_types::Key::Character("b".to_string());
+    fx.tester.key_down(b(), Modifiers::empty());
+    fx.settle().await;
+    fx.tester.pointer_move(sx + 120.0, sy, true);
+    fx.settle().await;
+    fx.tester.key_up(b(), Modifiers::empty());
+    fx.settle().await;
+
+    let after_release = bp.gain_db.value();
+    // Now drag well down the plot; the gain must follow again.
+    fx.tester.pointer_move(sx + 120.0, sy + 90.0, true);
+    fx.settle().await;
+    assert!(
+        bp.gain_db.value() < after_release - 0.5,
+        "the gain stayed pinned after the sweep was released: \
+         {after_release} -> {}",
+        bp.gain_db.value(),
+    );
+    fx.tester.pointer_up(sx + 120.0, sy + 90.0);
+    fx.settle().await;
+    Ok(())
+}
