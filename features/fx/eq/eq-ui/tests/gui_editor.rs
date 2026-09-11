@@ -2066,13 +2066,18 @@ async fn dragging_a_panel_dial_moves_its_parameter() -> dioxus_test::Result<()> 
     fx.settle().await;
     let (dx, dy) = panel_dial(&fx, "GAIN");
 
+    // Short travel, staying inside the panel. The dials now have the panel's
+    // full width and sit in the middle of a 150 px box, so a 32 px drag walks
+    // the pointer out of the top of it — and once it is over the graph the
+    // panel is no longer the one pumping the drag layer, which made this pass
+    // or fail depending on timing.
     fx.tester.pointer_down(dx, dy);
     fx.settle().await;
-    for step in 1..=8 {
+    for step in 1..=3 {
         fx.tester.pointer_move(dx, dy - f64::from(step) * 4.0, true);
         fx.settle().await;
     }
-    fx.tester.pointer_up(dx, dy - 32.0);
+    fx.tester.pointer_up(dx, dy - 12.0);
     fx.settle().await;
 
     let after = bp.gain_db.value();
