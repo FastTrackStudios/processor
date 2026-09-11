@@ -548,7 +548,12 @@ fn AppShell() -> Element {
                             for (ptr, want) in [
                                 (bp.filter_type.as_ptr(), bp.filter_type.preview_normalized(0)),
                                 (bp.gain_db.as_ptr(), bp.gain_db.preview_normalized(gain)),
-                                (bp.q.as_ptr(), bp.q.preview_normalized(8.0)),
+                                // Q 18 as the editor shows it. The parameter
+                                // carries √2 times that, and setting 8 here
+                                // gave a displayed 5.7 — wide enough to hear
+                                // half an octave at once, which is no use for
+                                // finding one ringing note.
+                                (bp.q.as_ptr(), bp.q.preview_normalized(18.0 * std::f32::consts::SQRT_2)),
                             ] {
                                 ctx.begin_set_raw(ptr);
                                 ctx.set_normalized_raw(ptr, want);
@@ -781,6 +786,20 @@ fn AppShell() -> Element {
                         focused_band_out: focused_band,
                         selected_bands_out: selected_bands,
                         sweep_band: sweep_target,
+                        on_sweep_move: {
+                            let params = ui.params.clone();
+                            let ctx = ctx.clone();
+                            move |(idx, hz): (usize, f32)| {
+                                if idx >= NUM_BANDS { return; }
+                                let bp = &params.bands[idx];
+                                ctx.begin_set_raw(bp.freq_hz.as_ptr());
+                                ctx.set_normalized_raw(
+                                    bp.freq_hz.as_ptr(),
+                                    bp.freq_hz.preview_normalized(hz),
+                                );
+                                ctx.end_set_raw(bp.freq_hz.as_ptr());
+                            }
+                        },
                         hovered_band_out: hovered_band,
                         overlay_sel: overlay_sel,
                         disabled: hardware_mode_active,

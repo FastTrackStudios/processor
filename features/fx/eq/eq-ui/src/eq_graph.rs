@@ -185,6 +185,15 @@ pub fn EqGraph(
     /// here. So the root says *which* band, and the graph moves it.
     #[props(default)]
     sweep_band: Option<Signal<Option<usize>>>,
+    /// Move a held sweep to a frequency, and *only* its frequency.
+    ///
+    /// Deliberately not `on_band_change`, which writes the whole band back
+    /// from the graph's own copy — and that copy still carries the gain and Q
+    /// the band had before the sweep boosted it, so the first pointer move
+    /// undid the boost. Which is exactly what it looked like: hold b, the
+    /// band jumps to +15, nudge the mouse, and it falls back to where it was.
+    #[props(default)]
+    on_sweep_move: Option<EventHandler<(usize, f32)>>,
     /// Optional external signal for the cheat-sheet overlay selection, so a
     /// parent (e.g. the inspector) can drive it too. If omitted, the graph owns
     /// its own internal selection (defaulting to `Auto`).
@@ -902,17 +911,19 @@ pub fn EqGraph(
                 // thing that is ringing rings louder.
                 if let Some(i) = sweep_band.and_then(|s| *s.read()) {
                     let hz = mapper.x_to_freq(x).clamp(20.0, 24_000.0) as f32;
-                    let updated = {
+                    let moved = {
                         let mut bv = bands.write();
                         if i < bv.len() && (bv[i].frequency - hz).abs() > 0.5 {
+                            // Locally too, so the curve follows the pointer
+                            // this frame rather than next one.
                             bv[i].frequency = hz;
-                            Some(bv[i].clone())
+                            true
                         } else {
-                            None
+                            false
                         }
                     };
-                    if let (Some(b), Some(cb)) = (updated, &on_band_change) {
-                        cb.call((i, b));
+                    if moved && let Some(cb) = &on_sweep_move {
+                        cb.call((i, hz));
                     }
                 }
 

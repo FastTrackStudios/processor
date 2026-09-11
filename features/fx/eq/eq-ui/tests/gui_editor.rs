@@ -2467,10 +2467,11 @@ async fn holding_b_sweeps_the_band_you_are_on() -> dioxus_test::Result<()> {
         "the sweep is only {} dB — too quiet to hunt with",
         bp.gain_db.value(),
     );
+    // As the editor shows it — the parameter carries √2 times the Q.
+    let shown_q = bp.q.value() * std::f32::consts::FRAC_1_SQRT_2;
     assert!(
-        bp.q.value() > 4.0,
-        "the sweep is too wide to identify anything: Q {}",
-        bp.q.value(),
+        shown_q > 12.0,
+        "the sweep is too wide to find one ringing note: Q {shown_q}",
     );
     assert_eq!(
         enabled_now(&fx),
@@ -2478,11 +2479,28 @@ async fn holding_b_sweeps_the_band_you_are_on() -> dioxus_test::Result<()> {
         "the sweep created a band instead of borrowing the one you are on",
     );
 
-    // It follows the pointer.
+    // It follows the pointer — and the boost survives the move.
+    //
+    // The gain assertion below does not currently fail against the bug it
+    // describes: putting the whole-band write back leaves it green, because
+    // the harness settles the DOM between every event so the graph's copy of
+    // the band is never stale. In the plugin it is — the editor renders at
+    // around twelve frames a second, so a pointer move lands long before
+    // control_view has re-rendered with the boosted gain, and the stale copy
+    // gets written back over it. Kept as a guard on the outcome rather than
+    // as proof of the cause.
     let at_start = bp.freq_hz.value();
     let (ox, oy) = fx.graph_origin();
-    fx.tester.pointer_move(ox + 640.0, oy + 100.0, false);
-    fx.settle().await;
+    for step in 1..=4 {
+        fx.tester
+            .pointer_move(ox + 200.0 + f64::from(step) * 110.0, oy + 100.0, false);
+        fx.settle().await;
+        assert!(
+            bp.gain_db.value() > 10.0,
+            "the boost collapsed to {} dB as soon as the pointer moved",
+            bp.gain_db.value(),
+        );
+    }
     let swept_to = bp.freq_hz.value();
     assert!(
         swept_to > at_start * 1.5,
