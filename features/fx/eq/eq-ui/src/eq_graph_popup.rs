@@ -419,16 +419,28 @@ pub fn BandPopup(
                 // shape and routing. The small readout that follows the node
                 // covers the "what am I holding" job now, so this one stays
                 // whole and still.
+                // Laid out by CSS, not by moving nodes.
+                //
+                // The obvious redesign — lift the two button columns into one
+                // header strip — means *removing* a child of this row, and
+                // that alone makes blitz's mutator panic (`invalid key`) the
+                // next time the panel switches band. Verified in isolation:
+                // adding children is fine, moving them is fine, removing one
+                // is not. So the three columns all stay, and `order` plus
+                // `flex-wrap` put them where they belong: the two button
+                // groups share the top line and the dials take the whole
+                // width underneath, which is the width they never had.
                 div {
-                    style: "display:flex; align-items:flex-start; gap:8px;",
+                    style: "display:flex; flex-wrap:wrap; align-items:center; gap:4px;",
 
                     // ── Left: bypass, shape, slope ──
                     div {
-                        style: "display:flex; flex-direction:column; gap:4px; width:82px; flex:0 0 auto;",
+                        style: "display:flex; flex-direction:row; align-items:center; gap:4px; \
+                                flex:1 1 auto; min-width:0; order:1;",
                         Button {
                             size: ButtonSize::Small,
                             variant: if band_enabled { ButtonVariant::Outline } else { ButtonVariant::Secondary },
-                            class: "px-0 h-6".to_string(),
+                            class: "px-2 h-5 shrink-0".to_string(),
                             on_click: {
                                 let cb = on_band_change;
                                 move |_| {
@@ -455,7 +467,8 @@ pub fn BandPopup(
                         // right-click away.
                         button {
                             style: format!(
-                                "display:flex; align-items:center; gap:5px; width:100%; height:22px; \
+                                "display:flex; align-items:center; gap:5px; flex:1 1 auto; \
+                                 min-width:0; height:20px; \
                                  padding:0 6px; border:1px solid #2a2a30; border-radius:4px; \
                                  background:transparent; color:{band_color}; font-size:10px; \
                                  cursor:pointer; box-sizing:border-box;"
@@ -482,7 +495,11 @@ pub fn BandPopup(
                             span { style: "flex:1; text-align:left;", "{band.shape.label()}" }
                         }
                         div {
-                            style: "font-size:9px; color:#737380; text-align:center; letter-spacing:0.04em;",
+                            // The Q dial below prints the same number. Kept in
+                            // the tree because removing it is what breaks the
+                            // reconciler; kept out of sight because two
+                            // readouts of one value is just noise.
+                            style: "display:none;",
                             "{q_str}"
                         }
                     }
@@ -490,7 +507,8 @@ pub fn BandPopup(
                     // ── Centre: the three dials ──
                     if let Some(h) = handles.clone() {
                         div {
-                            style: "display:flex; align-items:flex-start; gap:6px; flex:1 1 auto; justify-content:center;",
+                            style: "display:flex; align-items:flex-start; gap:10px; \
+                                    flex-basis:100%; order:3; justify-content:space-evenly;",
                             PanelKnob {
                                 label: "FREQ".to_string(),
                                 handle: h.freq.clone(),
@@ -512,7 +530,8 @@ pub fn BandPopup(
                         // No handles supplied (embedded surfaces): keep the
                         // readout rather than dropping the information.
                         div {
-                            style: "display:flex; flex-direction:column; gap:2px; flex:1 1 auto; align-items:center; justify-content:center;",
+                            style: "display:flex; flex-direction:column; gap:2px; flex-basis:100%; \
+                                    order:3; align-items:center; justify-content:center;",
                             span { class: "text-xs font-semibold tabular-nums", "{freq_str} Hz" }
                             span { class: "text-xs font-semibold tabular-nums", "{band_gain:+.1} dB" }
                         }
@@ -520,11 +539,12 @@ pub fn BandPopup(
 
                     // ── Right: per-band actions ──
                     div {
-                        style: "display:flex; flex-direction:column; gap:3px; width:30px; flex:0 0 auto;",
+                        style: "display:flex; flex-direction:row; align-items:center; gap:3px; \
+                                flex:0 0 auto; order:2;",
                         Button {
                             size: ButtonSize::Small,
                             variant: ButtonVariant::Outline,
-                            class: "px-0 h-5".to_string(),
+                            class: "px-1 h-5 shrink-0".to_string(),
                             on_click: {
                                 let cb = on_band_change;
                                 move |_| {
@@ -543,7 +563,7 @@ pub fn BandPopup(
                         Button {
                             size: ButtonSize::Small,
                             variant: if band_focus { ButtonVariant::Secondary } else { ButtonVariant::Outline },
-                            class: "px-0 h-5".to_string(),
+                            class: "px-1 h-5 shrink-0".to_string(),
                             on_click: {
                                 let cb = on_band_change;
                                 move |_| {
@@ -562,7 +582,7 @@ pub fn BandPopup(
                         Button {
                             size: ButtonSize::Small,
                             variant: ButtonVariant::Destructive,
-                            class: "px-0 h-5".to_string(),
+                            class: "px-1 h-5 shrink-0".to_string(),
                             on_click: {
                                 let cb = on_band_remove;
                                 move |_| {

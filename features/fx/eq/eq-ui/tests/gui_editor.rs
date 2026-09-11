@@ -566,7 +566,16 @@ async fn interacting_with_the_panel_does_not_move_the_band() -> dioxus_test::Res
     let freq_before = bp.freq_hz.value();
     let gain_before = bp.gain_db.value();
 
-    let (cx, cy) = fx.panel_center();
+    // A point inside the panel that is not a control. The panel's centre used
+    // to be dead space between two button columns; now the dials have that
+    // width, so pressing there works a dial — which is the dial doing its job,
+    // not the press leaking to the graph, and a poor probe for this question.
+    let (cx, cy) = {
+        let panel = fx.panel().expect("band detail panel is not mounted");
+        let (px, py) = panel.document_origin();
+        let (pw, ph) = panel.size();
+        (px + f64::from(pw) - 10.0, py + f64::from(ph) / 2.0)
+    };
     fx.glide(node, (cx, cy), 6, false).await;
     // Press, drag a little, release — all inside the panel.
     fx.tester.pointer_down(cx, cy);
@@ -2572,6 +2581,9 @@ async fn a_sweep_held_during_a_drag_keeps_its_boost() -> dioxus_test::Result<()>
 
     let b = || dioxus_test::keyboard_types::Key::Character("b".to_string());
     fx.tester.key_down(b(), Modifiers::empty());
+    // Twice: the sweep's target is set at the root and read by the graph, so
+    // the suppression it turns on lands a render after the boost does.
+    fx.settle().await;
     fx.settle().await;
     assert!(
         bp.gain_db.value() > 10.0,
