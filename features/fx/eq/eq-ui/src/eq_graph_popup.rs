@@ -446,24 +446,36 @@ pub fn BandPopup(
                     div {
                         style: "display:flex; flex-direction:row; align-items:center; gap:4px; \
                                 flex:1 1 auto; min-width:0; order:1;",
-                        Button {
-                            size: ButtonSize::Small,
-                            variant: if band_enabled { ButtonVariant::Outline } else { ButtonVariant::Secondary },
-                            class: "px-2 h-5 shrink-0".to_string(),
-                            on_click: {
-                                let cb = on_band_change;
-                                move |_| {
-                                    let updated = {
-                                        let mut bv = bands.write();
-                                        if band_idx < bv.len() {
-                                            bv[band_idx].enabled = !bv[band_idx].enabled;
-                                            Some(bv[band_idx].clone())
-                                        } else { None }
-                                    };
-                                    if let (Some(b), Some(c)) = (updated, &cb) { c.call((band_idx, b)); }
-                                }
-                            },
-                            if band_enabled { "On" } else { "Byp" }
+                        span {
+                            "data-testid": "eq-band-bypass",
+                            style: "display:flex;",
+                            Button {
+                                size: ButtonSize::Small,
+                                variant: if band_enabled { ButtonVariant::Outline } else { ButtonVariant::Secondary },
+                                class: "px-2 h-5 shrink-0".to_string(),
+                                on_click: {
+                                    let cb = on_band_change;
+                                    move |_| {
+                                        let updated = {
+                                            let mut bv = bands.write();
+                                            if band_idx < bv.len() {
+                                                bv[band_idx].enabled = !bv[band_idx].enabled;
+                                                Some(bv[band_idx].clone())
+                                            } else { None }
+                                        };
+                                        if let (Some(b), Some(c)) = (updated, &cb) { c.call((band_idx, b)); }
+                                    }
+                                },
+                                // A mark, not a word: "On" and "Byp" are
+                                // different widths, so the whole header strip
+                                // shifted every time a band was bypassed.
+                                //
+                                // A glyph and not an inline `svg`: an svg
+                                // inside one of these buttons renders as an
+                                // empty pill — the dynamics strip below uses
+                                // glyphs and they draw.
+                                if band_enabled { "\u{25cf}" } else { "\u{25cb}" }
+                            }
                         }
                         // Pro-Q shows the shape as a labelled button
                         // ("∧ Bell"), not a dropdown — and a button can
@@ -569,37 +581,47 @@ pub fn BandPopup(
                             },
                             "{stereo_mode.short_label()}"
                         }
-                        Button {
-                            size: ButtonSize::Small,
-                            variant: if band_focus { ButtonVariant::Secondary } else { ButtonVariant::Outline },
-                            class: "px-1 h-5 shrink-0".to_string(),
-                            on_click: {
-                                let cb = on_band_change;
-                                move |_| {
-                                    let updated = {
-                                        let mut bv = bands.write();
-                                        if band_idx < bv.len() {
-                                            bv[band_idx].focus = !bv[band_idx].focus;
-                                            Some(bv[band_idx].clone())
-                                        } else { None }
-                                    };
-                                    if let (Some(b), Some(c)) = (updated, &cb) { c.call((band_idx, b)); }
-                                }
-                            },
-                            "F"
+                        span {
+                            "data-testid": "eq-band-focus",
+                            style: "display:flex;",
+                            Button {
+                                size: ButtonSize::Small,
+                                variant: if band_focus { ButtonVariant::Secondary } else { ButtonVariant::Outline },
+                                class: "px-1 h-5 shrink-0".to_string(),
+                                on_click: {
+                                    let cb = on_band_change;
+                                    move |_| {
+                                        let updated = {
+                                            let mut bv = bands.write();
+                                            if band_idx < bv.len() {
+                                                bv[band_idx].focus = !bv[band_idx].focus;
+                                                Some(bv[band_idx].clone())
+                                            } else { None }
+                                        };
+                                        if let (Some(b), Some(c)) = (updated, &cb) { c.call((band_idx, b)); }
+                                    }
+                                },
+                                // The shape of what focus does: one bump in an
+                                // otherwise flat spectrum.
+                                "\u{2229}"
+                            }
                         }
-                        Button {
-                            size: ButtonSize::Small,
-                            variant: ButtonVariant::Destructive,
-                            class: "px-1 h-5 shrink-0".to_string(),
-                            on_click: {
-                                let cb = on_band_remove;
-                                move |_| {
-                                    if let Some(c) = &cb { c.call(band_idx); }
-                                    on_dismiss.call(());
-                                }
-                            },
-                            "X"
+                        span {
+                            "data-testid": "eq-band-remove",
+                            style: "display:flex;",
+                            Button {
+                                size: ButtonSize::Small,
+                                variant: ButtonVariant::Destructive,
+                                class: "px-1 h-5 shrink-0".to_string(),
+                                on_click: {
+                                    let cb = on_band_remove;
+                                    move |_| {
+                                        if let Some(c) = &cb { c.call(band_idx); }
+                                        on_dismiss.call(());
+                                    }
+                                },
+                                "\u{00d7}"
+                            }
                         }
                     }
                 }
@@ -623,20 +645,39 @@ pub fn BandPopup(
                         rsx! {
                             div {
                                 style: "display:flex; align-items:center; gap:4px; border-top:1px solid #23232a; padding-top:4px;",
-                                button {
-                                    style: format!(
-                                        "font-size:9px; text-transform:uppercase; letter-spacing:0.06em; \
-                                         border:1px solid {colour}; border-radius:3px; padding:0 5px; height:15px; \
-                                         color:{}; background:{}; cursor:pointer;",
-                                        if mode == crate::dynamics::DynMode::Static { colour } else { "#14141a" },
-                                        if mode == crate::dynamics::DynMode::Static { "transparent" } else { colour },
-                                    ),
-                                    title: "Dynamics mode — click to cycle",
-                                    onclick: move |e: MouseEvent| {
-                                        e.stop_propagation();
-                                        ds_cycle.set_mode(ds_cycle.mode().next());
-                                    },
-                                    "{mode.label()}"
+                                // All three modes on show, not one button you
+                                // have to click to discover the others. The
+                                // one the band is in is filled; the other two
+                                // say what is available.
+                                for (m , glyph , tip) in [
+                                    (crate::dynamics::DynMode::Static, "\u{2014}", "Static — a plain filter"),
+                                    (crate::dynamics::DynMode::Dynamic, "\u{25c6}", "Dynamic — the band's gain rides the detector"),
+                                    (crate::dynamics::DynMode::Spectral, "\u{2237}", "Spectral — only the bins that cross move"),
+                                ] {
+                                    {
+                                        let ds_set = ds.clone();
+                                        let on = mode == m;
+                                        let c = m.live_colour();
+                                        rsx! {
+                                            button {
+                                                key: "{m:?}",
+                                                style: format!(
+                                                    "width:20px; height:15px; font-size:9px; line-height:1; \
+                                                     border:1px solid {}; border-radius:3px; cursor:pointer; \
+                                                     color:{}; background:{};",
+                                                    if on { c } else { "#2a2a30" },
+                                                    if on { "#14141a" } else { "#6a6a76" },
+                                                    if on { c } else { "transparent" },
+                                                ),
+                                                title: "{tip}",
+                                                onclick: move |e: MouseEvent| {
+                                                    e.stop_propagation();
+                                                    ds_set.set_mode(m);
+                                                },
+                                                "{glyph}"
+                                            }
+                                        }
+                                    }
                                 }
 
                                 if mode != crate::dynamics::DynMode::Static {

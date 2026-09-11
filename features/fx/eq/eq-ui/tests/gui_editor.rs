@@ -255,8 +255,10 @@ mod support {
 
         /// A control inside the detail panel, found by its exact label.
         ///
-        /// `architect_ui`'s `Button` has no attribute passthrough, so the panel's
-        /// controls are addressed the way a user sees them — by their caption.
+        /// `architect_ui`'s `Button` has no attribute passthrough, so a
+        /// captioned control is addressed the way a user sees it. The ones
+        /// that carry an icon instead have a `data-testid` on a wrapper —
+        /// see [`Self::panel_icon`].
         pub fn panel_control(&self, label: &str) -> dioxus_test::ResolvedElement {
             let sel = format!("[data-testid='{PANEL_TESTID}'] button");
             let found = self
@@ -277,6 +279,17 @@ mod support {
                     .collect();
                 panic!("no {label:?} control in the band panel; found {labels:?}");
             }
+        }
+
+        /// An icon control inside the detail panel, by the testid on its
+        /// wrapper. Icons have no caption to match on, and adding a wrapper is
+        /// safe where removing a node is not — see the panel's own notes.
+        pub fn panel_icon(&self, testid: &str) -> dioxus_test::ResolvedElement {
+            let sel = format!("[data-testid='{testid}'] button");
+            self.tester
+                .query(sel.as_str())
+                .immediately()
+                .unwrap_or_else(|e| panic!("no {testid} control in the band panel: {e:?}"))
         }
 
         /// Walks the pointer from `from` to `to` in `steps` hit-tested moves,
@@ -625,7 +638,7 @@ async fn panel_focus_control_is_clickable() -> dioxus_test::Result<()> {
     let target = fx.panel_center();
     fx.glide(node, target, 6, false).await;
 
-    let focus = fx.panel_control("F");
+    let focus = fx.panel_icon("eq-band-focus");
     let (bx, by) = focus.document_origin();
     let (bw, bh) = focus.size();
     assert!(bw > 0.0 && bh > 0.0, "focus control has no layout box");
@@ -659,7 +672,7 @@ async fn panel_bypass_control_is_clickable() -> dioxus_test::Result<()> {
     let target = fx.panel_center();
     fx.glide(node, target, 6, false).await;
 
-    let bypass = fx.panel_control("On");
+    let bypass = fx.panel_icon("eq-band-bypass");
     let (bx, by) = bypass.document_origin();
     let (bw, bh) = bypass.size();
     fx.tap(bx + bw as f64 / 2.0, by + bh as f64 / 2.0).await;
