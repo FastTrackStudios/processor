@@ -616,7 +616,7 @@ async fn panel_focus_control_is_clickable() -> dioxus_test::Result<()> {
     let target = fx.panel_center();
     fx.glide(node, target, 6, false).await;
 
-    let focus = fx.panel_control("S");
+    let focus = fx.panel_control("F");
     let (bx, by) = focus.document_origin();
     let (bw, bh) = focus.size();
     assert!(bw > 0.0 && bh > 0.0, "focus control has no layout box");

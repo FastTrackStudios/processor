@@ -557,7 +557,7 @@ pub fn BandPopup(
                                     if let (Some(b), Some(c)) = (updated, &cb) { c.call((band_idx, b)); }
                                 }
                             },
-                            "S"
+                            "F"
                         }
                         Button {
                             size: ButtonSize::Small,

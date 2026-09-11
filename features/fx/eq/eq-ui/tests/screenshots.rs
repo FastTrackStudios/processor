@@ -224,3 +224,43 @@ async fn shot_every_hardware_model() {
         shot(&fx, name);
     }
 }
+
+/// The band detail panel, on its own, so it can be looked at.
+///
+/// It is the densest thing in the editor — routing, shape, three dials, the
+/// per-band actions and the dynamics row — and the only way to know whether
+/// it all fits is to paint it.
+#[tokio::test]
+async fn shot_the_band_panel() {
+    let mut fx = mount_model(0).await;
+    let graph = fx
+        .tester
+        .query(by_testid("eq-graph-surface"))
+        .immediately()
+        .ok()
+        .map(|e| e.document_origin())
+        .unwrap_or((0.0, 0.0));
+    // Sweep along the plot until a band node opens its panel.
+    let mut found = false;
+    for bx in (60..760).step_by(20) {
+        for by in [90.0_f64, 130.0, 170.0, 210.0] {
+            fx.tester
+                .pointer_move(graph.0 + f64::from(bx), graph.1 + by, false);
+            fx.settle().await;
+            if fx
+                .tester
+                .query(by_testid("eq-band-popup"))
+                .immediately()
+                .is_ok()
+            {
+                found = true;
+                break;
+            }
+        }
+        if found {
+            break;
+        }
+    }
+    assert!(found, "no band node opened its panel");
+    shot(&fx, "band-panel");
+}
