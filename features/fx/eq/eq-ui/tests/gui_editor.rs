@@ -2404,12 +2404,13 @@ async fn alt_creating_a_band_makes_it_dynamic() -> dioxus_test::Result<()> {
     ] {
         let idx = fresh(&fx);
         let (x, y) = (ox + 200.0 + f64::from(u8::from(spectral)) * 240.0, oy + 120.0);
+        // The two presses go in back to back. Double-click detection is on a
+        // 400 ms wall-clock threshold, and settling between every event is
+        // slow enough under a loaded test run to miss it — which showed up as
+        // this test passing alone and failing in the suite.
         fx.tester.pointer_down_mods(x, y, mods);
-        fx.settle().await;
         fx.tester.pointer_up_mods(x, y, mods);
-        fx.settle().await;
         fx.tester.pointer_down_mods(x, y, mods);
-        fx.settle().await;
         fx.tester.pointer_up_mods(x, y, mods);
         fx.settle().await;
 
@@ -2432,52 +2433,80 @@ async fn alt_creating_a_band_makes_it_dynamic() -> dioxus_test::Result<()> {
     Ok(())
 }
 
-/// Holding `b` puts a loud narrow bell under the pointer and drags it along.
+/// Holding `b` takes the band you are on, boosts it hard and narrow, and
+/// hands it to the pointer.
+///
+/// It borrows the band you are already working on rather than creating one:
+/// the gesture is "make *this* louder so I can hear what it is sitting on",
+/// not "add a probe". Letting go keeps the frequency you landed on — that is
+/// the answer you went looking for — and puts the shape back.
 #[tokio::test]
-async fn holding_b_sweeps_a_bell_across_the_spectrum() -> dioxus_test::Result<()> {
+async fn holding_b_sweeps_the_band_you_are_on() -> dioxus_test::Result<()> {
     let fx = mount();
-    let (ox, oy) = fx.graph_origin();
+    let enabled_now = |fx: &support::Fixture| {
+        (0..eq_ui::params::NUM_BANDS)
+            .filter(|i| fx.params.bands[*i].enabled.value() > 0.5)
+            .count()
+    };
+    let enabled_before = enabled_now(&fx);
+    let bp = &fx.params.bands[1];
+    let gain_before = bp.gain_db.value();
+    let q_before = bp.q.value();
+    let shape_before = bp.filter_type.value();
 
-    let fresh = (0..eq_ui::params::NUM_BANDS)
-        .find(|i| fx.params.bands[*i].enabled.value() < 0.5)
-        .expect("no free band slot");
-    let bp = &fx.params.bands[fresh];
-
-    fx.tester.pointer_move(ox + 200.0, oy + 100.0, false);
+    let (x, y) = fx.band_point(1);
+    fx.tester.pointer_move(x, y, false);
     fx.settle().await;
 
     let b = || dioxus_test::keyboard_types::Key::Character("b".to_string());
     fx.tester.key_down(b(), Modifiers::empty());
     fx.settle().await;
 
-    assert!(bp.enabled.value() > 0.5, "holding b created no bell");
     assert!(
         bp.gain_db.value() > 10.0,
-        "the sweep bell is only {} dB — too quiet to hunt with",
+        "the sweep is only {} dB — too quiet to hunt with",
         bp.gain_db.value(),
     );
     assert!(
         bp.q.value() > 4.0,
-        "the sweep bell is too wide to identify anything: Q {}",
+        "the sweep is too wide to identify anything: Q {}",
         bp.q.value(),
+    );
+    assert_eq!(
+        enabled_now(&fx),
+        enabled_before,
+        "the sweep created a band instead of borrowing the one you are on",
     );
 
     // It follows the pointer.
     let at_start = bp.freq_hz.value();
-    fx.tester.pointer_move(ox + 600.0, oy + 100.0, false);
+    let (ox, oy) = fx.graph_origin();
+    fx.tester.pointer_move(ox + 640.0, oy + 100.0, false);
     fx.settle().await;
+    let swept_to = bp.freq_hz.value();
     assert!(
-        bp.freq_hz.value() > at_start * 1.5,
-        "the bell did not follow the pointer: {at_start} -> {}",
-        bp.freq_hz.value(),
+        swept_to > at_start * 1.5,
+        "the sweep did not follow the pointer: {at_start} -> {swept_to}",
     );
 
-    // And it hands the slot back.
+    // Letting go restores the shape but keeps where you landed.
     fx.tester.key_up(b(), Modifiers::empty());
     fx.settle().await;
     assert!(
-        bp.enabled.value() < 0.5,
-        "the sweep bell stayed behind after the key came up",
+        (bp.gain_db.value() - gain_before).abs() < 0.05,
+        "the boost stayed behind: {gain_before} -> {}",
+        bp.gain_db.value(),
+    );
+    assert!(
+        (bp.q.value() - q_before).abs() < 0.05,
+        "the narrow Q stayed behind: {q_before} -> {}",
+        bp.q.value(),
+    );
+    assert_eq!(bp.filter_type.value(), shape_before, "the shape did not come back");
+    assert!(
+        (bp.freq_hz.value() - swept_to).abs() < 1.0,
+        "the frequency the sweep found was thrown away: {swept_to} -> {}",
+        bp.freq_hz.value(),
     );
     Ok(())
 }
@@ -2486,13 +2515,10 @@ async fn holding_b_sweeps_a_bell_across_the_spectrum() -> dioxus_test::Result<()
 #[tokio::test]
 async fn shift_b_sweeps_a_cut() -> dioxus_test::Result<()> {
     let fx = mount();
-    let (ox, oy) = fx.graph_origin();
-    let fresh = (0..eq_ui::params::NUM_BANDS)
-        .find(|i| fx.params.bands[*i].enabled.value() < 0.5)
-        .expect("no free band slot");
-
-    fx.tester.pointer_move(ox + 300.0, oy + 100.0, false);
+    let (x, y) = fx.band_point(1);
+    fx.tester.pointer_move(x, y, false);
     fx.settle().await;
+
     fx.tester.key_down(
         dioxus_test::keyboard_types::Key::Character("B".to_string()),
         Modifiers::SHIFT,
@@ -2500,9 +2526,9 @@ async fn shift_b_sweeps_a_cut() -> dioxus_test::Result<()> {
     fx.settle().await;
 
     assert!(
-        fx.params.bands[fresh].gain_db.value() < -10.0,
+        fx.params.bands[1].gain_db.value() < -10.0,
         "shift+b boosted instead of cutting: {} dB",
-        fx.params.bands[fresh].gain_db.value(),
+        fx.params.bands[1].gain_db.value(),
     );
     Ok(())
 }

@@ -267,9 +267,16 @@ fn AppShell() -> Element {
     // handler on the graph's own div would never fire.
     let mut selected_bands: Signal<Vec<usize>> = use_signal(Vec::new);
     let mut hovered_band: Signal<Option<usize>> = use_signal(|| None);
-    // The band a held sweep is driving. The graph moves it with the pointer;
-    // this is only which slot it borrowed, so the key-up can give it back.
-    let mut sweep_band: Signal<Option<usize>> = use_signal(|| None);
+    // The band a held sweep is driving, and what it looked like before the
+    // sweep took it over: `(index, gain_db, q, filter_type)`.
+    //
+    // The sweep borrows the band you are already working on rather than
+    // making a new one — that is the point of the gesture. You boost it hard
+    // and narrow, hunt for what is ringing, and let go; the frequency you
+    // found stays, and the shape it had comes back.
+    let mut sweep_band: Signal<Option<(usize, f32, f32, i32)>> = use_signal(|| None);
+    // What the graph needs: just which band to drag with the pointer.
+    let sweep_target: Signal<Option<usize>> = use_signal(|| None);
     let mut inspector_tab: Signal<String> = use_signal(|| "band".to_string());
     // Cheat-sheet overlay/profile selection, shared between the inspector
     // selector below and the EqGraph (passed as a prop). `Auto` resolves from
@@ -429,11 +436,20 @@ fn AppShell() -> Element {
                 }
             }
             KeyAction::Sweep { .. } => {
-                if let Some(idx) = sweep_band.take() {
+                // Frequency is deliberately *not* restored: where you landed
+                // is the answer the sweep was asked for.
+                if let Some((idx, gain, q, shape)) = sweep_band.take() {
                     let bp = &params.bands[idx];
-                    ctx.begin_set_raw(bp.enabled.as_ptr());
-                    ctx.set_normalized_raw(bp.enabled.as_ptr(), 0.0);
-                    ctx.end_set_raw(bp.enabled.as_ptr());
+                    for (ptr, want) in [
+                        (bp.filter_type.as_ptr(), bp.filter_type.preview_normalized(shape)),
+                        (bp.gain_db.as_ptr(), bp.gain_db.preview_normalized(gain)),
+                        (bp.q.as_ptr(), bp.q.preview_normalized(q)),
+                    ] {
+                        ctx.begin_set_raw(ptr);
+                        ctx.set_normalized_raw(ptr, want);
+                        ctx.end_set_raw(ptr);
+                    }
+                    sweep_target.clone().set(None);
                 }
             }
             _ => {}
@@ -510,40 +526,34 @@ fn AppShell() -> Element {
                             ctx.end_set_raw(params.delta.as_ptr());
                         }
                         KeyAction::Sweep { cut } => {
-                            // A Massenburg sweep: borrow a free band, make it
-                            // narrow and loud, and let the pointer drag it
-                            // across the spectrum until what is ringing rings
-                            // louder. The key-up hands the slot back.
-                            //
-                            // A borrowed band, not a phantom overlay, because
-                            // the thing you are listening to has to be the
-                            // real filter — anything else is a picture of a
-                            // sweep.
+                            // Takes the band you are on, not a new one: boost
+                            // it hard and narrow, sweep for what is ringing,
+                            // let go. The frequency you found stays; the
+                            // shape it had comes back.
                             if sweep_band.peek().is_some() {
                                 return;
                             }
-                            let Some(idx) = (0..NUM_BANDS)
-                                .find(|i| params.bands[*i].enabled.value() < 0.5)
-                            else {
+                            let Some(&idx) = targets.first().filter(|i| **i < NUM_BANDS) else {
                                 return;
                             };
                             let bp = &params.bands[idx];
-                            let hz = hovered_band
-                                .read()
-                                .map_or(1000.0, |i| params.bands[i].freq_hz.value());
+                            sweep_band.set(Some((
+                                idx,
+                                bp.gain_db.value(),
+                                bp.q.value(),
+                                bp.filter_type.value(),
+                            )));
+                            sweep_target.clone().set(Some(idx));
                             let gain = if cut { -15.0 } else { 15.0 };
                             for (ptr, want) in [
-                                (bp.enabled.as_ptr(), bp.enabled.preview_normalized(1.0)),
                                 (bp.filter_type.as_ptr(), bp.filter_type.preview_normalized(0)),
                                 (bp.gain_db.as_ptr(), bp.gain_db.preview_normalized(gain)),
                                 (bp.q.as_ptr(), bp.q.preview_normalized(8.0)),
-                                (bp.freq_hz.as_ptr(), bp.freq_hz.preview_normalized(hz)),
                             ] {
                                 ctx.begin_set_raw(ptr);
                                 ctx.set_normalized_raw(ptr, want);
                                 ctx.end_set_raw(ptr);
                             }
-                            sweep_band.set(Some(idx));
                         }
                         KeyAction::Pass => {}
                     }
@@ -770,7 +780,7 @@ fn AppShell() -> Element {
                         band_handles: Some(band_handles.clone()),
                         focused_band_out: focused_band,
                         selected_bands_out: selected_bands,
-                        sweep_band: sweep_band,
+                        sweep_band: sweep_target,
                         hovered_band_out: hovered_band,
                         overlay_sel: overlay_sel,
                         disabled: hardware_mode_active,
