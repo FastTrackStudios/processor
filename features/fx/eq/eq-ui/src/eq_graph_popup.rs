@@ -644,7 +644,22 @@ pub fn BandPopup(
                         let ds_cycle = ds.clone();
                         rsx! {
                             div {
-                                style: "display:flex; align-items:center; gap:4px; border-top:1px solid #23232a; padding-top:4px;",
+                                // Centred, so it lands under the GAIN dial —
+                                // which is the dial it belongs to. Pro-Q hangs
+                                // dynamics off gain and so does the ring on
+                                // that knob; parking the modes in a ruled-off
+                                // row at the bottom of the panel said they
+                                // were something else.
+                                //
+                                // Centred rather than positioned: the dials
+                                // above are `space-evenly`, so the middle one
+                                // is already on the panel's centre line and a
+                                // centred row under them needs no anchoring at
+                                // all. Two attempts at `position:absolute`
+                                // landed it off the bottom of the panel and
+                                // then outside it entirely.
+                                style: "display:flex; align-items:center; justify-content:center; \
+                                        gap:4px; min-height:15px;",
                                 // All three modes on show, not one button you
                                 // have to click to discover the others. The
                                 // one the band is in is filled; the other two
