@@ -227,6 +227,23 @@ pub fn f64_to_u32(x: f64) -> u32 {
     x as u32
 }
 
+/// An `f64` as `f32`, for a value that is about to be displayed or
+/// stored at single precision anyway.
+///
+/// Saturates at `f32`'s range rather than producing an infinity from a
+/// finite input; NaN stays NaN. Not for the audio path, where the types
+/// should agree to begin with — this is the boundary where a
+/// double-precision analysis meets a single-precision picture.
+#[must_use]
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "the audited boundary: the value is clamped into f32's range on the line above, and the rounding is the point"
+)]
+pub fn f64_to_f32(x: f64) -> f32 {
+    x.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32
+}
+
 /// An `i32` as `f32`, exact within ±2^24 and clamped beyond.
 #[must_use]
 #[expect(

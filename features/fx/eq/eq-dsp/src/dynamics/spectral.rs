@@ -356,6 +356,9 @@ struct Bin {
     spread_oct: f64,
     /// The reduction actually being applied, dB, after attack/release.
     gr_db: f64,
+    /// `gr_db` averaged over [`SPECTRAL_SETTLE_S`] — the reduction that is
+    /// always there, which is what a resonance IS.
+    settled_gr_db: f64,
     /// The linear gain `gr_db` works out to.
     gain: f64,
     /// Which region owns this bin, or `usize::MAX` for none.
@@ -373,6 +376,7 @@ impl Bin {
         target_db: 0.0,
         spread_oct: 0.0,
         gr_db: 0.0,
+        settled_gr_db: 0.0,
         gain: 1.0,
         owner: usize::MAX,
         log2_hz: 0.0,
@@ -575,6 +579,22 @@ impl SpectralEngine {
             bin.target_db = spread_db;
         }
         self.scratch_db = spread;
+    }
+
+    /// What the engine is taking off, bin by bin: the bin's centre in Hz,
+    /// the reduction being applied right now, and the reduction that has
+    /// been there for the last few seconds — both in dB, positive.
+    ///
+    /// The two answer different questions. The instantaneous curve is what
+    /// a de-esser shows: it fires and lets go. The settled curve is what a
+    /// resonance suppressor shows: a peak that is always there. A display
+    /// should draw the engine's own numbers rather than recompute them
+    /// from a spectrum — the density, tilt and gate rules live here, and a
+    /// second copy of them drifts.
+    pub fn gain_curve(&self) -> impl Iterator<Item = (f64, f64, f64)> + '_ {
+        self.bins
+            .iter()
+            .map(|bin| (bin.log2_hz.exp2(), bin.gr_db, bin.settled_gr_db))
     }
 
     /// The mean reduction each region is applying right now, in dB (positive).
@@ -832,6 +852,7 @@ impl SpectralEngine {
                 };
                 bin.gr_db += (bin.target_db - bin.gr_db) * c;
                 bin.gain = 10.0f64.powf(-bin.gr_db / 20.0);
+                bin.settled_gr_db += (bin.gr_db - bin.settled_gr_db) * learned_coeff;
             }
 
             // Each region's mean reduction, weighted by its own curve.

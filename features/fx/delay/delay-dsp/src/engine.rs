@@ -112,6 +112,21 @@ impl DelayStyle {
         }
     }
 
+    /// Which family of machine this style is — see [`Family`].
+    #[must_use]
+    pub const fn family(self) -> Family {
+        match self {
+            Self::Clean => Family::Digital,
+            Self::Tape => Family::Tape,
+            Self::Bbd => Family::Analog,
+            Self::Shimmer | Self::Pitch => Family::Pitch,
+            Self::Rhythm | Self::Drum | Self::MultiTap => Family::Rhythmic,
+            Self::LoFi | Self::Reverse | Self::OilCan | Self::Spectral | Self::Filter | Self::Reverb => {
+                Family::Special
+            }
+        }
+    }
+
     /// Valid delay-time range in ms (`TimeLine` MX per-machine ranges).
     #[must_use]
     pub const fn time_range_ms(self) -> (f64, f64) {
@@ -121,6 +136,44 @@ impl DelayStyle {
             Self::OilCan => (200.0, 800.0),
             Self::LoFi | Self::Reverb => (2.0, 2500.0),
             _ => (60.0, 2500.0),
+        }
+    }
+}
+
+/// The six families the fourteen styles fall into.
+///
+/// A delay's family is not a preset — it is a different machine, and
+/// anything that draws one should say which before it says anything
+/// else. The plugin's own faces are built on this division (a tape has
+/// reels, an analog delay is a chip and its clock, a rhythmic one is a
+/// grid of taps); stated here so a host drawing the delay small divides
+/// it the same way the editor does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// Exact repeats — arithmetic.
+    Digital,
+    /// Reels and a head stack: repeats that soften and darken.
+    Tape,
+    /// A bucket-brigade chip: repeats that smear.
+    Analog,
+    /// Repeats that climb or fall an interval at a time.
+    Pitch,
+    /// Repeats placed on a grid rather than evenly.
+    Rhythmic,
+    /// A repeat that is no longer one: turned around, filtered, dissolved.
+    Special,
+}
+
+impl Family {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Digital => "digital",
+            Self::Tape => "tape",
+            Self::Analog => "analog",
+            Self::Pitch => "pitch",
+            Self::Rhythmic => "rhythmic",
+            Self::Special => "special",
         }
     }
 }

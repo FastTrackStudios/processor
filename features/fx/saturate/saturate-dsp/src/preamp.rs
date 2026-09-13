@@ -206,6 +206,33 @@ pub enum Makeup {
     None,
 }
 
+/// What kind of machine a stage reads as, for a display that has to
+/// say so in one glyph.
+///
+/// The same five the plugin's faces are built around: a lit valve, tape
+/// over a head, an iron core, a transistor's corner, and a staircase
+/// for the quantiser. Decided from the shapers rather than from a
+/// profile name, so a stage edited away from its preset is still
+/// called what it has become — and so a host drawing the stage small
+/// names it the way the editor does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Circuit {
+    /// A triode grid on at least one half: the early, even-rich knee.
+    Valve,
+    /// Iron on both halves with the top pre-emphasised — the record
+    /// head's curve.
+    Tape,
+    /// Iron on one or both halves, lows first.
+    Core,
+    /// Rails, diodes, hard clips, or a wire with a knee: the sharp
+    /// corner.
+    Solid,
+    /// A quantiser — no transfer curve at all. Never returned by
+    /// [`ClassAPreamp::circuit`], which cannot see the digital stage;
+    /// a host that has one asks it first.
+    Steps,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClassAPreamp {
     /// Drive into the stage (linear, 1..16 from the user's dB knob).
@@ -324,6 +351,19 @@ impl ClassAPreamp {
     /// Sag ballistics in milliseconds. A tape machine's recovery is
     /// slower than a valve's cathode, and how long the stage stays bent
     /// after a transient is audibly a different machine.
+    /// Which machine this stage currently reads as — see [`Circuit`].
+    #[must_use]
+    pub fn circuit(&self) -> Circuit {
+        use SideShaper as S;
+        let sides = (self.positive, self.negative);
+        match sides {
+            (S::Tube, _) | (_, S::Tube) => Circuit::Valve,
+            (S::Transformer, S::Transformer) if self.tilt_db > 0.0 => Circuit::Tape,
+            (S::Transformer, _) | (_, S::Transformer) => Circuit::Core,
+            _ => Circuit::Solid,
+        }
+    }
+
     pub fn set_sag_ms(&mut self, ms: f32) {
         self.sag_ms = ms.clamp(1.0, 500.0);
         // Padé form of 1 − e^(−x) for tiny x — keeps the crate honestly
@@ -591,20 +631,36 @@ pub mod analysis {
         }
     }
 
-    /// Measure the harmonic spectrum of the CURRENT settings: an
-    /// internally synthesized full-scale sine runs through a state
-    /// clone (including the DC blocker), and Goertzel correlation reads H1..Hn.
-    ///
-    /// `out[k]` = linear magnitude of harmonic k+1, normalized so H1 = 1. This
-    /// is the "what is the saturation actually adding" visualization — measured,
-    /// not hand-waved.
+    /// Measure the harmonic spectrum of the CURRENT settings at full
+    /// scale — [`harmonic_spectrum_at`] with a 0 dBFS probe.
     pub fn harmonic_spectrum(pre: &ClassAPreamp, out: &mut [f32]) {
+        harmonic_spectrum_at(pre, 0.0, out);
+    }
+
+    /// Measure the harmonic spectrum of the CURRENT settings at a level.
+    ///
+    /// An internally synthesized sine at `level_dbfs` runs through a
+    /// state clone (including the DC blocker), and a Goertzel filter per
+    /// harmonic reads H1..Hn off the settled half.
+    ///
+    /// `out[k]` = linear magnitude of harmonic k+1, normalized so H1 = 1.
+    /// This is the "what is the saturation actually adding"
+    /// visualization — measured, not hand-waved — and the level argument
+    /// is what lets a display breathe with the signal: a static
+    /// nonlinearity adds different harmonics at −18 than at 0, and a
+    /// ladder measured only at full scale would claim a quiet passage
+    /// is as coloured as a loud one.
+    ///
+    /// Levels above 0 dBFS are clamped to it: the probe is a full-scale
+    /// sine at most.
+    pub fn harmonic_spectrum_at(pre: &ClassAPreamp, level_dbfs: f32, out: &mut [f32]) {
         const N: usize = 8192;
         const CYCLES: usize = 64;
         let mut probe = pre.clone();
         probe.mix = 1.0;
         probe.output_gain = 1.0;
         probe.reset();
+        let amplitude = 10.0_f32.powf(level_dbfs.min(0.0) / 20.0);
         // On the heap, not the stack: 8192 floats is 32 KB, which is most of a
         // thread's stack on some hosts. This runs on the UI thread, where an
         // allocation is ordinary — the realtime rule is about `process`.
@@ -613,22 +669,29 @@ pub mod analysis {
         let buf: vec::Vec<f32> = (0..N)
             .map(|i| {
                 let ph = core::f32::consts::TAU * cycles * num::count_to_f32(i) / length;
-                probe.process(0, ph.sin())
+                probe.process(0, amplitude * ph.sin())
             })
             .collect();
-        // Skip the DC-blocker warmup: analyse the second half.
+        // Skip the DC-blocker warmup: analyse the second half, over which
+        // the probe completes a whole number of cycles, so each harmonic
+        // sits exactly on a Goertzel bin.
         let seg = buf.get(N / 2..).unwrap_or(&[]);
         let mut h1 = 0.0f32;
         for (k, slot) in out.iter_mut().enumerate() {
-            let f = cycles * num::count_to_f32(k.saturating_add(1)) / length;
-            let mut re = 0.0f32;
-            let mut im = 0.0f32;
-            for (i, &s) in seg.iter().enumerate() {
-                let ph = core::f32::consts::TAU * f * num::count_to_f32(i);
-                re += s * ph.cos();
-                im += s * ph.sin();
+            // Radians per sample for this harmonic.
+            let w = core::f32::consts::TAU * cycles * num::count_to_f32(k.saturating_add(1)) / length;
+            let coeff = 2.0 * w.cos();
+            // The Goertzel recurrence: one multiply-add per sample rather
+            // than a sine and a cosine, which is what made the probe
+            // cheap enough to run at several levels per settings change.
+            let (mut s1, mut s2) = (0.0f32, 0.0f32);
+            for &x in seg {
+                let s0 = coeff.mul_add(s1, x - s2);
+                s2 = s1;
+                s1 = s0;
             }
-            let mag = (re * re + im * im).sqrt();
+            let power = s1.mul_add(s1, s2.mul_add(s2, -coeff * s1 * s2));
+            let mag = power.max(0.0).sqrt();
             if k == 0 {
                 h1 = mag.max(1.0e-12);
             }
