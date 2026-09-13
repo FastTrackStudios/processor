@@ -80,6 +80,29 @@ pub fn scale_gr_db(gr_db: f32) -> f32 {
     (gr_db / RANGE_DB).clamp(0.0, 1.0)
 }
 
+/// The colours the compressor's display is drawn in.
+///
+/// The editor states these inline as SVG gradient stops, which is the
+/// right shape for a DOM and the wrong one for anything else: a host
+/// that embeds this display — a mixer strip's rack, say — has to paint
+/// with the same values or the two are different compressors.
+///
+/// `#rrggbb`, because that is what the editor writes and what
+/// `eq_graph_model::freq_to_color` already returns; a caller that wants
+/// them as numbers parses once.
+pub mod colors {
+    /// The readout grey — labels, units, anything that is not a value.
+    pub const GREY: &str = "#8a8a92";
+    /// The input waveform's edge, and the fill beneath it.
+    pub const INPUT_EDGE: &str = "#3cd2dc";
+    pub const INPUT_FILL: &str = "#146e73";
+    /// Gain reduction, hanging from the top.
+    pub const REDUCTION_EDGE: &str = "#ff5050";
+    pub const REDUCTION_FILL: &str = "#dc2828";
+    /// The threshold line and its grab chip.
+    pub const THRESHOLD: &str = "#ff7878";
+}
+
 /// Map a slice of linear input peaks through [`scale_input_peak`].
 #[must_use]
 pub fn scale_input_wave(peaks: &[f32]) -> Vec<f32> {
