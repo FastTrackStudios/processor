@@ -165,6 +165,23 @@ pub enum Family {
 }
 
 impl Family {
+    /// Every family, in the order a selector lists them.
+    pub const ALL: [Self; 6] = [
+        Self::Digital,
+        Self::Tape,
+        Self::Analog,
+        Self::Pitch,
+        Self::Rhythmic,
+        Self::Special,
+    ];
+
+    /// The styles in this family, in index order.
+    pub fn styles(self) -> impl Iterator<Item = DelayStyle> {
+        (0..DelayStyle::COUNT)
+            .map(DelayStyle::from_index)
+            .filter(move |style| style.family() == self)
+    }
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {

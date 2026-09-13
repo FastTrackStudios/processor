@@ -225,6 +225,26 @@ pub enum Family {
 }
 
 impl Family {
+    /// Every family, in the order a selector lists them.
+    pub const ALL: [Self; 8] = [
+        Self::Room,
+        Self::Hall,
+        Self::Plate,
+        Self::Spring,
+        Self::Ambient,
+        Self::Random,
+        Self::Special,
+        Self::Convolution,
+    ];
+
+    /// The algorithms in this family, in [`AlgorithmType::ALL`] order.
+    pub fn algorithms(self) -> impl Iterator<Item = AlgorithmType> {
+        AlgorithmType::ALL
+            .iter()
+            .copied()
+            .filter(move |algorithm| algorithm.family() == self)
+    }
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
