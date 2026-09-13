@@ -153,8 +153,10 @@ pub fn paint_eq_graph_scene(
     let cm = CoordMapper::new(&cfg, padding);
     let area = Rect::new(0.0, 0.0, elem_w, elem_h);
 
-    let bg = Color::from_rgb8(10, 10, 10);
-    scene.fill(Fill::NonZero, transform, bg, None, &area);
+    if cfg.fill_background {
+        let bg = Color::from_rgb8(10, 10, 10);
+        scene.fill(Fill::NonZero, transform, bg, None, &area);
+    }
 
     if cfg.show_grid {
         paint_grid(scene, &cm, &cfg, transform);
@@ -205,7 +207,7 @@ pub fn paint_eq_graph_scene(
     }
 
     for band in &bands {
-        if !band.used {
+        if !band.used || cfg.node_scale <= 0.0 {
             continue;
         }
         let is_hovered = interaction.hovered_band == Some(band.index);
@@ -219,6 +221,7 @@ pub fn paint_eq_graph_scene(
             is_dragging,
             is_focused,
             interaction.selected_bands.contains(&band.index),
+            cfg.node_scale,
             transform,
         );
     }
@@ -687,7 +690,9 @@ fn paint_connecting_lines(
     transform: Affine,
 ) {
     let zero_y = cm.db_to_y(0.0);
-    let node_r = 7.0;
+    // Stops short of the node it hangs from, so the two read as one
+    // object — which means it has to know how big that node is.
+    let node_r = 7.0 * cfg.node_scale;
 
     for band in bands {
         if !band.used || !band.enabled {
@@ -805,6 +810,8 @@ fn paint_band_node(
     // — it was simply never drawn, so the one gesture that acts on several
     // bands at once gave no sign of which bands it would act on.
     is_selected: bool,
+    // A multiplier on the authored radius — see `GraphConfig::node_scale`.
+    node_scale: f64,
     transform: Affine,
 ) {
     let x = cm.freq_to_x(f64::from(band.frequency));
@@ -818,7 +825,7 @@ fn paint_band_node(
         9.0
     } else {
         7.0
-    };
+    } * node_scale;
 
     let fill = if band.enabled {
         band_color

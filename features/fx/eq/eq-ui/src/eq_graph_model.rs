@@ -390,6 +390,23 @@ pub struct GraphConfig {
     /// physical too — divide by `scale` to convert to CSS pixels for
     /// hit-testing (where `evt.element_coordinates()` lives).
     pub scale: f64,
+    /// Whether the graph paints its own ground.
+    ///
+    /// True in the plugin window, where the graph IS the surface. False
+    /// where it is a panel inside something that has already drawn one
+    /// — a mixer strip's rack, say — because an opaque fill there
+    /// covers whatever the host drew underneath, which is the host's
+    /// own scale and gridlines.
+    pub fill_background: bool,
+    /// How large the band nodes are drawn, relative to their authored
+    /// size. Zero draws none.
+    ///
+    /// The nodes are authored for a graph eight hundred pixels wide. In
+    /// a strip a hundred and thirty across, four of them at that size
+    /// overlap each other and hide the curve they sit on — so an
+    /// embedded host either shrinks them or turns them off and draws
+    /// markers of its own at a size that suits it.
+    pub node_scale: f64,
 }
 
 impl Default for GraphConfig {
@@ -403,6 +420,8 @@ impl Default for GraphConfig {
             show_freq_labels: true,
             show_db_labels: true,
             fill_curve: true,
+            fill_background: true,
+            node_scale: 1.0,
             rect_x: 0.0,
             rect_y: 0.0,
             // Zero, not the viewBox.
