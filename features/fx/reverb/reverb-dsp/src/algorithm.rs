@@ -88,6 +88,23 @@ impl AlgorithmType {
         Self::Random,
     ];
 
+    /// Which family of space this algorithm is — see [`Family`].
+    #[must_use]
+    pub const fn family(self) -> Family {
+        match self {
+            Self::Hall => Family::Hall,
+            Self::Plate => Family::Plate,
+            Self::Room | Self::Reflections | Self::FreeVerb => Family::Room,
+            Self::Spring => Family::Spring,
+            Self::Cloud | Self::Bloom | Self::Velvet => Family::Ambient,
+            Self::Random => Family::Random,
+            Self::Shimmer | Self::Chorale | Self::Magneto | Self::NonLinear | Self::Swell => {
+                Family::Special
+            }
+            Self::Convolution => Family::Convolution,
+        }
+    }
+
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -180,6 +197,66 @@ impl AlgorithmType {
     #[must_use]
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|&a| a == self).unwrap_or(0)
+    }
+}
+
+/// The families the sixteen algorithms fall into.
+///
+/// A reverb's family is not a preset — it is a different machine, and
+/// anything that draws one should say which before it says anything
+/// else. The plugin's own faces are built on this division (a hall is
+/// an arch, a plate a sheet of steel, a spring a coil); stated here so
+/// a host drawing the reverb small divides it the same way the editor
+/// does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    Hall,
+    Plate,
+    Room,
+    Spring,
+    /// No walls: clouds, blooms, velvet.
+    Ambient,
+    /// A diffuse space whose lines random-walk.
+    Random,
+    /// The ones that are effects rather than spaces.
+    Special,
+    /// A recorded space.
+    Convolution,
+}
+
+impl Family {
+    /// Every family, in the order a selector lists them.
+    pub const ALL: [Self; 8] = [
+        Self::Room,
+        Self::Hall,
+        Self::Plate,
+        Self::Spring,
+        Self::Ambient,
+        Self::Random,
+        Self::Special,
+        Self::Convolution,
+    ];
+
+    /// The algorithms in this family, in [`AlgorithmType::ALL`] order.
+    pub fn algorithms(self) -> impl Iterator<Item = AlgorithmType> {
+        AlgorithmType::ALL
+            .iter()
+            .copied()
+            .filter(move |algorithm| algorithm.family() == self)
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Hall => "hall",
+            Self::Plate => "plate",
+            Self::Room => "room",
+            Self::Spring => "spring",
+            Self::Ambient => "ambient",
+            Self::Random => "random",
+            Self::Special => "special",
+            Self::Convolution => "ir",
+        }
     }
 }
 
