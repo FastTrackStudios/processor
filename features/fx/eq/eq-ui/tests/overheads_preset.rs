@@ -247,10 +247,16 @@ fn the_preset_survives_a_save_and_reload() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
+    let description = "Dialing order: cymbal bands on the loudest crash section, snare bands \
+                        on the sparsest intro, air at the end. Final test is the fader itself \
+                        — push the overheads well past where you'd normally sit them. If it \
+                        stays natural instead of turning harsh and boxy, it's set."
+        .to_string();
     let preset = preset_browser::Preset {
         name: "Overheads".to_string(),
         category: Some("Overheads".to_string()),
         origin: Some("FTS EQ".to_string()),
+        description: Some(description.clone()),
         parameters: overheads_parameters(),
         text_parameters: overheads_text_parameters(),
         ..preset_browser::Preset::default()
@@ -263,6 +269,7 @@ fn the_preset_survives_a_save_and_reload() {
 
     assert_eq!(read_back.parameters, overheads_parameters());
     assert_eq!(read_back.text_parameters, overheads_text_parameters());
+    assert_eq!(read_back.description, Some(description));
 
     // And the round trip is exactly what a mounted editor would apply: name
     // capture is the inverse of recall.

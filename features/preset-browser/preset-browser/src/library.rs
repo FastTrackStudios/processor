@@ -57,6 +57,12 @@ impl LoadReport {
 
 #[derive(Deserialize, Serialize)]
 struct SavedPreset {
+    /// Free-form prose about the preset — see [`Preset::description`].
+    /// `default`/`skip_serializing_if` on the same terms as
+    /// `SavedTarget::text_parameters`: an old file has no key and reads as
+    /// `None`, and a preset with nothing to say writes no key at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
     source: SavedSource,
     target: SavedTarget,
     #[serde(default)]
@@ -129,6 +135,7 @@ impl SavedPreset {
             author: None,
             tags,
             origin: self.source.plugin,
+            description: self.description,
             parameters: self
                 .target
                 .parameters
@@ -149,6 +156,7 @@ impl SavedPreset {
 impl SavedPreset {
     fn from_preset(p: &Preset) -> Self {
         Self {
+            description: p.description.clone(),
             source: SavedSource {
                 preset: p.name.clone(),
                 plugin: p.origin.clone(),
@@ -183,10 +191,10 @@ impl SavedPreset {
 /// Write one preset to a file, in the same shape [`load_directory`] reads.
 ///
 /// Carries the fields the file format has: the name, its grouping, where it
-/// came from, the numeric parameters and — new — the string ones. `author` and
-/// `tags` are browser-side derivations rather than fields of the file (tags
-/// are computed from the measurement on load), so they are not written and do
-/// not come back.
+/// came from, a free-form description, the numeric parameters and the string
+/// ones. `author` and `tags` are browser-side derivations rather than fields
+/// of the file (tags are computed from the measurement on load), so they are
+/// not written and do not come back.
 ///
 /// # Errors
 ///
@@ -368,6 +376,7 @@ mod tests {
             author: None,
             tags: Vec::new(),
             origin: Some("FTS-EQ".to_string()),
+            description: Some("Dialing order: cymbals first, then the ring.".to_string()),
             parameters: vec![("b1_freq".to_string(), 800.5), ("b1_gain".to_string(), -3.0)],
             text_parameters: vec![
                 ("b1_name".to_string(), "Overheads honk".to_string()),
@@ -438,6 +447,51 @@ mod tests {
         let p = &load_directory(&dir).unwrap().presets[0];
         assert_eq!(p.parameters.len(), 2);
         assert!(p.text_parameters.is_empty());
+    }
+
+    #[test]
+    fn a_preset_with_no_description_is_written_without_the_key_at_all() {
+        // Same backward-compatibility shape as `text_parameters`: a preset
+        // with nothing to say writes no key, so the 171 translated banks (and
+        // every hand-written one before this field existed) diff cleanly.
+        let dir = temp_dir("nodescription");
+        save_preset(
+            dir.join("bare.json"),
+            &Preset {
+                name: "Bare".to_string(),
+                parameters: vec![("b1_freq".to_string(), 100.0)],
+                ..Preset::default()
+            },
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(dir.join("bare.json")).unwrap();
+        assert!(!text.contains("description"), "no text means no key: {text}");
+    }
+
+    #[test]
+    fn a_preset_written_before_description_existed_loads_with_none() {
+        // `ONE` predates the field entirely — no `description` key anywhere
+        // in the file. It must load, not fail to parse.
+        let dir = temp_dir("predates-description");
+        write(&dir, "legacy.json", ONE);
+        let p = &load_directory(&dir).unwrap().presets[0];
+        assert!(p.description.is_none());
+    }
+
+    #[test]
+    fn a_description_survives_a_save_and_reload() {
+        let dir = temp_dir("description-roundtrip");
+        let written = Preset {
+            name: "Overheads".to_string(),
+            description: Some(
+                "Dialing order: cymbal bands first, then the ring, then air.".to_string(),
+            ),
+            parameters: vec![("b1_freq".to_string(), 800.5)],
+            ..Preset::default()
+        };
+        save_preset(dir.join("described.json"), &written).unwrap();
+        let read_back = load_directory(&dir).unwrap().presets.remove(0);
+        assert_eq!(read_back.description, written.description);
     }
 
     #[test]
