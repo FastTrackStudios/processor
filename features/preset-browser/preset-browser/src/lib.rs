@@ -71,6 +71,15 @@ pub struct Preset {
 }
 
 impl Preset {
+    /// Whether this preset would change anything if applied.
+    ///
+    /// Either half counts: a preset that only renames bands is still worth
+    /// applying, and one with neither is a browser entry, not a recall.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.parameters.is_empty() && self.text_parameters.is_empty()
+    }
+
     /// The text a search query is matched against.
     fn haystack(&self) -> String {
         let mut s = self.name.to_lowercase();

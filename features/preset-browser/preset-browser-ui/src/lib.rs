@@ -87,7 +87,9 @@ pub fn PresetBrowserPanel(props: PresetBrowserProps) -> Element {
     // Applying is the same whether it came from a click or a step, so it is
     // written once and reused.
     let apply_selected = move |b: Signal<PresetBrowser>| {
-        let selected = b.read().selected().cloned();
+        // A preset with nothing in it applies nothing — it used to be the
+        // numbers that had to be non-empty, and now it is either half.
+        let selected = b.read().selected().cloned().filter(|p| !p.is_empty());
         if let Some(preset) = selected {
             on_apply.call(preset);
         }
@@ -479,7 +481,8 @@ pub fn PresetBar(
             let mut b = browser_signal.write();
             b.step(delta);
             b.selected().cloned()
-        };
+        }
+        .filter(|p| !p.is_empty());
         if let Some(preset) = selected {
             on_apply.call(preset);
         }

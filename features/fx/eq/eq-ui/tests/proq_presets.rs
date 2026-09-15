@@ -118,6 +118,38 @@ fn what_the_plugin_cannot_recall_is_reported_rather_than_dropped() {
 // the two halves — what a save captures, and what a load does with it.
 
 #[test]
+fn an_eq_nobody_labelled_saves_with_no_text_block_at_all() {
+    // Bands 1 and 2 ship labelled "Low Shelf" / "High Shelf". If those counted
+    // as labels, every preset ever saved would carry a text block — and since
+    // a text block is authoritative, loading any of them would clear the
+    // user's labels on bands 3-24. This is the test that keeps the whole
+    // backward-compatibility story honest.
+    let params = eq_ui::params::FtsEqParams::default();
+    assert!(
+        eq_ui::preset_view::capture_band_text(&params).is_empty(),
+        "shipped defaults are not labels",
+    );
+}
+
+#[test]
+fn an_unnamed_band_comes_back_to_its_shipped_label_not_a_blank() {
+    // Capture and recall are inverses: an EQ saved elsewhere must reproduce
+    // here exactly, bands 1 and 2 included.
+    let params = eq_ui::params::FtsEqParams::default();
+    *params.bands[0].name.write() = "wiped by the preset".to_string();
+    *params.bands[1].name.write() = "so is this".to_string();
+
+    eq_ui::preset_view::apply_band_text(
+        &params,
+        &[("b3_name".to_string(), "Overheads honk".to_string())],
+    );
+
+    assert_eq!(*params.bands[2].name.read(), "Overheads honk");
+    assert_eq!(*params.bands[0].name.read(), "Low Shelf");
+    assert_eq!(*params.bands[1].name.read(), "High Shelf");
+}
+
+#[test]
 fn saving_captures_the_names_and_notes_a_user_typed() {
     let params = eq_ui::params::FtsEqParams::default();
     *params.bands[0].name.write() = "Overheads honk".to_string();
@@ -126,18 +158,16 @@ fn saving_captures_the_names_and_notes_a_user_typed() {
 
     let text = eq_ui::preset_view::capture_band_text(&params);
 
-    // Bands 1 and 2 ship labelled ("Low Shelf" / "High Shelf"); band 1's was
-    // just renamed. Those are labels like any other and are captured too —
-    // what is left out is a band with nothing to say.
+    // Band 2 is still at its shipped "High Shelf" and so is not a label the
+    // user gave; band 1's default was overwritten and is.
     assert_eq!(
         text,
         vec![
             ("b1_name".to_string(), "Overheads honk".to_string()),
             ("b1_notes".to_string(), "800 Hz ring".to_string()),
-            ("b2_name".to_string(), "High Shelf".to_string()),
             ("b4_name".to_string(), "Air".to_string()),
         ],
-        "every non-empty label, by engine-side name; nothing for a blank band",
+        "every label that differs from the default, by engine-side name",
     );
 }
 
@@ -159,8 +189,9 @@ fn loading_a_preset_that_carries_names_sets_them() {
     assert_eq!(*params.bands[0].notes.read(), "800 Hz ring");
     // A preset that carries names is authoritative about all of them:
     // otherwise band 2 keeps a label from whatever was loaded before, which
-    // now describes a curve that is no longer there.
-    assert_eq!(*params.bands[1].name.read(), "");
+    // now describes a curve that is no longer there. Unlabelled means the
+    // shipped default, which for band 2 is "High Shelf".
+    assert_eq!(*params.bands[1].name.read(), "High Shelf");
 }
 
 #[test]

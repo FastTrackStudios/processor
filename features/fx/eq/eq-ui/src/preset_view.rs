@@ -116,56 +116,80 @@ const BAND_FIELDS: [&str; 18] = [
 ///
 /// Deliberately the same `b{n}_` namespace as [`BAND_FIELDS`]: a band's label
 /// is addressed the way its frequency is, so a library file reads as one set
-/// of per-band settings rather than two. They are not in `BAND_FIELDS` because
-/// they are not parameters — `name` and `notes` are `#[persist]` strings with
-/// no `ParamHandle`, which is exactly why a preset could never carry them.
+/// of per-band settings rather than two.
+///
+/// They are not in [`BAND_FIELDS`] because they are not host parameters:
+/// `name` and `notes` are `#[persist]` strings with no `ParamHandle`, so the
+/// host never sees them, nothing automates them, and the repo's "every
+/// parameter must parse the string it prints" rule has nothing to check. That
+/// is also exactly why a preset could never carry them.
 const BAND_TEXT_FIELDS: [&str; 2] = ["name", "notes"];
 
-/// Read one band's string field.
-fn band_text(params: &FtsEqParams, index: usize, field: &str) -> Option<String> {
-    let band = params.bands.get(index)?;
-    match field {
-        "name" => Some(band.name.read().clone()),
-        "notes" => Some(band.notes.read().clone()),
-        _ => None,
-    }
+/// The name a preset addresses one band's field by. One-based, like every
+/// other `b{n}_` key, and built here rather than at each use so capture and
+/// recall cannot drift into naming the same thing differently.
+fn band_key(index: usize, field: &str) -> String {
+    format!("b{}_{field}", index + 1)
 }
 
-/// Write one band's string field. Silently ignores a band or field this build
-/// does not have, the same way [`apply_to_handles`] reports rather than
-/// panics on a parameter it cannot reach.
+/// The lock behind one band's string field, or `None` for a band or field this
+/// build does not have.
 ///
-/// [`apply_to_handles`]: preset_browser_ui::apply_to_handles
-fn set_band_text(params: &FtsEqParams, index: usize, field: &str, value: &str) {
-    let Some(band) = params.bands.get(index) else {
-        return;
-    };
+/// One lookup for both directions, so reading and writing cannot disagree
+/// about which field is which — and adding a third label is one arm here plus
+/// one entry in [`BAND_TEXT_FIELDS`], not an edit in three places.
+///
+/// A miss is silent for the same reason
+/// [`preset_browser_ui::apply_to_handles`] reports rather than panics: a
+/// library outlives a build, and a preset from a version with more bands must
+/// cost only the settings it names.
+fn band_text_slot<'a>(
+    params: &'a FtsEqParams,
+    index: usize,
+    field: &str,
+) -> Option<&'a parking_lot::RwLock<String>> {
+    let band = params.bands.get(index)?;
     match field {
-        "name" => *band.name.write() = value.to_string(),
-        "notes" => *band.notes.write() = value.to_string(),
-        _ => {}
+        "name" => Some(&band.name),
+        "notes" => Some(&band.notes),
+        _ => None,
     }
 }
 
 /// The `b{n}_name` / `b{n}_notes` a preset should carry for this editor state.
 ///
-/// Empty labels are left out, so a plugin nobody has labelled saves a preset
-/// with no text block at all — which is what keeps a save from this version
-/// readable by anything that predates the field.
+/// What is captured is what *differs from the shipped defaults*, not merely
+/// what is non-empty. Bands 1 and 2 are born labelled "Low Shelf" and
+/// "High Shelf", so "non-empty" would put a text block in every preset ever
+/// saved — and because a text block is authoritative (see
+/// [`apply_band_text`]), every one of them would clear the user's labels on
+/// bands 3-24 on load. The constraint is that loading a preset nobody
+/// labelled costs nobody their labels, and only measuring against the
+/// defaults gets there: an EQ nobody has labelled really does save with no
+/// text block at all.
 #[must_use]
 pub fn capture_band_text(params: &FtsEqParams) -> Vec<(String, String)> {
+    // Asking the type for its own defaults rather than restating them here
+    // keeps this right when they change. Save-time only, never the hot path.
+    let defaults = FtsEqParams::default();
     let mut text = Vec::new();
     for i in 0..NUM_BANDS {
         for field in BAND_TEXT_FIELDS {
-            match band_text(params, i, field) {
-                Some(value) if !value.is_empty() => {
-                    text.push((format!("b{}_{field}", i + 1), value));
-                }
-                _ => {}
+            let Some(slot) = band_text_slot(params, i, field) else {
+                continue;
+            };
+            let value = slot.read().clone();
+            if value != default_band_text(&defaults, i, field) {
+                text.push((band_key(i, field), value));
             }
         }
     }
     text
+}
+
+/// What one band's label reads as on a freshly constructed EQ.
+fn default_band_text(defaults: &FtsEqParams, index: usize, field: &str) -> String {
+    band_text_slot(defaults, index, field).map_or_else(String::new, |slot| slot.read().clone())
 }
 
 /// Recall the per-band labels a preset carries.
@@ -177,10 +201,15 @@ pub fn capture_band_text(params: &FtsEqParams) -> Vec<(String, String)> {
 /// curve against your own annotations.
 ///
 /// **A non-empty text block is authoritative for every band.** Once a preset
-/// says what the bands are, a band it does not name is a band it says has no
-/// name — leaving the previous preset's label there would attach "Overheads
-/// honk" to a curve that is no longer the overheads honk, which is worse than
-/// a blank.
+/// says what the bands are, a band it does not name is a band it says is
+/// unlabelled — leaving the previous preset's label there would attach
+/// "Overheads honk" to a curve that is no longer the overheads honk, which is
+/// worse than no label at all.
+///
+/// Unlabelled means *the shipped default*, not blank, for the same reason
+/// [`capture_band_text`] measures against the defaults: the two are inverses,
+/// so capturing an EQ and recalling it elsewhere reproduces it exactly —
+/// bands 1 and 2 reading "Low Shelf" / "High Shelf" again included.
 pub fn apply_band_text(params: &FtsEqParams, text: &[(String, String)]) {
     if text.is_empty() {
         return;
@@ -189,10 +218,17 @@ pub fn apply_band_text(params: &FtsEqParams, text: &[(String, String)]) {
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
+    let defaults = FtsEqParams::default();
     for i in 0..NUM_BANDS {
         for field in BAND_TEXT_FIELDS {
-            let key = format!("b{}_{field}", i + 1);
-            set_band_text(params, i, field, named.get(key.as_str()).copied().unwrap_or(""));
+            let Some(slot) = band_text_slot(params, i, field) else {
+                continue;
+            };
+            let key = band_key(i, field);
+            *slot.write() = named.get(key.as_str()).map_or_else(
+                || default_band_text(&defaults, i, field),
+                |value| (*value).to_string(),
+            );
         }
     }
 }
