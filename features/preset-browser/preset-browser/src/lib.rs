@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod library;
 
-pub use library::{LoadError, LoadReport, load_directory};
+pub use library::{LoadError, LoadReport, load_directory, save_preset};
 
 /// One preset: a named parameter set, plus what a browser needs to find it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -48,6 +48,17 @@ pub struct Preset {
     /// The parameter set to apply, by name.
     #[serde(default)]
     pub parameters: Vec<(String, f64)>,
+    /// String-valued parameters, by the same names as [`Preset::parameters`]
+    /// — `b1_name`, `b1_notes` — for the things a processor persists that are
+    /// text rather than a number.
+    ///
+    /// Separate from `parameters` rather than a value enum inside it, because
+    /// the numeric list is the shape `set_named` takes and the shape every
+    /// existing file on disk is written in. Anything that only understands
+    /// numbers reads a preset with names and gets the curve; anything that
+    /// only understands the old files reads `text_parameters` as empty.
+    #[serde(default)]
+    pub text_parameters: Vec<(String, String)>,
     /// How closely this preset was measured to match the reference it was
     /// translated from — the worst per-octave decay ratio error, where 0 is
     /// exact. `None` for presets that were never measured.
@@ -325,6 +336,7 @@ mod tests {
             tags: tags.iter().map(std::string::ToString::to_string).collect(),
             origin: None,
             parameters: vec![("decay_time".into(), 2.0)],
+            text_parameters: Vec::new(),
             match_error: None,
         }
     }

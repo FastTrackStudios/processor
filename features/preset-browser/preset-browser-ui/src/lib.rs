@@ -17,7 +17,7 @@
 //! rather than imposing its own look.
 
 use dioxus::prelude::*;
-use preset_browser::PresetBrowser;
+use preset_browser::{Preset, PresetBrowser};
 
 /// How a preset is applied, and what the panel should look like doing it.
 #[derive(Props, Clone, PartialEq)]
@@ -26,9 +26,13 @@ pub struct PresetBrowserProps {
     /// so the host can drive it too — a "next preset" footswitch and a click
     /// in the list are the same operation, and both should be visible here.
     pub browser: Signal<PresetBrowser>,
-    /// Applied when a preset is chosen: the parameters to send to the DSP,
-    /// exactly as `set_named` takes them.
-    pub on_apply: EventHandler<Vec<(String, f64)>>,
+    /// Applied when a preset is chosen.
+    ///
+    /// The whole preset, not just [`Preset::parameters`]: a preset also
+    /// carries string-valued settings (the EQ's per-band `name`/`notes`) that
+    /// are not parameters and have no `ParamHandle`, and the plugin is the
+    /// only thing that knows how to land them.
+    pub on_apply: EventHandler<Preset>,
     /// Foreground colour.
     #[props(default = String::from("#e8e6ef"))]
     pub ink: String,
@@ -83,9 +87,9 @@ pub fn PresetBrowserPanel(props: PresetBrowserProps) -> Element {
     // Applying is the same whether it came from a click or a step, so it is
     // written once and reused.
     let apply_selected = move |b: Signal<PresetBrowser>| {
-        let params = b.read().selected_parameters().to_vec();
-        if !params.is_empty() {
-            on_apply.call(params);
+        let selected = b.read().selected().cloned();
+        if let Some(preset) = selected {
+            on_apply.call(preset);
         }
     };
 
@@ -445,7 +449,7 @@ mod apply_tests {
 pub fn PresetBar(
     browser: Signal<PresetBrowser>,
     /// Applied when the strip steps to another preset.
-    on_apply: EventHandler<Vec<(String, f64)>>,
+    on_apply: EventHandler<Preset>,
     /// Open or close the browser.
     on_browse: EventHandler<()>,
     /// Whether the browser is currently open, so the control can show it.
@@ -471,13 +475,13 @@ pub fn PresetBar(
     };
 
     let mut step = move |delta: isize| {
-        let params = {
+        let selected = {
             let mut b = browser_signal.write();
             b.step(delta);
-            b.selected_parameters().to_vec()
+            b.selected().cloned()
         };
-        if !params.is_empty() {
-            on_apply.call(params);
+        if let Some(preset) = selected {
+            on_apply.call(preset);
         }
     };
 

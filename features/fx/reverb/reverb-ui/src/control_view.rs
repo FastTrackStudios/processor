@@ -354,8 +354,8 @@ pub fn App() -> Element {
                         on_browse: move |()| preset_view.toggle(),
                         on_apply: {
                             let handles = handles.clone();
-                            move |p: Vec<(String, f64)>| {
-                                crate::preset_view::apply(&p, &handles, preset_note);
+                            move |p: preset_browser::Preset| {
+                                crate::preset_view::apply(&p.parameters, &handles, preset_note);
                             }
                         },
                     }

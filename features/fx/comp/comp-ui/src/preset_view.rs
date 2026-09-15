@@ -103,7 +103,9 @@ pub fn CompPresetSidecar(
                 ink: ink,
                 accent: accent,
                 title: "Comp Presets".to_string(),
-                on_apply: move |p: Vec<(String, f64)>| apply(&p, &handles, note),
+                // Numbers only: neither of these has anything a preset would
+                // carry as text, so the string half of a preset is ignored.
+                on_apply: move |p: preset_browser::Preset| apply(&p.parameters, &handles, note),
             }
         }
     }

@@ -653,8 +653,9 @@ fn AppShell() -> Element {
                 on_browse: move |()| preset_open.toggle(),
                 on_apply: {
                     let handles = preset_handles.clone();
-                    move |p: Vec<(String, f64)>| {
-                        crate::preset_view::apply(&p, &handles, preset_note);
+                    let params = params.clone();
+                    move |p: preset_browser::Preset| {
+                        crate::preset_view::apply(&p, &params, &handles, preset_note);
                     }
                 },
             }

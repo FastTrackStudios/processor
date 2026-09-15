@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Preset;
 
@@ -55,7 +55,7 @@ impl LoadReport {
 
 // ── The on-disk shape written by `reverb_match --save-dir` ─────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct SavedPreset {
     source: SavedSource,
     target: SavedTarget,
@@ -63,7 +63,7 @@ struct SavedPreset {
     measurement: Option<SavedMeasurement>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct SavedSource {
     preset: String,
     #[serde(default)]
@@ -72,19 +72,30 @@ struct SavedSource {
     mode: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct SavedTarget {
     #[serde(default)]
     parameters: Vec<SavedParam>,
+    /// Added after the 171 Pro-Q banks were written, which is why it is
+    /// `default` on both ends: an old file has no key and reads as empty, and
+    /// a reader that predates the key ignores it and still gets the curve.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    text_parameters: Vec<SavedTextParam>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct SavedParam {
     name: String,
     value: f64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
+struct SavedTextParam {
+    name: String,
+    value: String,
+}
+
+#[derive(Deserialize, Serialize)]
 struct SavedMeasurement {
     #[serde(default)]
     decay_passed: Option<bool>,
@@ -124,9 +135,67 @@ impl SavedPreset {
                 .into_iter()
                 .map(|p| (p.name, p.value))
                 .collect(),
+            text_parameters: self
+                .target
+                .text_parameters
+                .into_iter()
+                .map(|p| (p.name, p.value))
+                .collect(),
             match_error,
         }
     }
+}
+
+impl SavedPreset {
+    fn from_preset(p: &Preset) -> Self {
+        Self {
+            source: SavedSource {
+                preset: p.name.clone(),
+                plugin: p.origin.clone(),
+                mode: p.category.clone(),
+            },
+            target: SavedTarget {
+                parameters: p
+                    .parameters
+                    .iter()
+                    .map(|(name, value)| SavedParam {
+                        name: name.clone(),
+                        value: *value,
+                    })
+                    .collect(),
+                text_parameters: p
+                    .text_parameters
+                    .iter()
+                    .map(|(name, value)| SavedTextParam {
+                        name: name.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            },
+            measurement: p.match_error.map(|e| SavedMeasurement {
+                decay_passed: None,
+                worst_band_ratio_error: Some(e),
+            }),
+        }
+    }
+}
+
+/// Write one preset to a file, in the same shape [`load_directory`] reads.
+///
+/// Carries the fields the file format has: the name, its grouping, where it
+/// came from, the numeric parameters and — new — the string ones. `author` and
+/// `tags` are browser-side derivations rather than fields of the file (tags
+/// are computed from the measurement on load), so they are not written and do
+/// not come back.
+///
+/// # Errors
+///
+/// Returns an error if the preset cannot be serialized or the file cannot be
+/// written.
+pub fn save_preset(path: impl AsRef<Path>, preset: &Preset) -> std::io::Result<()> {
+    let saved = SavedPreset::from_preset(preset);
+    let json = serde_json::to_string_pretty(&saved)?;
+    std::fs::write(path, json)
 }
 
 /// Load every `*.json` preset in a directory (non-recursive).
@@ -251,6 +320,124 @@ mod tests {
         assert!(report.presets[0].tags.is_empty());
         assert_eq!(report.presets[0].match_error, None);
         assert!(report.presets[0].parameters.is_empty());
+    }
+
+    #[test]
+    fn a_preset_can_carry_text_parameters_alongside_the_numbers() {
+        // The EQ's per-band `name`/`notes` are user-facing strings, and a
+        // preset that recalls the curve but not the labels cannot say "this
+        // band is the Overheads honk".
+        let dir = temp_dir("text");
+        write(
+            &dir,
+            "named.json",
+            r#"{
+              "source": { "preset": "Named" },
+              "target": {
+                "parameters": [ { "name": "b1_freq", "value": 800.0 } ],
+                "text_parameters": [
+                  { "name": "b1_name", "value": "Overheads honk" },
+                  { "name": "b1_notes", "value": "pulls the 800 ring out of the OHs" }
+                ]
+              }
+            }"#,
+        );
+        let report = load_directory(&dir).unwrap();
+        let p = &report.presets[0];
+        assert_eq!(p.parameters, vec![("b1_freq".to_string(), 800.0)]);
+        assert_eq!(
+            p.text_parameters,
+            vec![
+                ("b1_name".to_string(), "Overheads honk".to_string()),
+                (
+                    "b1_notes".to_string(),
+                    "pulls the 800 ring out of the OHs".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_saved_preset_round_trips_through_the_directory() {
+        let dir = temp_dir("roundtrip");
+        let written = Preset {
+            name: "Overheads".to_string(),
+            category: Some("Drums".to_string()),
+            // `author` and `tags` are not fields of the file — see
+            // `save_preset` — so a round trip cannot be asserted on them.
+            author: None,
+            tags: Vec::new(),
+            origin: Some("FTS-EQ".to_string()),
+            parameters: vec![("b1_freq".to_string(), 800.5), ("b1_gain".to_string(), -3.0)],
+            text_parameters: vec![
+                ("b1_name".to_string(), "Overheads honk".to_string()),
+                ("b1_notes".to_string(), "800 ring".to_string()),
+            ],
+            match_error: None,
+        };
+        save_preset(dir.join("overheads.json"), &written).unwrap();
+
+        let report = load_directory(&dir).unwrap();
+        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+        assert_eq!(report.presets, vec![written]);
+    }
+
+    #[test]
+    fn a_name_with_unicode_and_a_very_long_note_survive_a_round_trip() {
+        let dir = temp_dir("unicode");
+        // JSON is UTF-8 and serde_json escapes what it must; the point of the
+        // test is that nothing in this crate truncates, lossily converts or
+        // re-encodes a label a user actually typed.
+        let name = "Übergänge — 高域 “air” \u{1f941}\ttab";
+        let note = "why: ".to_string() + &"the overheads ring at 800 Hz. ".repeat(400);
+        let written = Preset {
+            name: "Long".to_string(),
+            text_parameters: vec![
+                ("b1_name".to_string(), name.to_string()),
+                ("b1_notes".to_string(), note.clone()),
+            ],
+            ..Preset::default()
+        };
+        save_preset(dir.join("long.json"), &written).unwrap();
+
+        let read_back = load_directory(&dir).unwrap().presets.remove(0);
+        assert_eq!(read_back.text_parameters[0].1, name);
+        assert_eq!(read_back.text_parameters[1].1, note);
+        assert!(note.len() > 10_000, "the note is long enough to be a test");
+    }
+
+    #[test]
+    fn a_preset_with_no_names_is_written_without_the_key_at_all() {
+        // Backward compatible the other way: a reader that predates
+        // `text_parameters` must not meet an empty array it has no field for,
+        // and a bank written by this version must diff cleanly against one
+        // written by the last.
+        let dir = temp_dir("nokey");
+        save_preset(
+            dir.join("bare.json"),
+            &Preset {
+                name: "Bare".to_string(),
+                parameters: vec![("b1_freq".to_string(), 100.0)],
+                ..Preset::default()
+            },
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(dir.join("bare.json")).unwrap();
+        assert!(
+            !text.contains("text_parameters"),
+            "no names means no key: {text}"
+        );
+    }
+
+    #[test]
+    fn a_legacy_nameless_preset_loads_with_no_text_parameters() {
+        // The 171 translated Pro-Q 4 banks on disk have no `text_parameters`
+        // key. They must keep loading exactly as they did.
+        let dir = temp_dir("legacy");
+        write(&dir, "legacy.json", ONE);
+        let p = &load_directory(&dir).unwrap().presets[0];
+        assert_eq!(p.parameters.len(), 2);
+        assert!(p.text_parameters.is_empty());
     }
 
     #[test]
