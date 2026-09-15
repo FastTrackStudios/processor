@@ -175,3 +175,80 @@ impl FtsEq {
         }
     }
 }
+
+#[cfg(test)]
+mod attack_law_tests {
+    //! Pins the percent-to-milliseconds law above against the real engine
+    //! code path, not a re-derivation of the formula — so a change to the
+    //! constants or the shape of the curve here fails a test instead of
+    //! silently retuning every preset that names an attack percentage.
+    //!
+    //! The four cases are the Overheads preset's dynamic bands (FTS EQ issue
+    //! #2 in `processor`): Clank (300 Hz / 65 %), Snare Ring (450 Hz / 30 %),
+    //! Lowest Cymbal (3.5 kHz / 95 %) and Highest Cymbal (6.5 kHz / 95 %).
+    //! Spectral mode (bands 4 and 5) does not read this attack today — the
+    //! spectral engine's per-region mask has no attack field — so this drives
+    //! the same law through an ordinary (non-spectral) dynamic band at the
+    //! same frequency and percentage; the mapping from (freq, pct) to ms is
+    //! the same law either way.
+    use crate::engine::{BandConfig, BandDynamics, FtsEq};
+
+    const SAMPLE_RATE: f64 = 48_000.0;
+
+    /// Drive one band dynamic (non-spectral, non-zero range) at `freq_hz` with
+    /// `attack_pct`, and read back the attack time the real routing law
+    /// produced.
+    fn attack_ms_for(freq_hz: f64, attack_pct: f64) -> f64 {
+        let mut eq = FtsEq::new(SAMPLE_RATE);
+        eq.set_band(
+            0,
+            BandConfig {
+                used: true,
+                enabled: true,
+                freq_hz,
+                gain_db: 0.0,
+                q: 1.0,
+                shape: 0, // Bell
+                slope: 2.0,
+                ..BandConfig::default()
+            },
+        );
+        eq.set_band_dynamics(
+            0,
+            BandDynamics {
+                range_db: -6.0, // pulled off rest so the band goes dynamic
+                threshold_db: -18.0,
+                attack_pct,
+                ..BandDynamics::default()
+            },
+        );
+        eq.dyn_bands[0].detector.params.attack_ms
+    }
+
+    #[test]
+    fn clank_300hz_65pct_pins_to_the_law() {
+        let ms = attack_ms_for(300.0, 65.0);
+        assert!(
+            (ms - 1.990_8).abs() < 0.001,
+            "expected ~1.9908 ms, got {ms}"
+        );
+    }
+
+    #[test]
+    fn snare_ring_450hz_30pct_pins_to_the_law() {
+        let ms = attack_ms_for(450.0, 30.0);
+        assert!((ms - 0.382_0).abs() < 0.001, "expected ~0.3820 ms, got {ms}");
+    }
+
+    #[test]
+    fn lowest_cymbal_3500hz_95pct_pins_to_the_law() {
+        let ms = attack_ms_for(3500.0, 95.0);
+        assert!((ms - 3.565_2).abs() < 0.001, "expected ~3.5652 ms, got {ms}");
+    }
+
+    #[test]
+    fn highest_cymbal_6500hz_95pct_pins_to_the_law() {
+        let ms = attack_ms_for(6500.0, 95.0);
+        assert!((ms - 3.419_2).abs() < 0.001, "expected ~3.4192 ms, got {ms}");
+    }
+}

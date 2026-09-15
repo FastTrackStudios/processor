@@ -53,6 +53,7 @@ fn preset(name: &str, category: &str, decay: f64, err: Option<f64>) -> Preset {
         author: None,
         tags: vec![],
         origin: Some("VintageVerb".into()),
+        description: None,
         parameters: vec![("decay_time".into(), decay)],
         text_parameters: vec![],
         match_error: err,

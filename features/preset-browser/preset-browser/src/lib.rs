@@ -45,6 +45,14 @@ pub struct Preset {
     /// `VintageVerb` / Plates").
     #[serde(default)]
     pub origin: Option<String>,
+    /// Free-form prose about the preset as a whole — how to dial it in, what
+    /// order to touch its controls, what "done" sounds like. Not shown
+    /// anywhere yet (no browser surface renders it), but a real field rather
+    /// than an inert JSON key: `save_preset` round-trips it, so a preset
+    /// authored with one and later re-saved through the app keeps it instead
+    /// of silently losing it on the first save that isn't a hand-edited file.
+    #[serde(default)]
+    pub description: Option<String>,
     /// The parameter set to apply, by name.
     #[serde(default)]
     pub parameters: Vec<(String, f64)>,
@@ -342,6 +350,7 @@ mod tests {
             name: name.into(),
             category: Some(category.into()),
             author: None,
+            description: None,
             tags: tags.iter().map(std::string::ToString::to_string).collect(),
             origin: None,
             parameters: vec![("decay_time".into(), 2.0)],
