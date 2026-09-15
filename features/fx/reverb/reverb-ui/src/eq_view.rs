@@ -157,7 +157,7 @@ pub fn ReverbEqView(mode_is_decay: bool, frame: u64) -> Element {
                     q: b.q.value(),
                     shape: post_index_to_shape(b.shape.value()),
                     slope: None,
-                    solo: false,
+                    focus: false,
                     stereo_mode: Default::default(),
                     name: format!("P{}", i + 1),
                 }
@@ -173,7 +173,7 @@ pub fn ReverbEqView(mode_is_decay: bool, frame: u64) -> Element {
                     q: b.q.value(),
                     shape: decay_index_to_shape(b.shape.value()),
                     slope: None,
-                    solo: false,
+                    focus: false,
                     stereo_mode: Default::default(),
                     name: format!("D{}", i + 1),
                 }

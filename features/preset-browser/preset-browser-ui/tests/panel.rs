@@ -34,8 +34,8 @@ macro_rules! recording_harness {
                 preset_browser_ui::PresetBrowserPanel {
                     browser,
                     title: "Reverb Presets".to_string(),
-                    on_apply: move |params: Vec<(String, f64)>| {
-                        $log().lock().unwrap().push(params);
+                    on_apply: move |p: preset_browser::Preset| {
+                        $log().lock().unwrap().push(p.parameters);
                     },
                 }
             }
@@ -54,6 +54,7 @@ fn preset(name: &str, category: &str, decay: f64, err: Option<f64>) -> Preset {
         tags: vec![],
         origin: Some("VintageVerb".into()),
         parameters: vec![("decay_time".into(), decay)],
+        text_parameters: vec![],
         match_error: err,
     }
 }
@@ -74,7 +75,7 @@ fn Harness() -> Element {
         preset_browser_ui::PresetBrowserPanel {
             browser,
             title: "Reverb Presets".to_string(),
-            on_apply: move |_: Vec<(String, f64)>| {},
+            on_apply: move |_: preset_browser::Preset| {},
         }
     }
 }
@@ -207,7 +208,7 @@ fn BarDisplayHarness() -> Element {
     rsx! {
         preset_browser_ui::PresetBar {
             browser,
-            on_apply: move |_: Vec<(String, f64)>| {},
+            on_apply: move |_: preset_browser::Preset| {},
             on_browse: move |()| {},
         }
     }
@@ -225,8 +226,8 @@ fn BarHarness() -> Element {
     rsx! {
         preset_browser_ui::PresetBar {
             browser,
-            on_apply: move |params: Vec<(String, f64)>| {
-                bar_log().lock().unwrap().push(params);
+            on_apply: move |p: preset_browser::Preset| {
+                bar_log().lock().unwrap().push(p.parameters);
             },
             on_browse: move |()| {},
         }

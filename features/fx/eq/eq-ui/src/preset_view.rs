@@ -13,10 +13,10 @@ use dioxus::prelude::*;
 use fts_audio_ui::ParamHandle;
 use nice_plug::prelude::Param;
 use nice_plug_dioxus::prelude::ParamContext;
-use preset_browser::PresetBrowser;
+use preset_browser::{Preset, PresetBrowser};
 
 use crate::param_adapter::param_handle;
-use crate::params::{FtsEqParams, NUM_BANDS};
+use crate::params::{EqUiState, FtsEqParams, NUM_BANDS};
 
 /// Where the EQ's presets live.
 #[must_use]
@@ -112,6 +112,127 @@ const BAND_FIELDS: [&str; 18] = [
     "dyn_side_hi",
 ];
 
+/// The per-band string fields a preset can name.
+///
+/// Deliberately the same `b{n}_` namespace as [`BAND_FIELDS`]: a band's label
+/// is addressed the way its frequency is, so a library file reads as one set
+/// of per-band settings rather than two.
+///
+/// They are not in [`BAND_FIELDS`] because they are not host parameters:
+/// `name` and `notes` are `#[persist]` strings with no `ParamHandle`, so the
+/// host never sees them, nothing automates them, and the repo's "every
+/// parameter must parse the string it prints" rule has nothing to check. That
+/// is also exactly why a preset could never carry them.
+const BAND_TEXT_FIELDS: [&str; 2] = ["name", "notes"];
+
+/// The name a preset addresses one band's field by. One-based, like every
+/// other `b{n}_` key, and built here rather than at each use so capture and
+/// recall cannot drift into naming the same thing differently.
+fn band_key(index: usize, field: &str) -> String {
+    format!("b{}_{field}", index + 1)
+}
+
+/// The lock behind one band's string field, or `None` for a band or field this
+/// build does not have.
+///
+/// One lookup for both directions, so reading and writing cannot disagree
+/// about which field is which — and adding a third label is one arm here plus
+/// one entry in [`BAND_TEXT_FIELDS`], not an edit in three places.
+///
+/// A miss is silent for the same reason
+/// [`preset_browser_ui::apply_to_handles`] reports rather than panics: a
+/// library outlives a build, and a preset from a version with more bands must
+/// cost only the settings it names.
+fn band_text_slot<'a>(
+    params: &'a FtsEqParams,
+    index: usize,
+    field: &str,
+) -> Option<&'a parking_lot::RwLock<String>> {
+    let band = params.bands.get(index)?;
+    match field {
+        "name" => Some(&band.name),
+        "notes" => Some(&band.notes),
+        _ => None,
+    }
+}
+
+/// The `b{n}_name` / `b{n}_notes` a preset should carry for this editor state.
+///
+/// What is captured is what *differs from the shipped defaults*, not merely
+/// what is non-empty. Bands 1 and 2 are born labelled "Low Shelf" and
+/// "High Shelf", so "non-empty" would put a text block in every preset ever
+/// saved — and because a text block is authoritative (see
+/// [`apply_band_text`]), every one of them would clear the user's labels on
+/// bands 3-24 on load. The constraint is that loading a preset nobody
+/// labelled costs nobody their labels, and only measuring against the
+/// defaults gets there: an EQ nobody has labelled really does save with no
+/// text block at all.
+#[must_use]
+pub fn capture_band_text(params: &FtsEqParams) -> Vec<(String, String)> {
+    // Asking the type for its own defaults rather than restating them here
+    // keeps this right when they change. Save-time only, never the hot path.
+    let defaults = FtsEqParams::default();
+    let mut text = Vec::new();
+    for i in 0..NUM_BANDS {
+        for field in BAND_TEXT_FIELDS {
+            let Some(slot) = band_text_slot(params, i, field) else {
+                continue;
+            };
+            let value = slot.read().clone();
+            if value != default_band_text(&defaults, i, field) {
+                text.push((band_key(i, field), value));
+            }
+        }
+    }
+    text
+}
+
+/// What one band's label reads as on a freshly constructed EQ.
+fn default_band_text(defaults: &FtsEqParams, index: usize, field: &str) -> String {
+    band_text_slot(defaults, index, field).map_or_else(String::new, |slot| slot.read().clone())
+}
+
+/// Recall the per-band labels a preset carries.
+///
+/// **An empty text block leaves every label alone.** The 171 translated
+/// Pro-Q 4 presets carry none, and they are the bulk of the library: if
+/// loading one cleared the labels, browsing the factory bank would destroy
+/// work the user had done by hand, and there would be no way to audition a
+/// curve against your own annotations.
+///
+/// **A non-empty text block is authoritative for every band.** Once a preset
+/// says what the bands are, a band it does not name is a band it says is
+/// unlabelled — leaving the previous preset's label there would attach
+/// "Overheads honk" to a curve that is no longer the overheads honk, which is
+/// worse than no label at all.
+///
+/// Unlabelled means *the shipped default*, not blank, for the same reason
+/// [`capture_band_text`] measures against the defaults: the two are inverses,
+/// so capturing an EQ and recalling it elsewhere reproduces it exactly —
+/// bands 1 and 2 reading "Low Shelf" / "High Shelf" again included.
+pub fn apply_band_text(params: &FtsEqParams, text: &[(String, String)]) {
+    if text.is_empty() {
+        return;
+    }
+    let named: std::collections::HashMap<&str, &str> = text
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    let defaults = FtsEqParams::default();
+    for i in 0..NUM_BANDS {
+        for field in BAND_TEXT_FIELDS {
+            let Some(slot) = band_text_slot(params, i, field) else {
+                continue;
+            };
+            let key = band_key(i, field);
+            *slot.write() = named.get(key.as_str()).map_or_else(
+                || default_band_text(&defaults, i, field),
+                |value| (*value).to_string(),
+            );
+        }
+    }
+}
+
 /// The names [`preset_handles`] builds, without needing a live editor.
 ///
 /// The handle map itself can only be built inside a mounted editor (it needs a
@@ -132,14 +253,19 @@ pub fn preset_handle_names() -> Vec<String> {
     names
 }
 
-/// Write a preset to the plugin's parameters, and report anything that did not
-/// land.
+/// Write a preset to the plugin, and report anything that did not land.
+///
+/// Two halves, because a preset has two: the numeric parameters go through
+/// the `ParamHandle` map the host can see, and the per-band labels go straight
+/// to the persisted strings, which have no handle.
 pub fn apply(
-    values: &[(String, f64)],
+    preset: &Preset,
+    params: &FtsEqParams,
     handles: &HashMap<String, ParamHandle>,
     mut note: Signal<String>,
 ) {
-    let (applied, unmatched) = preset_browser_ui::apply_to_handles(values, handles);
+    apply_band_text(params, &preset.text_parameters);
+    let (applied, unmatched) = preset_browser_ui::apply_to_handles(&preset.parameters, handles);
     if unmatched.is_empty() {
         note.set(String::new());
     } else {
@@ -160,6 +286,16 @@ pub fn EqPresetSidecar(
     accent: String,
 ) -> Element {
     let message = note.read().clone();
+    // The labels are not parameters, so landing them needs the param struct
+    // itself rather than the handle map. It is already in context — the
+    // editor put it there — so it does not have to become a prop, which it
+    // could not anyway: `Props` wants `PartialEq` and `FtsEqParams` is a tree
+    // of atomics and locks.
+    let params = use_context::<nice_plug_dioxus::SharedState>()
+        .get::<EqUiState>()
+        .expect("EqUiState missing")
+        .params
+        .clone();
 
     rsx! {
         div {
@@ -178,7 +314,7 @@ pub fn EqPresetSidecar(
                 ink: ink,
                 accent: accent,
                 title: "EQ Presets".to_string(),
-                on_apply: move |p: Vec<(String, f64)>| apply(&p, &handles, note),
+                on_apply: move |p: Preset| apply(&p, &params, &handles, note),
             }
         }
     }

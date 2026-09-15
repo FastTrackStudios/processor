@@ -110,3 +110,150 @@ fn what_the_plugin_cannot_recall_is_reported_rather_than_dropped() {
     assert!(!names.is_empty(), "the plugin must recall the static curve");
     assert_eq!(params.bands.len(), eq_ui::params::NUM_BANDS);
 }
+
+// ── Per-band names and notes ───────────────────────────────────────────────
+//
+// A band's `name`/`notes` are persisted strings, not parameters, so they were
+// invisible to a preset: the library format only carried numbers. These cover
+// the two halves — what a save captures, and what a load does with it.
+
+#[test]
+fn an_eq_nobody_labelled_saves_with_no_text_block_at_all() {
+    // Bands 1 and 2 ship labelled "Low Shelf" / "High Shelf". If those counted
+    // as labels, every preset ever saved would carry a text block — and since
+    // a text block is authoritative, loading any of them would clear the
+    // user's labels on bands 3-24. This is the test that keeps the whole
+    // backward-compatibility story honest.
+    let params = eq_ui::params::FtsEqParams::default();
+    assert!(
+        eq_ui::preset_view::capture_band_text(&params).is_empty(),
+        "shipped defaults are not labels",
+    );
+}
+
+#[test]
+fn an_unnamed_band_comes_back_to_its_shipped_label_not_a_blank() {
+    // Capture and recall are inverses: an EQ saved elsewhere must reproduce
+    // here exactly, bands 1 and 2 included.
+    let params = eq_ui::params::FtsEqParams::default();
+    *params.bands[0].name.write() = "wiped by the preset".to_string();
+    *params.bands[1].name.write() = "so is this".to_string();
+
+    eq_ui::preset_view::apply_band_text(
+        &params,
+        &[("b3_name".to_string(), "Overheads honk".to_string())],
+    );
+
+    assert_eq!(*params.bands[2].name.read(), "Overheads honk");
+    assert_eq!(*params.bands[0].name.read(), "Low Shelf");
+    assert_eq!(*params.bands[1].name.read(), "High Shelf");
+}
+
+#[test]
+fn saving_captures_the_names_and_notes_a_user_typed() {
+    let params = eq_ui::params::FtsEqParams::default();
+    *params.bands[0].name.write() = "Overheads honk".to_string();
+    *params.bands[0].notes.write() = "800 Hz ring".to_string();
+    *params.bands[3].name.write() = "Air".to_string();
+
+    let text = eq_ui::preset_view::capture_band_text(&params);
+
+    // Band 2 is still at its shipped "High Shelf" and so is not a label the
+    // user gave; band 1's default was overwritten and is.
+    assert_eq!(
+        text,
+        vec![
+            ("b1_name".to_string(), "Overheads honk".to_string()),
+            ("b1_notes".to_string(), "800 Hz ring".to_string()),
+            ("b4_name".to_string(), "Air".to_string()),
+        ],
+        "every label that differs from the default, by engine-side name",
+    );
+}
+
+#[test]
+fn loading_a_preset_that_carries_names_sets_them() {
+    let params = eq_ui::params::FtsEqParams::default();
+    // Band 2 ships as "High Shelf"; stand a stale user label on top of it.
+    *params.bands[1].name.write() = "stale".to_string();
+
+    eq_ui::preset_view::apply_band_text(
+        &params,
+        &[
+            ("b1_name".to_string(), "Overheads honk".to_string()),
+            ("b1_notes".to_string(), "800 Hz ring".to_string()),
+        ],
+    );
+
+    assert_eq!(*params.bands[0].name.read(), "Overheads honk");
+    assert_eq!(*params.bands[0].notes.read(), "800 Hz ring");
+    // A preset that carries names is authoritative about all of them:
+    // otherwise band 2 keeps a label from whatever was loaded before, which
+    // now describes a curve that is no longer there. Unlabelled means the
+    // shipped default, which for band 2 is "High Shelf".
+    assert_eq!(*params.bands[1].name.read(), "High Shelf");
+}
+
+#[test]
+fn loading_a_legacy_nameless_preset_leaves_the_users_labels_alone() {
+    // The 171 translated Pro-Q 4 presets carry no names. Loading one must
+    // recall the curve without wiping labels the user typed — clearing them
+    // would make the whole existing library destructive to work.
+    let params = eq_ui::params::FtsEqParams::default();
+    *params.bands[1].name.write() = "Boxiness".to_string();
+    *params.bands[1].notes.write() = "mine, keep it".to_string();
+
+    eq_ui::preset_view::apply_band_text(&params, &[]);
+
+    assert_eq!(*params.bands[1].name.read(), "Boxiness");
+    assert_eq!(*params.bands[1].notes.read(), "mine, keep it");
+}
+
+#[test]
+fn a_name_the_plugin_has_no_band_for_is_ignored_rather_than_panicking() {
+    // A library outlives a build, exactly as it does for numeric parameters.
+    let params = eq_ui::params::FtsEqParams::default();
+    eq_ui::preset_view::apply_band_text(
+        &params,
+        &[
+            ("b99_name".to_string(), "from a bigger EQ".to_string()),
+            ("b0_name".to_string(), "one-based, so not a band".to_string()),
+            ("nonsense".to_string(), "not a band field".to_string()),
+            ("b2_name".to_string(), "Boxiness".to_string()),
+        ],
+    );
+    assert_eq!(*params.bands[1].name.read(), "Boxiness");
+}
+
+#[test]
+fn a_unicode_name_and_a_very_long_note_survive_capture_and_recall() {
+    let name = "Übergänge — 高域 “air”";
+    let note = "why: ".to_string() + &"the overheads ring at 800 Hz. ".repeat(400);
+
+    let source = eq_ui::params::FtsEqParams::default();
+    *source.bands[0].name.write() = name.to_string();
+    *source.bands[0].notes.write() = note.clone();
+
+    let destination = eq_ui::params::FtsEqParams::default();
+    eq_ui::preset_view::apply_band_text(&destination, &capture_through_json(&source));
+
+    assert_eq!(*destination.bands[0].name.read(), name);
+    assert_eq!(*destination.bands[0].notes.read(), note);
+}
+
+/// Capture, write to the library format, read it back — the whole path a
+/// preset actually takes, rather than handing the strings straight over.
+fn capture_through_json(params: &eq_ui::params::FtsEqParams) -> Vec<(String, String)> {
+    let dir = std::env::temp_dir().join(format!("eq-preset-names-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let preset = preset_browser::Preset {
+        name: "Captured".to_string(),
+        text_parameters: eq_ui::preset_view::capture_band_text(params),
+        ..preset_browser::Preset::default()
+    };
+    preset_browser::save_preset(dir.join("captured.json"), &preset).unwrap();
+    let mut report = preset_browser::load_directory(&dir).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    report.presets.remove(0).text_parameters
+}
