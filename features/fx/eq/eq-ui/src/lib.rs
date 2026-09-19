@@ -20,13 +20,19 @@ pub mod eq_graph_interaction;
 pub mod eq_graph_model;
 pub mod eq_graph_response;
 pub mod eq_graph_svg;
+/// Dynamic + spectral EQ: the ring, the badge, and the band panel.
+///
+/// Portable, and gated behind `native` until 2026-09 only because it arrived
+/// alongside the vello editor. It needs nothing that editor needs — dioxus
+/// and `fts_audio_ui`'s `Knob`/`ParamHandle`, both unconditional deps — and a
+/// detached remote has the same eleven per-band parameters to reach as the
+/// plugin does. Keeping it native-only meant the wire-driven surfaces could
+/// draw a band's frequency and gain but never its dynamics.
+pub mod dynamics;
 
 // ── The Blitz/vello plugin editor ──
 #[cfg(feature = "native")]
 pub mod control_view;
-/// Dynamic + spectral EQ: the ring, the badge, and the band panel.
-#[cfg(feature = "native")]
-pub mod dynamics;
 #[cfg(feature = "native")]
 pub mod eq_graph;
 #[cfg(feature = "native")]
