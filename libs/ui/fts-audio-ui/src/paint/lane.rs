@@ -65,12 +65,16 @@ pub fn beats(scene: &mut Scene, w: f64, h: f64, window: f64, beat: f64, lit: boo
         }
         let x = t / window * w;
         let bar = i % 4 == 0;
+        // Weighted to be read against a LIT panel. The grid is the ruler the
+        // taps are measured against — "this repeat is on the beat" is the
+        // whole message — and at 0.13 a beat line was fainter than the tap
+        // sitting on it, which loses the relationship the picture exists for.
         let alpha = if !lit {
-            0.06
+            0.07
         } else if bar {
-            0.30
+            0.46
         } else {
-            0.13
+            0.22
         };
         scene.stroke(
             &Stroke::new(if bar { 1.5 } else { 1.0 }),

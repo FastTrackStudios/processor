@@ -122,10 +122,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // falls with the envelope like everything else.
         let y = mix(-0.8, 0.8, hash11(cell + 17.0));
         let d = length(vec2<f32>((fract(k * n) - 0.5) * (u.frame.x / n), (uv.y - mid) * 2.0 - y) * vec2<f32>(1.0, u.frame.y * 0.25));
-        let r = 2.0 + 5.0 * (1.0 - density) + 3.0 * seed;
-        let spark = exp(-(d * d) / (r * r)) * env * (0.45 + 0.55 * seed);
-        rgb += hot * spark;
-        alpha += spark * 0.7;
+        let r = max(u.frame.x * 0.0016, 1.6) + 4.0 * (1.0 - density) + 2.5 * seed;
+        // Early reflections thin out towards the wash rather than stopping at
+        // a hard line — the transition from countable to uncountable IS the
+        // density, and an edge would draw a boundary the ear does not hear.
+        let into_wash = 1.0 - smoothstep(0.55, 1.0, k);
+        let spark = exp(-(d * d) / (r * r)) * env * (0.45 + 0.55 * seed) * into_wash;
+        rgb += hot * spark * 1.35;
+        alpha += spark * 0.85;
     }
 
     // ── The wash ────────────────────────────────────────────────────────
@@ -134,11 +138,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // are drawn as a moving grain instead. This is the only part that moves,
     // and it moves because a tail is not a still object.
     if (lit && at >= predelay) {
-        let grain = sin(px.x * 0.13 + t * 0.9 + hash11(floor(px.y * 0.25)) * TAU)
-            * sin(px.y * 0.21 - t * 0.6);
-        let wash = max(grain, 0.0) * env * inside * 0.18 * (0.35 + 0.65 * density);
-        rgb += mix(tint, hot, 0.4) * wash;
-        alpha += wash * 0.5;
+        // Two drifting fields rather than a product of two pixel-rate sines.
+        // The sines striped the panel vertically at any real resolution, which
+        // reads as static sitting on top of the reverb rather than as the
+        // reverb itself — and static does not decay, so it fought the one
+        // thing the picture is saying.
+        //
+        // Slow, wide, and crossing at an angle: close to still where the tail
+        // is quiet, alive where it is not.
+        let q = vec2<f32>(uv.x * 7.0, (uv.y - mid) * 5.0);
+        let a = sin(q.x * 1.7 - t * 0.55 + q.y * 0.9);
+        let b = sin(q.x * 1.1 + t * 0.37 - q.y * 1.6);
+        let field = (a * b) * 0.5 + 0.5;
+        // Density is how BROKEN the wash is: a sparse reverb still has
+        // separable reflections this far out, a dense one is smooth.
+        let broken = mix(smoothstep(0.35, 0.95, field), field, density);
+        let wash = broken * env * inside * 0.30 * (0.4 + 0.6 * density);
+        rgb += mix(tint, hot, 0.35) * wash;
+        alpha += wash * 0.55;
     }
 
     // ── The arrival ─────────────────────────────────────────────────────

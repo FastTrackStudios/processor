@@ -55,17 +55,39 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var field = 0.0;
 
     if (engine < CHORUS + 0.5) {
-        // Three detuned voices beating against each other. The beat
-        // frequency IS the chorus.
+        // Three voices weaving apart and back together.
+        //
+        // Drawn as the voices themselves rather than as their interference
+        // pattern. Summing three detuned sines is the honest maths and a bad
+        // picture: the beat envelope is slow by construction, so it is one
+        // bright lobe in the middle of the lane with two thirds of the panel
+        // empty either side, and nothing about it says "three voices".
+        //
+        // What a chorus IS, to look at, is copies of one line pulling apart
+        // and closing again. Each voice is a curve; where they converge the
+        // light piles up, which is the thickening you hear.
         var v = 0.0;
         for (var i = 0; i < 3; i = i + 1) {
-            let detune = (f32(i) - 1.0) * depth * 0.35;
-            let k = 26.0 + detune * 8.0;
-            v = v + sin((uv.x * k) * TAU + phase * TAU + f32(i) * 2.1);
+            let which = f32(i) - 1.0;
+            // How far this voice has wandered from the dry one, breathing
+            // with the LFO and travelling along the panel so the weave moves
+            // rather than standing still.
+            let wander = sin(uv.x * TAU * 1.6 - phase * TAU + which * 1.9);
+            let spread = (0.06 + depth * 0.30) * which * wander;
+            let y = 0.5 + spread;
+            // A soft line, wider for the outer voices so the centre stays
+            // the one that reads as the signal.
+            // Thick enough to be the brightest thing on the panel. At
+            // 0.012 a voice was under two pixels on a rig lane, which the
+            // grain simply drowned.
+            let thick = 0.055 + 0.030 * abs(which);
+            let d = (uv.y - y) / thick;
+            // A core with a wider halo around it, so the voices read as
+            // light with body rather than as hairlines.
+            v = v + exp(-d * d) + exp(-abs(d) * 0.8) * 0.45;
         }
-        field = v / 3.0;
-        // Bands where the voices agree, which is what you hear thicken.
-        field = field * (1.0 - mid * 0.7);
+        // Where two voices cross, the light adds — which is the whole point.
+        field = clamp(v * 0.62, 0.0, 1.6);
     } else if (engine < FLANGER + 0.5) {
         // A comb whose teeth slide: cos of a frequency that sweeps.
         let sweep = (lfo * 0.5 + 0.5) * depth;
@@ -105,7 +127,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Grain, so a flat region reads as material rather than as a fill.
-    let grain = (noise(uv * vec2<f32>(u.frame.x, u.frame.y) * 0.08 + t * 0.3) - 0.5) * 0.10;
+    //
+    // Sampled on SQUARE cells. Scaling uv by the panel's pixel size gave
+    // cells as wide as the panel and as tall — 35 across and 12 down on a
+    // rig lane — so the grain came out as vertical streaks, and on a quiet
+    // engine those streaks were the brightest thing on the panel. Square
+    // cells read as material; rectangular ones read as a pattern the effect
+    // is not making.
+    let cell = max(u.frame.x, u.frame.y) * 0.05;
+    let grain = (noise(uv * cell + t * 0.3) - 0.5) * 0.10;
     var lit = clamp(abs(field) + grain, 0.0, 1.5);
 
     // A bypassed engine keeps its shape and loses its light — "off" and

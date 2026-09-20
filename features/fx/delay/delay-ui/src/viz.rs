@@ -453,6 +453,30 @@ pub fn DelayViz(
     }
 }
 
+/// How many seconds of lane the taps actually need.
+///
+/// The caller offers a ceiling — two bars, say — but a delay's tail is as long
+/// as its feedback makes it, and at 0.28 that is two repeats. Drawing two
+/// repeats across two bars puts everything in the first eighth of the panel
+/// and leaves seven eighths of empty lane, which reads as a delay that has
+/// stopped working rather than one that is short.
+///
+/// Rounded UP to a whole beat, never down: the grid is the thing the taps are
+/// read against, and a window ending mid-beat puts a part-width gap at the
+/// right-hand edge that looks like a missing repeat.
+fn window_for(taps: &[Tap], ceiling: f32, beat: f32) -> f32 {
+    let last = taps.iter().map(|t| t.at).fold(0.0f32, f32::max);
+    if beat <= 0.0 {
+        // Free-running: no grid to align to, so show the tail and a margin.
+        return (last * 1.15).clamp(0.05, ceiling.max(0.05));
+    }
+    // A beat of air after the last repeat, so it is not flush against the edge.
+    let wanted = (last + beat) / beat;
+    // Two beats is the floor: one beat of lane cannot show a rhythm.
+    let beats = wanted.ceil().max(2.0);
+    (beats * beat).min(ceiling.max(beat * 2.0))
+}
+
 /// The reported taps, as the picture draws them.
 ///
 /// Levels are normalised to the loudest tap. The reported amplitudes start at
@@ -470,16 +494,17 @@ fn view_of(
 ) -> DelayView {
     let peak = taps.iter().map(|(_, a, _)| *a).fold(0.0f32, f32::max);
     let scale = if peak > f32::EPSILON { 1.0 / peak } else { 1.0 };
+    let taps: Vec<Tap> = taps
+        .iter()
+        .map(|(t, amp, up)| Tap {
+            at: t / 1000.0,
+            level: (amp * scale).clamp(0.0, 1.0),
+            pan: if *up { -0.8 } else { 0.8 },
+        })
+        .collect();
     DelayView {
-        taps: taps
-            .iter()
-            .map(|(t, amp, up)| Tap {
-                at: t / 1000.0,
-                level: (amp * scale).clamp(0.0, 1.0),
-                pan: if *up { -0.8 } else { 0.8 },
-            })
-            .collect(),
-        window: win_ms / 1000.0,
+        window: window_for(&taps, win_ms / 1000.0, beat_ms / 1000.0),
+        taps,
         mix: 1.0,
         on,
         beat: beat_ms / 1000.0,
@@ -593,6 +618,57 @@ mod tests {
     fn a_silent_delay_normalises_to_nothing() {
         let v = view_of(&[(400.0, 0.0, true)], 2000.0, true, 400.0, String::new(), [1, 2, 3]);
         assert_eq!(v.taps[0].level, 0.0);
+    }
+
+    /// A short tail is drawn across a short window, not squeezed into the
+    /// first eighth of a two-bar lane.
+    #[test]
+    fn the_window_follows_the_tail() {
+        let beat = 0.4;
+        let taps = vec![
+            Tap { at: 0.4, level: 1.0, pan: 0.0 },
+            Tap { at: 0.8, level: 0.3, pan: 0.0 },
+        ];
+        // The caller offers eight beats; two repeats need three.
+        let w = window_for(&taps, beat * 8.0, beat);
+        assert!((w - beat * 3.0).abs() < 1e-5, "got {w}");
+    }
+
+    /// Always a whole number of beats, so the grid reaches the right edge.
+    #[test]
+    fn the_window_is_whole_beats() {
+        let beat = 0.4;
+        let taps = vec![Tap { at: 0.55, level: 1.0, pan: 0.0 }];
+        let w = window_for(&taps, beat * 8.0, beat);
+        assert!((w / beat - (w / beat).round()).abs() < 1e-4, "got {w}");
+    }
+
+    /// The caller's ceiling still wins: a long tail is not allowed to run the
+    /// lane past what the panel was given.
+    #[test]
+    fn the_ceiling_holds() {
+        let beat = 0.4;
+        let taps: Vec<Tap> = (1..40)
+            .map(|n| Tap { at: beat * n as f32, level: 0.5, pan: 0.0 })
+            .collect();
+        assert!(window_for(&taps, beat * 8.0, beat) <= beat * 8.0 + 1e-5);
+    }
+
+    /// One beat of lane cannot show a rhythm, so a single early repeat still
+    /// gets two.
+    #[test]
+    fn a_single_repeat_still_gets_a_readable_lane() {
+        let beat = 0.4;
+        let taps = vec![Tap { at: 0.05, level: 1.0, pan: 0.0 }];
+        assert!((window_for(&taps, beat * 8.0, beat) - beat * 2.0).abs() < 1e-5);
+    }
+
+    /// No tempo, no grid to round to — and no division by zero.
+    #[test]
+    fn a_free_running_delay_still_gets_a_window() {
+        let taps = vec![Tap { at: 0.35, level: 1.0, pan: 0.0 }];
+        let w = window_for(&taps, 4.0, 0.0);
+        assert!(w > 0.35 && w <= 4.0, "got {w}");
     }
 
     /// The uniform block is four-float rows all the way down, so what Rust

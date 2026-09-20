@@ -105,14 +105,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let lvl = input_at(uv.x);
     let top = 1.0 - lvl;
     let below = smoothstep(0.0, 0.010, uv.y - top);
-    let body = below * (0.07 + 0.30 * lvl);
+    // Falls away beneath its own edge rather than filling flat. A constant
+    // fill under a waveform is a grey rectangle: it says the level reached
+    // here and nothing about the shape, and on a tall panel it is most of
+    // the panel. The gradient keeps the energy at the waveform, where the
+    // eye is already looking.
+    let depth_below = max(uv.y - top, 0.0);
+    let falloff = exp(-depth_below * 3.4);
+    let body = below * (0.16 + 0.62 * lvl) * (0.22 + 0.78 * falloff);
     // The lit edge, tight to the waveform.
     let edge = exp(-abs(uv.y - top) * 150.0) * (0.35 + 0.65 * lvl);
     // Energy spilling past its own edge — what makes a loud passage look
     // loud rather than merely tall.
     let spill = exp(-max(top - uv.y, 0.0) * (30.0 - 14.0 * lvl)) * 0.26 * lvl;
     rgb += tint * (body + edge * 1.35 + spill);
-    alpha += body * 0.55 + edge * 0.8 + spill * 0.6;
+    alpha += body * 0.80 + edge * 0.85 + spill * 0.6;
 
     // ── The gain reduction, hanging from the ceiling ────────────────────
     //
@@ -122,10 +129,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let red = gr_at(uv.x);
     if (red > 0.001) {
         let inside = 1.0 - smoothstep(red - 0.004, red + 0.010, uv.y);
-        let gr_body = inside * (0.10 + 0.40 * red);
-        let gr_edge = exp(-abs(uv.y - red) * 150.0) * (0.4 + 0.6 * red);
-        rgb += cut * (gr_body + gr_edge * 1.3);
-        alpha += gr_body * 0.55 + gr_edge * 0.8;
+        // Same gradient, hanging the other way: brightest at the edge the
+        // reduction reaches, thinning back up to the ceiling.
+        let gr_falloff = exp(-max(red - uv.y, 0.0) * 6.0);
+        let gr_body = inside * (0.22 + 0.80 * red) * (0.25 + 0.75 * gr_falloff);
+        let gr_edge = exp(-abs(uv.y - red) * 110.0) * (0.5 + 0.8 * red);
+        // Kept saturated rather than lifted toward white: the moment red
+        // becomes pink it stops reading as the one coloured thing on the
+        // panel and starts reading as more of the signal.
+        rgb += cut * (gr_body * 1.15 + gr_edge * 1.5);
+        alpha += gr_body * 0.75 + gr_edge * 0.85;
     }
 
     // ── The transfer curve ──────────────────────────────────────────────
@@ -147,8 +160,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let knee_top = db_to_v(transfer(u.curve.x));
     if (uv.y < knee_top) {
         let work = (knee_top - uv.y) / max(knee_top, 1e-3);
-        rgb += cut * work * 0.05;
-        alpha += work * 0.05;
+        rgb += cut * work * 0.10;
+        alpha += work * 0.09;
     }
 
     // ── The ball ────────────────────────────────────────────────────────
