@@ -30,10 +30,10 @@ pub mod eq_graph_svg;
 /// draw a band's frequency and gain but never its dynamics.
 pub mod dynamics;
 
-// ── The Blitz/vello plugin editor ──
+// ── The Blitz/vello graph, embeddable on its own (`graph`) ──
 #[cfg(feature = "native")]
 pub mod control_view;
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub mod eq_graph;
 #[cfg(feature = "native")]
 pub mod preset_view;
@@ -47,11 +47,11 @@ pub mod preset_view;
 /// and collapse.
 ///
 /// Exported as bytes because `include_str!` cannot cross a crate boundary.
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub const TAILWIND_CSS: &str = include_str!("../assets/tailwind.css");
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub mod eq_graph_painter;
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub mod eq_graph_popup;
 #[cfg(feature = "native")]
 pub mod faces;

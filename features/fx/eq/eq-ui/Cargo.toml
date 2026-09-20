@@ -17,16 +17,31 @@ default = []
 # tree. Off → only the portable core (graph model / response math / SVG
 # path generation / interaction helpers) compiles — wasm-safe, used by the
 # detached remotes.
-native = [
-    "dep:nice-plug",
-    "dep:fts-plug-ui",
+# The vello EQ graph, without the plugin's parameter tree.
+#
+# `graph` is the editor's own surface — `eq_graph` + its painter and popup —
+# as an embeddable widget: `bands: Signal<Vec<EqBand>>` in, band events out.
+# It needs a Blitz host for the custom-widget mechanism and nothing else, so
+# anything rendering on `dioxus-native` can mount the real graph: the rig
+# remotes over the wire, the session mixer's channel strips, the editors that
+# embed one EQ inside another.
+#
+# Split out of `native` because the rest of `native` is the plugin — the
+# nice-plug parameter tree, `ParamPtr`, the preset browser, the hardware faces
+# — and a detached surface has none of that and wants none of it.
+graph = [
     "dep:nice-plug-dioxus",
-    "dep:audiocore-core",
     "dep:architect-ui",
-    "dep:eq-profiles",
     "dep:futures-timer",
     "dep:atomic_float",
     "spectrum-analyzer/ui",
+]
+native = [
+    "graph",
+    "dep:nice-plug",
+    "dep:fts-plug-ui",
+    "dep:audiocore-core",
+    "dep:eq-profiles",
     # The shared preset browser — the same surfaces the reverb and compressor
     # editors mount.
     "dep:preset-browser",
