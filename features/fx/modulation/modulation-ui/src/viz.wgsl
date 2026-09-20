@@ -106,7 +106,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         field = (v - 0.5) * 2.0 * (1.0 - mid * 0.6);
     } else if (engine < TREMOLO + 0.5) {
         // Amplitude, pumping: the carrier's envelope is the LFO.
-        let env = mix(1.0 - depth, 1.0, sin((uv.x - phase) * TAU) * 0.5 + 0.5);
+        //
+        // The envelope floors at a fraction of full height rather than at
+        // zero, so the quiet part of the cycle is still a waveform being
+        // held down rather than a hole in the panel. A tremolo at full depth
+        // is silent for part of its cycle, but silence in a picture is
+        // indistinguishable from nothing loaded.
+        let swing = sin((uv.x - phase) * TAU) * 0.5 + 0.5;
+        let env = mix(1.0 - depth * 0.80, 1.0, swing);
         let carrier = sin(uv.x * 40.0 * TAU);
         field = carrier * env;
         field = field * step(mid, env);
@@ -143,7 +150,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let p = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
 
         let a = phase * TAU;
-        let radius = 0.36 * (0.60 + 0.40 * depth);
+        let radius = 0.42 * (0.62 + 0.38 * depth);
         // Wider than tall, because a rotor seen from the front is an ellipse
         // and the lane is wide.
         let c = vec2<f32>(cos(a) * radius * 1.9, sin(a) * radius);
@@ -198,9 +205,34 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let base = u.color.rgb;
     let hot = mix(base, vec3<f32>(1.0), clamp(lit - 0.55, 0.0, 1.0) * 0.85);
     let rgb = hot * clamp(lit, 0.0, 1.0);
-
-    // Alpha carries the field too, so the panel's own ground shows through
-    // the quiet parts instead of being covered by a dark rectangle.
     let alpha = clamp(lit * 0.82, 0.0, 0.92);
-    return vec4<f32>(rgb * alpha, alpha);
+
+    // ── The lane itself ─────────────────────────────────────────────────
+    //
+    // The panel is a tinted FIELD, not a black box with coloured marks on
+    // it. Modulation is cyan-led and motion pink-led, and that grouping is
+    // how you know which of the two rows you are reading without going to
+    // the label — but it only worked where the engine happened to be
+    // drawing. On a quiet engine, or in the wide empty margins a narrow
+    // shape leaves, the panel was black and said nothing at all.
+    //
+    // Deep and desaturated: this is UNDER the field, and a ground bright
+    // enough to compete with it would cost the picture its contrast. It also
+    // keeps its colour into the corners rather than fading out, which is
+    // exactly where the panel stops identifying itself.
+    let ground_base = mix(vec3<f32>(0.012, 0.018, 0.024), base, 0.13);
+    // A little brighter through the middle, where the engines live.
+    let across = mix(1.20, 0.72, clamp(mid, 0.0, 1.0));
+    let along = mix(1.06, 0.88, abs(uv.x - 0.5) * 2.0);
+    // Bypassed keeps a ground, dimmed: an engine that is off should look
+    // switched off, not unloaded.
+    let ground_rgb = ground_base * across * along * mix(0.45, 1.0, engaged);
+    let edge = 1.0 - smoothstep(0.80, 1.0, mid) * 0.40;
+    let ground_a = 0.94 * edge;
+
+    // Field over ground, composited rather than summed. The ground is not
+    // light the panel is emitting, it is the panel.
+    let out_a = alpha + ground_a * (1.0 - alpha);
+    let out_rgb = rgb * alpha + ground_rgb * ground_a * (1.0 - alpha);
+    return vec4<f32>(out_rgb, out_a);
 }
