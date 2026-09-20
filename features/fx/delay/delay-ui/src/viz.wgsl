@@ -16,6 +16,14 @@
 const MAX_TAPS: u32 = 32u;
 const TAU: f32 = 6.28318530718;
 
+// The families, in `family_index`'s order. The two must agree.
+const DIGITAL:  f32 = 0.0;
+const TAPE:     f32 = 1.0;
+const ANALOG:   f32 = 2.0;
+const PITCH:    f32 = 3.0;
+const RHYTHMIC: f32 = 4.0;
+const SPECIAL:  f32 = 5.0;
+
 struct Delay {
     // width, height, seconds, tap_count
     frame: vec4<f32>,
@@ -23,11 +31,50 @@ struct Delay {
     params: vec4<f32>,
     // the lane's colour; w unused
     color: vec4<f32>,
+    // family, unused, unused, unused
+    style: vec4<f32>,
     // at_s, level, pan, unused
     taps: array<vec4<f32>, MAX_TAPS>,
 };
 
 @group(0) @binding(0) var<uniform> u: Delay;
+
+fn is_family(f: f32) -> bool {
+    return abs(u.style.x - f) < 0.5;
+}
+
+fn hash1(p: f32) -> f32 {
+    return fract(sin(p * 127.1) * 43758.5453);
+}
+
+// How much the machine smears a repeat by the time it is `age` repeats old.
+//
+// This is the single number that separates the families most: a digital
+// delay's tenth repeat is the first one again, a tape's has been through the
+// heads ten times, and a bucket-brigade's has been resampled ten times by a
+// clock that was never clean. Drawn as the bar getting wider and losing its
+// cap, because that is what the ear hears as the repeat going soft.
+fn smear(age: f32) -> f32 {
+    if (is_family(TAPE)) { return age * 0.55; }
+    if (is_family(ANALOG)) { return age * 1.05; }
+    if (is_family(SPECIAL)) { return age * 0.85; }
+    return 0.0;
+}
+
+// Wow and flutter: the horizontal wobble a mechanical transport puts on a
+// repeat. Zero for everything that is not a transport — a digital delay that
+// wobbled would be lying about the one thing it is for.
+fn wobble(age: f32, t: f32) -> f32 {
+    if (is_family(TAPE)) {
+        // Wow is slow and deep, flutter fast and shallow; both grow with how
+        // many passes the repeat has had.
+        return (sin(t * 0.7 + age * 1.3) * 2.2 + sin(t * 6.1 + age * 2.7) * 0.6) * age;
+    }
+    if (is_family(ANALOG)) {
+        return sin(t * 1.1 + age * 2.1) * 1.4 * age;
+    }
+    return 0.0;
+}
 
 // The playhead's position across the window, 0..=1, or −1 when the lane is
 // bypassed. A bypassed delay keeps its shape and loses its motion: "off" and
@@ -84,13 +131,53 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     rgb += tint * ground;
     alpha += ground * 0.55;
 
+    // ── What the machine puts in the lane itself ────────────────────────
+    //
+    // Two families are not characterised by what they do to a repeat but by
+    // where the repeats are allowed to be, so their mark is on the lane
+    // rather than on the bars.
+    if (is_family(RHYTHMIC) && lit) {
+        // The grid IS the effect. A rhythmic delay places its repeats on
+        // sixteenths rather than at multiples of one time, so the panel
+        // shows the slots — occupied or not — and the pattern reads as a
+        // pattern instead of as an uneven row of sticks.
+        let beat = max(u.params.w, 1e-3);
+        let slots = max(floor(window / (beat * 0.25) + 0.5), 1.0);
+        let slot = uv.x * slots;
+        let edge = abs(fract(slot) - 0.5) * 2.0;
+        let tick = smoothstep(0.86, 1.0, edge) * 0.10;
+        rgb += tint * tick;
+        alpha += tick * 0.5;
+    }
+    if (is_family(SPECIAL) && lit) {
+        // A repeat that is no longer one: reversed, filtered, dissolved.
+        // The lane itself is unstable — a drifting veil that says the
+        // repeats are being taken apart rather than merely fading.
+        let veil = (sin(uv.x * 11.0 - t * 0.8) * sin(uv.y * 7.0 + t * 0.5)) * 0.5 + 0.5;
+        let haze = veil * (1.0 - uv.x * 0.35) * 0.07;
+        rgb += mix(tint, hot, 0.5) * haze;
+        alpha += haze * 0.6;
+    }
+
+    // ── The channel rule ────────────────────────────────────────────────
+    //
+    // The lane is split: UP IS LEFT, DOWN IS RIGHT. That is the read every
+    // good delay display uses (FabFilter's Timeless puts the channels on the
+    // vertical axis for the same reason), and it is what makes a ping-pong
+    // legible — the repeats alternate across the rule instead of nudging a
+    // few pixels off a shared centre line, which is what a pan-as-offset
+    // draws and which nobody can see.
+    let rule = exp(-abs(px.y - mid) / max(u.frame.y * 0.004, 0.7)) * 0.20;
+    rgb += tint * rule;
+    alpha += rule * 0.55;
+
     // ── The dry hit ─────────────────────────────────────────────────────
     //
-    // At zero, full height: everything to the right of it is a repeat OF
-    // this, which is the one relationship the picture has to establish.
+    // At zero, full height, across both channels: everything to the right of
+    // it is a repeat OF this, which is the one relationship the picture has
+    // to establish.
     let dry_w = max(u.frame.x * 0.0018, 1.2);
-    let dry = exp(-(px.x * px.x) / (dry_w * dry_w * 4.0))
-        * (1.0 - 0.35 * abs(uv.y - 0.5) * 2.0);
+    let dry = exp(-(px.x * px.x) / (dry_w * dry_w * 4.0));
     rgb += hot * dry * 0.9;
     alpha += dry * 0.8;
 
@@ -105,33 +192,90 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (at > window) { continue; }
 
         let hit = recency(at, head);
-        let x = at / window * u.frame.x;
-        // Pan walks the tap off the centre line, so a ping-pong delay reads
-        // as movement across the field rather than as a row of sticks.
-        let y = mid - pan * u.frame.y * 0.16;
-        let reach = level * u.frame.y * 0.42 * (1.0 + 0.22 * hit);
+        // How many repeats deep this one is, 0..1 across the tail. Every
+        // family effect is a function of this: a repeat's character is what
+        // the machine has done to it by now.
+        let age = f32(i) / max(f32(count - 1u), 1.0);
+        let sm = smear(age);
+        let x = at / window * u.frame.x + wobble(age, t);
+
+        // Equal-power pan, so a tap's two bars carry its level between them
+        // the way the pan law does. A centred tap is half height on both
+        // sides rather than full height on neither.
+        let ang = (pan * 0.5 + 0.5) * 1.5707963;
+        let gain_l = cos(ang);
+        let gain_r = sin(ang);
+        // Which side of the rule this pixel is on, and how far into it.
+        let up = px.y < mid;
+        let gain = select(gain_r, gain_l, up);
+        // Room for the bar, measured from the rule out to the lane's edge.
+        let half = u.frame.y * 0.5;
+        let from_rule = abs(px.y - mid);
+        let bar = level * gain * half * 0.92 * (1.0 + 0.10 * hit);
 
         let dx = px.x - x;
-        let dy = px.y - y;
 
-        // The stem: bright along its own column, cut off at the tap's reach.
+        // ── What this machine does to a repeat's colour ─────────────────
+        //
+        // Pitch delays move the repeat, so the repeat moves through the
+        // spectrum: each one is further up or down from the one before, and
+        // a shimmer climbing an octave a repeat should LOOK like it climbs.
+        // Everything else keeps the lane's hue and only loses brightness.
+        var voice = tint;
+        if (is_family(PITCH)) {
+            let up = vec3<f32>(0.62, 0.86, 1.0);
+            let down = vec3<f32>(1.0, 0.62, 0.42);
+            // Alternating sides climb and fall independently, which is what
+            // a dual-tap pitch delay actually does.
+            let dir = select(-1.0, 1.0, pan < 0.0);
+            voice = mix(tint, select(down, up, dir > 0.0), age * 0.85);
+        } else if (is_family(TAPE)) {
+            // Oxide: the repeats go warm as they go soft.
+            voice = mix(tint, vec3<f32>(1.0, 0.72, 0.42), age * 0.45);
+        } else if (is_family(ANALOG)) {
+            // A bucket brigade loses the top first and ends up muddy.
+            voice = mix(tint, vec3<f32>(0.55, 0.48, 0.62), age * 0.60);
+        }
+
+        // The bar: bright along its own column, growing from the rule
+        // outward and stopping at its own height.
         //
         // Width is in PIXELS and must not be a constant: a falloff tuned on a
         // 600 px panel is a hairline on a 2560 px one, which is how these
         // ended up all but invisible on the rig's own screen. Scaled off the
         // panel, with a floor so a narrow lane still draws something.
-        let stem_w = max(u.frame.x * 0.0022, 1.4) * (1.0 + 0.5 * hit);
-        let within = 1.0 - smoothstep(reach * 0.88, reach * 1.04, abs(dy));
+        let stem_w = max(u.frame.x * 0.0022, 1.4) * (1.0 + 0.5 * hit) * (1.0 + sm * 3.5);
+        // A smeared repeat loses its edge as well as its width: the bar
+        // stops ending anywhere in particular.
+        let edge_lo = mix(0.90, 0.35, clamp(sm, 0.0, 1.0));
+        let within = 1.0 - smoothstep(bar * edge_lo, bar * (1.06 + sm), from_rule);
         let stem = exp(-(dx * dx) / (stem_w * stem_w)) * within;
-        rgb += tint * stem * (0.55 + 0.85 * level + 0.7 * hit);
+        // Tape and analog darken as they smear; a digital repeat does not.
+        let dull = 1.0 / (1.0 + sm * 1.6);
+        rgb += voice * stem * (0.55 + 0.85 * level + 0.7 * hit) * dull;
         alpha += stem * (0.55 + 0.45 * level + 0.35 * hit);
 
-        // The head: a bright point whose size is its level.
+        // The cap: a bright point at the bar's far end, which is where its
+        // level is actually read.
         let r = max(u.frame.x * 0.0035, 2.2) + 2.5 * level + 3.0 * hit;
-        let d = length(vec2<f32>(dx, dy));
-        let head_core = exp(-(d * d) / (r * r * 0.8));
-        rgb += hot * head_core * (0.5 + 0.5 * level + 0.5 * hit);
-        alpha += head_core * (0.5 + 0.4 * level + 0.4 * hit);
+        let cap_y = mid + select(bar, -bar, up);
+        let d = length(vec2<f32>(dx, px.y - cap_y));
+        // The cap goes as the repeat smears — a soft repeat has no edge to
+        // read a level off, which is exactly the point.
+        let cap = exp(-(d * d) / (r * r * 0.8)) * step(0.02, bar) / (1.0 + sm * 2.4);
+        rgb += hot * cap * (0.5 + 0.5 * level + 0.5 * hit);
+        alpha += cap * (0.5 + 0.4 * level + 0.4 * hit);
+
+        // A reversed repeat swells INTO its hit instead of starting at it.
+        // That is the whole character of the family, and it is the one thing
+        // a row of decaying sticks cannot say.
+        if (is_family(SPECIAL)) {
+            let ramp_len = max(u.frame.x * 0.045, 6.0);
+            let before = clamp((x - px.x) / ramp_len, 0.0, 1.0);
+            let swell = (1.0 - before) * step(px.x, x) * within * level * 0.5;
+            rgb += voice * swell;
+            alpha += swell * 0.5;
+        }
 
         // The bloom, only while lit by the sweep. This is the part that is
         // worth a GPU: one soft falloff per tap, per pixel, for free.
@@ -150,16 +294,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (count > 1u) {
         // Nearest-tap level at this x, so the haze follows the actual taps
         // rather than an idealised exponential the delay may not be doing.
-        var env = 0.0;
+        // Per SIDE, so the haze follows each channel's own tail. A shared
+        // envelope would draw a ping-pong as one symmetrical shape, which is
+        // the opposite of what it sounds like.
+        var env_l = 0.0;
+        var env_r = 0.0;
         for (var i = 0u; i < MAX_TAPS; i = i + 1u) {
             if (i >= count) { break; }
             let tap = u.taps[i];
             let tx = tap.x / window;
             let w = exp(-abs(uv.x - tx) * 12.0);
-            env = max(env, tap.y * w);
+            let a = (clamp(tap.z, -1.0, 1.0) * 0.5 + 0.5) * 1.5707963;
+            env_l = max(env_l, tap.y * cos(a) * w);
+            env_r = max(env_r, tap.y * sin(a) * w);
         }
-        let span = env * 0.42;
-        let inside = 1.0 - smoothstep(span * 0.7, span * 1.15, abs(uv.y - 0.5));
+        let env = select(env_r, env_l, uv.y < 0.5);
+        let span = env * 0.46;
+        let inside = 1.0 - smoothstep(span * 0.75, span * 1.15, abs(uv.y - 0.5));
         let haze = inside * env * 0.40 * (1.0 - uv.x * 0.55);
         rgb += mix(tint, hot, 0.5) * haze;
         alpha += haze * 0.55;

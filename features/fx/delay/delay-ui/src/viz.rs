@@ -39,6 +39,37 @@ use vello::peniko::{Color, ColorStop, Fill, Gradient};
 
 use lane::faded;
 
+/// Which machine is making the repeats.
+///
+/// Re-exported rather than redefined: [`delay_dsp::engine::Family`] already
+/// says a delay's family "is not a preset — it is a different machine, and
+/// anything that draws one should say which before it says anything else".
+/// This is the drawing half of that sentence.
+pub use delay_dsp::engine::Family;
+
+/// The family of the style at `index` in the editor's algorithm list.
+///
+/// The host has a style index and no business knowing the style table; the
+/// effect that owns the table owns the mapping.
+#[must_use]
+pub fn family_of_style(index: u32) -> Family {
+    delay_dsp::engine::DelayStyle::from_index(index as usize).family()
+}
+
+/// The family, as the shader's `u.style.x`. The order is the shader's
+/// constants; the two must agree, so they are written next to each other.
+#[must_use]
+fn family_index(family: Family) -> f32 {
+    match family {
+        Family::Digital => 0.0,
+        Family::Tape => 1.0,
+        Family::Analog => 2.0,
+        Family::Pitch => 3.0,
+        Family::Rhythmic => 4.0,
+        Family::Special => 5.0,
+    }
+}
+
 /// The most taps the shader carries. A uniform array is fixed-length, and a
 /// tail longer than this is past the point where individual repeats can be
 /// told apart anyway.
@@ -56,7 +87,7 @@ pub struct Tap {
 }
 
 /// What the delay panel draws.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DelayView {
     pub taps: Vec<Tap>,
     /// Seconds the window shows — the tail's own length, so a long delay is
@@ -73,6 +104,10 @@ pub struct DelayView {
     /// What the division is called ("1/4", "1/8."), if the block is locked to
     /// one. Carried for the DOM half of the lane; the painter draws no text.
     pub division: String,
+    /// Which machine is making the repeats. A tape delay and a digital one
+    /// at identical settings draw the same bars and sound nothing alike;
+    /// this is what lets the picture say which it is.
+    pub family: Family,
     /// The lane's own colour, as the panel draws it. Delay is blue-led and
     /// reverb purple-led, and a painted lane that ignored that would be the
     /// one thing on screen disagreeing about which effect it is.
@@ -84,6 +119,26 @@ pub struct DelayView {
     /// nothing about, and an animation that only advances when a prop changes
     /// is an animation that stutters.
     pub time: f32,
+}
+
+impl Default for DelayView {
+    /// An empty digital lane. `Family` has no `Default` of its own — and
+    /// should not: there is no neutral machine in the DSP, only a neutral
+    /// PICTURE, and Digital is it because it is the family that adds nothing
+    /// to a repeat.
+    fn default() -> Self {
+        Self {
+            taps: Vec::new(),
+            window: 0.0,
+            mix: 0.0,
+            on: false,
+            beat: 0.0,
+            division: String::new(),
+            family: Family::Digital,
+            color: [0, 0, 0],
+            time: 0.0,
+        }
+    }
 }
 
 /// The numbers a widget reads, written by the component that owns it.
@@ -105,6 +160,8 @@ pub struct DelayUniforms {
     pub params: [f32; 4],
     /// The lane's colour; `w` unused.
     pub color: [f32; 4],
+    /// `[family, _, _, _]`.
+    pub style: [f32; 4],
     /// `[at_s, level, pan, _]` per tap.
     pub taps: [[f32; 4]; MAX_TAPS],
 }
@@ -115,6 +172,7 @@ impl Default for DelayUniforms {
             frame: [0.0; 4],
             params: [0.0; 4],
             color: [0.0; 4],
+            style: [0.0; 4],
             taps: [[0.0; 4]; MAX_TAPS],
         }
     }
@@ -140,6 +198,7 @@ impl DelayUniforms {
             f32::from(b) / 255.0,
             1.0,
         ];
+        u.style = [family_index(view.family), 0.0, 0.0, 0.0];
         let n = view.taps.len().min(MAX_TAPS);
         for (slot, tap) in u.taps.iter_mut().zip(&view.taps[..n]) {
             *slot = [tap.at, tap.level, tap.pan, 0.0];
@@ -344,35 +403,47 @@ pub fn paint_delay(scene: &mut Scene, view: &DelayView, w: f64, h: f64) {
             }
         };
 
-        let reach = level * h * 0.42 * (1.0 + 0.22 * hit);
+        // Up is left, down is right — the same read as the shader, with the
+        // same equal-power pan law, so the two painters cannot disagree about
+        // what a ping-pong looks like.
         let pan = f64::from(tap.pan).clamp(-1.0, 1.0);
-        let y = mid - pan * h * 0.16;
+        let ang = (pan * 0.5 + 0.5) * std::f64::consts::FRAC_PI_2;
+        let half = h * 0.5;
+        let grow = 0.92 * (1.0 + 0.10 * hit);
 
-        // The bloom, behind: a soft halo that only exists while lit.
-        if hit > 0.01 {
+        for (gain, dir) in [(ang.cos(), -1.0_f64), (ang.sin(), 1.0_f64)] {
+            let bar = level * gain * half * grow;
+            if bar < 0.5 {
+                continue;
+            }
+            let cap = mid + dir * bar;
+
+            // The bloom, behind: a soft halo that only exists while lit.
+            if hit > 0.01 {
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    faded(accent, (0.30 * hit) as f32),
+                    None,
+                    &Circle::new(Point::new(x, cap), 4.0 + 16.0 * hit * (0.4 + level * gain)),
+                );
+            }
+
+            scene.stroke(
+                &Stroke::new(2.0 + 1.5 * hit),
+                Affine::IDENTITY,
+                faded(signal, (0.35 + 0.65 * level * gain + 0.6 * hit) as f32),
+                None,
+                &Line::new(Point::new(x, mid), Point::new(x, cap)),
+            );
             scene.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
-                faded(accent, (0.30 * hit) as f32),
+                faded(signal, (0.5 + 0.5 * level * gain + 0.5 * hit) as f32),
                 None,
-                &Circle::new(Point::new(x, y), 4.0 + 16.0 * hit * (0.4 + level)),
+                &Circle::new(Point::new(x, cap), 1.5 + 2.0 * level * gain + 2.5 * hit),
             );
         }
-
-        scene.stroke(
-            &Stroke::new(2.0 + 1.5 * hit),
-            Affine::IDENTITY,
-            faded(signal, (0.35 + 0.65 * level + 0.6 * hit) as f32),
-            None,
-            &Line::new(Point::new(x, y - reach), Point::new(x, y + reach)),
-        );
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            faded(signal, (0.5 + 0.5 * level + 0.5 * hit) as f32),
-            None,
-            &Circle::new(Point::new(x, y), 1.5 + 2.0 * level + 2.5 * hit),
-        );
     }
 
     // The sweep itself — a thin bright edge with a trail behind it.
@@ -435,6 +506,9 @@ pub fn DelayViz(
     on: bool,
     beat_ms: f32,
     division: String,
+    /// Which machine is making the repeats. See [`family_of_style`].
+    #[props(default = Family::Digital)]
+    family: Family,
     color: [u8; 3],
 ) -> Element {
     use_repaint_clock();
@@ -442,7 +516,7 @@ pub fn DelayViz(
     let attr =
         use_hook(|| dioxus_native_dom::CustomWidgetAttr::new(DelayWidget::new(Rc::clone(&view))));
 
-    *view.borrow_mut() = view_of(&taps, win_ms, on, beat_ms, division, color);
+    *view.borrow_mut() = view_of(&taps, win_ms, on, beat_ms, division, family, color);
 
     rsx! {
         object {
@@ -490,6 +564,7 @@ fn view_of(
     on: bool,
     beat_ms: f32,
     division: String,
+    family: Family,
     color: [u8; 3],
 ) -> DelayView {
     let peak = taps.iter().map(|(_, a, _)| *a).fold(0.0f32, f32::max);
@@ -509,6 +584,7 @@ fn view_of(
         on,
         beat: beat_ms / 1000.0,
         division,
+        family,
         color,
         // The widget keeps its own clock; this is only a starting value.
         time: 0.0,
@@ -537,6 +613,7 @@ mod tests {
             on: true,
             beat: 0.4,
             division: "1/4".to_string(),
+            family: Family::Digital,
             color: [56, 189, 248],
             time: 0.0,
         }
@@ -608,7 +685,7 @@ mod tests {
     #[test]
     fn levels_are_normalised_to_the_loudest_tap() {
         let reported = vec![(400.0, 0.08, true), (800.0, 0.04, false)];
-        let v = view_of(&reported, 2000.0, true, 400.0, "1/4".into(), [56, 189, 248]);
+        let v = view_of(&reported, 2000.0, true, 400.0, "1/4".into(), Family::Tape, [56, 189, 248]);
         assert!((v.taps[0].level - 1.0).abs() < 1e-6);
         assert!((v.taps[1].level - 0.5).abs() < 1e-6);
     }
@@ -616,7 +693,7 @@ mod tests {
     /// Silence must not divide by its own peak.
     #[test]
     fn a_silent_delay_normalises_to_nothing() {
-        let v = view_of(&[(400.0, 0.0, true)], 2000.0, true, 400.0, String::new(), [1, 2, 3]);
+        let v = view_of(&[(400.0, 0.0, true)], 2000.0, true, 400.0, String::new(), Family::Digital, [1, 2, 3]);
         assert_eq!(v.taps[0].level, 0.0);
     }
 
@@ -676,10 +753,10 @@ mod tests {
     #[test]
     fn the_uniform_block_is_vec4_rows() {
         assert_eq!(std::mem::size_of::<DelayUniforms>() % 16, 0);
-        // frame + params + color + MAX_TAPS rows.
+        // frame + params + color + style + MAX_TAPS rows.
         assert_eq!(
             std::mem::size_of::<DelayUniforms>(),
-            (3 + MAX_TAPS) * 16
+            (4 + MAX_TAPS) * 16
         );
     }
 
@@ -691,6 +768,49 @@ mod tests {
         v.taps = taps(MAX_TAPS + 9);
         let u = DelayUniforms::of(&v, 640.0, 56.0);
         assert_eq!(u.frame[3], MAX_TAPS as f32);
+    }
+
+    /// Every family gets its own number, and the shader's constants are the
+    /// same numbers. They are one switch written in two languages and
+    /// nothing but this checks that they agree — a collision would silently
+    /// draw one machine as another.
+    #[test]
+    fn the_shader_and_rust_agree_on_family_order() {
+        let wgsl = include_str!("viz.wgsl");
+        for (family, name) in [
+            (Family::Digital, "DIGITAL"),
+            (Family::Tape, "TAPE"),
+            (Family::Analog, "ANALOG"),
+            (Family::Pitch, "PITCH"),
+            (Family::Rhythmic, "RHYTHMIC"),
+            (Family::Special, "SPECIAL"),
+        ] {
+            let want = format!("const {name}:");
+            let line = wgsl
+                .lines()
+                .find(|l| l.trim_start().starts_with(&want))
+                .unwrap_or_else(|| panic!("the shader declares no {name}"));
+            let got: f32 = line
+                .rsplit('=')
+                .next()
+                .and_then(|v| v.trim().trim_end_matches(';').parse().ok())
+                .unwrap_or_else(|| panic!("cannot read {name} from {line:?}"));
+            assert!(
+                (got - family_index(family)).abs() < 1e-6,
+                "{name}: shader says {got}, Rust says {}",
+                family_index(family)
+            );
+        }
+    }
+
+    /// Every style the DSP has lands on a family, and the styles the rig's
+    /// own algorithm list names map to the machines they say they are.
+    #[test]
+    fn a_style_index_names_its_machine() {
+        // `DELAY_ALGOS` order, which is `DelayStyle::from_index` order.
+        assert_eq!(family_of_style(0), Family::Tape);
+        assert_eq!(family_of_style(1), Family::Digital);
+        assert_eq!(family_of_style(2), Family::Analog);
     }
 
     /// The shader compiles, as `compose` assembles it — not on its own.

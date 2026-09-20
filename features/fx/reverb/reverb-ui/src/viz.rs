@@ -26,13 +26,54 @@ use vello::peniko::{Color, ColorStop, Fill, Gradient};
 
 use lane::faded;
 
+/// Which machine is making the space.
+///
+/// Re-exported rather than redefined: [`reverb_dsp::algorithm::Family`] already says a
+/// reverb's family "is not a preset — it is a different machine, and anything
+/// that draws one should say which before it says anything else". This is the
+/// drawing half of that sentence.
+pub use reverb_dsp::algorithm::Family;
+
+/// The family of the algorithm at `index` in the editor's algorithm list.
+///
+/// The host has an algorithm index and no business knowing the algorithm
+/// table; the effect that owns the table owns the mapping.
+#[must_use]
+pub fn family_of_algorithm(index: u32) -> Family {
+    reverb_dsp::algorithm::AlgorithmType::ALL
+        .get(index as usize)
+        .map_or(Family::Hall, |a| a.family())
+}
+
+/// The family, as the shader's `u.style.x`. The order is the shader's
+/// constants; the two must agree, so they are written next to each other.
+#[must_use]
+fn family_index(family: Family) -> f32 {
+    match family {
+        Family::Room => 0.0,
+        Family::Hall => 1.0,
+        Family::Plate => 2.0,
+        Family::Spring => 3.0,
+        Family::Ambient => 4.0,
+        Family::Random => 5.0,
+        Family::Special => 6.0,
+        Family::Convolution => 7.0,
+    }
+}
+
 /// What the reverb panel draws.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReverbView {
     /// RT60 in seconds — the tail's length.
     pub decay: f32,
     /// 0..=1: how quickly early reflections thicken into a wash.
     pub density: f32,
+    /// 0..=1: how much faster the top of the spectrum dies than the bottom.
+    ///
+    /// The single thing that separates one room from another at the same
+    /// RT60, and the one a bare envelope cannot say: a damped hall and a
+    /// bright one draw the identical wedge. See the shader's two-band tail.
+    pub damp: f32,
     /// Pre-delay in seconds, before anything arrives.
     pub predelay: f32,
     pub mix: f32,
@@ -40,11 +81,35 @@ pub struct ReverbView {
     /// Seconds per beat — the tail is measured against the tempo, so "two bars
     /// of reverb" is a thing the picture can say.
     pub beat: f32,
+    /// Which machine is making the space. A plate and a spring at identical
+    /// decay draw the same wedge and sound nothing alike; this is what lets
+    /// the picture say which it is.
+    pub family: Family,
     /// The lane's own colour. Reverb is purple-led; delay is blue.
     pub color: [u8; 3],
     /// Seconds since the panel appeared — the animation's clock, kept by the
     /// widget rather than pushed in, so it advances on every repaint.
     pub time: f32,
+}
+
+impl Default for ReverbView {
+    /// An empty hall. `Family` has no `Default` of its own — and should not:
+    /// there is no neutral machine in the DSP, only a neutral PICTURE, and a
+    /// hall is it because it is the family that adds least to a plain decay.
+    fn default() -> Self {
+        Self {
+            decay: 0.0,
+            density: 0.0,
+            predelay: 0.0,
+            mix: 0.0,
+            damp: 0.0,
+            on: false,
+            beat: 0.0,
+            family: Family::Hall,
+            color: [0, 0, 0],
+            time: 0.0,
+        }
+    }
 }
 
 /// The numbers a widget reads, written by the component that owns it.
@@ -64,10 +129,12 @@ pub struct ReverbUniforms {
     pub frame: [f32; 4],
     /// `[decay_s, density, predelay_s, mix]`.
     pub params: [f32; 4],
-    /// `[beat_s, window_s, _, _]`.
+    /// `[beat_s, window_s, damp, _]`.
     pub time: [f32; 4],
     /// The lane's colour; `w` unused.
     pub color: [f32; 4],
+    /// `[family, _, _, _]`.
+    pub style: [f32; 4],
 }
 
 impl ReverbUniforms {
@@ -78,13 +145,19 @@ impl ReverbUniforms {
         Self {
             frame: [w, h, view.time, if view.on { 1.0 } else { 0.0 }],
             params: [view.decay, view.density, view.predelay, view.mix],
-            time: [view.beat.max(1e-3), window_of(view), 0.0, 0.0],
+            time: [
+                view.beat.max(1e-3),
+                window_of(view),
+                view.damp.clamp(0.0, 1.0),
+                0.0,
+            ],
             color: [
                 f32::from(r) / 255.0,
                 f32::from(g) / 255.0,
                 f32::from(b) / 255.0,
                 1.0,
             ],
+            style: [family_index(view.family), 0.0, 0.0, 0.0],
         }
     }
 }
@@ -327,6 +400,12 @@ pub fn ReverbViz(
     density: f32,
     predelay: f32,
     mix: f32,
+    /// 0..=1 — how much faster the highs die than the lows.
+    #[props(default = 0.0)]
+    damp: f32,
+    /// Which machine is making the space. See [`family_of_algorithm`].
+    #[props(default = Family::Hall)]
+    family: Family,
     on: bool,
     beat_ms: f32,
     color: [u8; 3],
@@ -341,6 +420,8 @@ pub fn ReverbViz(
         density,
         predelay,
         mix,
+        damp,
+        family,
         on,
         beat: beat_ms / 1000.0,
         color,
@@ -367,6 +448,8 @@ mod tests {
             density: 0.6,
             predelay: 0.02,
             mix: 0.3,
+            damp: 0.4,
+            family: Family::Hall,
             on: true,
             beat: 0.4,
             color: [167, 139, 250],
@@ -422,8 +505,8 @@ mod tests {
     #[test]
     fn the_uniform_block_is_vec4_rows() {
         assert_eq!(std::mem::size_of::<ReverbUniforms>() % 16, 0);
-        // frame + params + time + color.
-        assert_eq!(std::mem::size_of::<ReverbUniforms>(), 4 * 16);
+        // frame + params + time + color + style.
+        assert_eq!(std::mem::size_of::<ReverbUniforms>(), 5 * 16);
     }
 
     /// Bypassed reaches the shader as a flag rather than as absent data: the
@@ -435,6 +518,53 @@ mod tests {
         let u = ReverbUniforms::of(&v, 640.0, 56.0);
         assert_eq!(u.frame[3], 0.0);
         assert!((u.params[0] - 2.4).abs() < 1e-6, "the decay is still there");
+    }
+
+    /// Every family gets its own number, and the shader's constants are the
+    /// same numbers. One switch, two languages — a collision would silently
+    /// draw a spring as a plate.
+    #[test]
+    fn the_shader_and_rust_agree_on_family_order() {
+        let wgsl = include_str!("viz.wgsl");
+        for (family, name) in [
+            (Family::Room, "ROOM"),
+            (Family::Hall, "HALL"),
+            (Family::Plate, "PLATE"),
+            (Family::Spring, "SPRING"),
+            (Family::Ambient, "AMBIENT"),
+            (Family::Random, "RANDOM"),
+            (Family::Special, "SPECIAL"),
+            (Family::Convolution, "CONVOLUTION"),
+        ] {
+            let want = format!("const {name}:");
+            let line = wgsl
+                .lines()
+                .find(|l| l.trim_start().starts_with(&want))
+                .unwrap_or_else(|| panic!("the shader declares no {name}"));
+            let got: f32 = line
+                .rsplit('=')
+                .next()
+                .and_then(|v| v.trim().trim_end_matches(';').parse().ok())
+                .unwrap_or_else(|| panic!("cannot read {name} from {line:?}"));
+            assert!(
+                (got - family_index(family)).abs() < 1e-6,
+                "{name}: shader says {got}, Rust says {}",
+                family_index(family)
+            );
+        }
+    }
+
+    /// The rig hands over an index into the editor's algorithm list; it has
+    /// to land on the machine that list names.
+    #[test]
+    fn an_algorithm_index_names_its_machine() {
+        assert_eq!(family_of_algorithm(0), Family::Room);
+        assert_eq!(family_of_algorithm(1), Family::Hall);
+        assert_eq!(family_of_algorithm(2), Family::Plate);
+        assert_eq!(family_of_algorithm(3), Family::Spring);
+        // Past the end is a hall rather than a panic: an index from the wire
+        // is not something the picture should die on.
+        assert_eq!(family_of_algorithm(9999), Family::Hall);
     }
 
     /// The shader compiles, as `compose` assembles it — see the delay's note
