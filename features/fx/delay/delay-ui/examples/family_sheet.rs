@@ -36,7 +36,8 @@ fn view(family: Family, time: f32) -> DelayView {
         beat,
         division: "1/4".into(),
         family,
-        color: [56, 189, 248],
+        // `DELAY_COLORS[0]` in the rig: deep blue, not sky.
+        color: [59, 130, 246],
         time,
     }
 }

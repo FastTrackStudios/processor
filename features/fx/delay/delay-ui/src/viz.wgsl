@@ -131,13 +131,32 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var rgb = vec3<f32>(0.0);
     var alpha = 0.0;
 
-    // ── Time running out ────────────────────────────────────────────────
+    // ── The lane itself ─────────────────────────────────────────────────
     //
-    // A ground that fades to the right. The panel is a window onto a tail,
-    // and the far end of it is where the repeats have given up.
-    let ground = (1.0 - uv.x) * 0.10;
-    rgb += tint * ground;
-    alpha += ground * 0.55;
+    // The panel is a DEEP BLUE field, not a black box with blue marks on it.
+    // A near-black ground made every time-effect lane look like every other
+    // one, and left the rig's two rows of them — delay and reverb — telling
+    // you apart only by the colour of the few lit pixels. The ground is
+    // where a panel says what it is, before anything is drawn on it.
+    //
+    // Deep and desaturated: this sits UNDER the taps, and a ground bright
+    // enough to compete with them would cost the picture its contrast. It is
+    // painted with its own alpha rather than added, so what shows through is
+    // the lane's colour and not the rack's black.
+    let base = mix(vec3<f32>(0.010, 0.013, 0.030), tint, 0.10);
+    // Brighter at the head of the lane, where the dry hit is and the first
+    // repeats land; the far end is where the tail has given up.
+    // The far end keeps its colour rather than going black: a lane that
+    // fades to the rack's own ground stops saying which effect it is
+    // exactly where the tail is hardest to read.
+    let along = mix(1.25, 0.72, uv.x);
+    // And brighter along the channel rule, so the lane has a spine.
+    let across = mix(1.15, 0.72, clamp(abs(uv.y - 0.5) * 2.0, 0.0, 1.0));
+    let ground_rgb = base * along * across;
+    // A vignette, so the lane reads as a panel rather than as a rectangle
+    // of colour butted against its neighbours.
+    let edge_y = 1.0 - smoothstep(0.78, 1.0, abs(uv.y - 0.5) * 2.0) * 0.45;
+    let ground_a = 0.95 * edge_y;
 
     // ── What the machine puts in the lane itself ────────────────────────
     //
@@ -401,6 +420,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     rgb = rgb * 2.2;
     rgb = rgb / (rgb + vec3<f32>(1.0));
     alpha = clamp(alpha, 0.0, 0.92);
-    // Premultiplied, because that is what the compositor expects.
-    return vec4<f32>(rgb * alpha, alpha);
+
+    // Marks over ground, composited properly rather than summed, and handed
+    // back premultiplied because that is what the compositor expects.
+    //
+    // The ground stays OUT of the curve above: it is not light the panel is
+    // emitting, it is the panel, and running it through the same tone map
+    // lifted it until it competed with what was drawn on it — a lane so
+    // bright the marks had no contrast left to stand out against.
+    let out_a = alpha + ground_a * (1.0 - alpha);
+    let out_rgb = rgb * alpha + ground_rgb * ground_a * (1.0 - alpha);
+    return vec4<f32>(out_rgb, out_a);
 }

@@ -617,7 +617,7 @@ mod tests {
             beat: 0.4,
             division: "1/4".to_string(),
             family: Family::Digital,
-            color: [56, 189, 248],
+            color: [59, 130, 246],
             time: 0.0,
         }
     }

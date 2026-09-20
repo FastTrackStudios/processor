@@ -156,7 +156,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     var tint = u.color.rgb;
     if (!lit) { tint = vec3<f32>(0.32, 0.32, 0.36); }
-    let hot = mix(tint, vec3<f32>(1.0), 0.55);
+    // Only a little toward white. At 0.55 the tail came out grey — the
+    // body covers most of the panel, so whatever colour it is IS the colour
+    // of the effect, and a purple reverb whose tail is white is not one.
+    let hot = mix(tint, vec3<f32>(1.0), 0.28);
 
     var rgb = vec3<f32>(0.0);
     var alpha = 0.0;
@@ -174,9 +177,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // before the first reflection is the single clearest thing separating a
     // room from a hall, so it is drawn as an actually empty lane.
     let gap = 1.0 - step(predelay, at);
-    let ground = (1.0 - uv.x * 0.6) * 0.07 * (1.0 - gap * 0.6);
-    rgb += tint * ground;
-    alpha += ground * 0.5;
+
+    // ── The lane itself ─────────────────────────────────────────────────
+    //
+    // The panel is a PURPLE field, not a black box with purple marks on it.
+    // See the delay's note: a near-black ground made every time-effect lane
+    // look the same, and the ground is where a panel says what it is before
+    // anything is drawn on it.
+    //
+    // Pre-delay stays darker than the rest, because silence before the first
+    // reflection is the clearest thing separating a room from a hall and it
+    // should look like silence — but it is not black, or the gap reads as a
+    // panel that has not loaded.
+    let base = mix(vec3<f32>(0.018, 0.010, 0.034), tint, 0.10);
+    let along = mix(1.30, 0.78, uv.x);
+    let across = mix(1.12, 0.70, clamp(off, 0.0, 1.0));
+    let ground_rgb = base * along * across * (1.0 - gap * 0.45);
+    let edge_y = 1.0 - smoothstep(0.80, 1.0, off) * 0.45;
+    let ground_a = 0.95 * edge_y;
 
     // A random space's delay lines walk, so its envelope is never quite the
     // same twice — the tail breathes rather than falling cleanly. This is
@@ -194,7 +212,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // reads the RATE it closes, which is the RT60 made visible.
     let span = env_w;
     let inside = 1.0 - smoothstep(span * 0.72, span * 1.1, off);
-    let body = inside * env_w * 0.55;
+    let body = inside * env_w * 0.34;
     rgb += tint * body;
     alpha += body * 0.75;
 
@@ -215,7 +233,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // The lit rim where the body ends — the decay curve itself, as an edge
     // made of light rather than a stroked path.
-    let rim = exp(-abs(off - span) * 14.0) * env_w * 0.9;
+    let rim = exp(-abs(off - span) * 17.0) * env_w * 0.8;
     rgb += hot * rim;
     alpha += rim * 0.85;
 
@@ -227,9 +245,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // leaves a long dim body behind it.
     let span_hi = env_hi;
     let inside_hi = 1.0 - smoothstep(span_hi * 0.66, span_hi * 1.05, off);
-    let core = inside_hi * env_hi * 0.42;
+    let core = inside_hi * env_hi * 0.26;
     let core_rim = exp(-abs(off - span_hi) * 20.0) * env_hi * 0.65;
-    rgb += mix(hot, vec3<f32>(1.0), 0.35) * (core + core_rim);
+    rgb += mix(hot, vec3<f32>(1.0), 0.22) * (core + core_rim);
     alpha += core * 0.6 + core_rim * 0.7;
 
     // ── The early reflections ───────────────────────────────────────────
@@ -282,6 +300,32 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             * (0.45 + 0.55 * env_hi);
         rgb += mix(tint, hot, 0.35) * wash;
         alpha += wash * 0.55;
+    }
+
+    // ── Flutter ─────────────────────────────────────────────────────────
+    //
+    // A small room has parallel walls close together, and what that sounds
+    // like is a flutter: the same slap coming back at a fixed short spacing,
+    // over and over, long after the reflections should have smeared into a
+    // tail. It is the single artefact that says "this is a box" rather than
+    // "this is a big space", and without it a room drew the same picture as
+    // a hall with fewer early reflections — which the eye reads as the same
+    // picture.
+    //
+    // Evenly spaced, unlike everything else in the early field, because
+    // being evenly spaced is the whole complaint.
+    if (is_family(ROOM) && lit && at >= predelay) {
+        let decay = max(u.params.x, 1e-3);
+        // Tighter walls as density rises.
+        let spacing = mix(0.085, 0.040, density);
+        let k = (at - predelay) / decay;
+        let slap = fract(k / spacing);
+        let hit = exp(-slap * 14.0) + exp(-(1.0 - slap) * 14.0);
+        // Flutter outlives the early field but not the tail.
+        let live = exp(-k * 2.2);
+        let flutter = hit * live * env * inside * 0.55;
+        rgb += mix(hot, vec3<f32>(1.0), 0.30) * flutter;
+        alpha += flutter * 0.65;
     }
 
     // ── The spring ──────────────────────────────────────────────────────
@@ -340,8 +384,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // everything below 1.0, and 1.0 is brighter than anything this panel
     // produces — so without the drive the whole picture sits in the bottom
     // quarter of the curve and reads as switched off.
-    rgb = rgb * 2.2;
+    // A gentler drive than the delay's: a delay's marks are thin sticks on
+    // an empty lane and need lifting, where a reverb's tail covers most of
+    // the panel — driven as hard it saturates into one solid mass and loses
+    // the decay shape that is the entire message.
+    rgb = rgb * 1.5;
     rgb = rgb / (rgb + vec3<f32>(1.0));
     alpha = clamp(alpha, 0.0, 0.92);
-    return vec4<f32>(rgb * alpha, alpha);
+
+    // Marks over ground, composited properly rather than summed, and handed
+    // back premultiplied because that is what the compositor expects.
+    //
+    // The ground stays OUT of the curve above: it is not light the panel is
+    // emitting, it is the panel, and running it through the same tone map
+    // lifted it until it competed with what was drawn on it — a lane so
+    // bright the marks had no contrast left to stand out against.
+    let out_a = alpha + ground_a * (1.0 - alpha);
+    let out_rgb = rgb * alpha + ground_rgb * ground_a * (1.0 - alpha);
+    return vec4<f32>(out_rgb, out_a);
 }

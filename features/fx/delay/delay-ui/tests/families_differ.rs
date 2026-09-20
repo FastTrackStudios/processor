@@ -21,7 +21,7 @@ fn view(family: Family) -> DelayView {
         beat,
         division: "1/4".into(),
         family,
-        color: [56, 189, 248],
+        color: [59, 130, 246],
         time: 1.9,
     }
 }
