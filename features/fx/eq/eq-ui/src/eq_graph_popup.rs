@@ -170,6 +170,17 @@ const fn shape_icon(s: EqBandShape) -> &'static str {
 /// Vertical gap between the band node and the detail panel, in graph pixels.
 pub const POPUP_GAP: f64 = 18.0;
 
+/// The gap under the panel, for a plot of this height.
+///
+/// The authored 18 px reads as the panel floating over the plot. On a short
+/// plot that gap is a meaningful slice of what is left, so the panel docks
+/// flush to the bottom edge instead — it is the same information either way,
+/// and the curve gets the pixels.
+#[must_use]
+pub fn popup_gap(graph_h: f64) -> f64 {
+    if graph_h < 420.0 { 0.0 } else { POPUP_GAP }
+}
+
 /// Slack around the popup/node region that still counts as "on the band".
 const POPUP_REGION_PAD: f64 = 10.0;
 
@@ -211,8 +222,17 @@ pub fn band_popup_rect(
     // shape/routing clusters, with the dynamics row beneath.
     // Full size always: the panel no longer shrinks mid-drag.
     let _ = is_dragging;
-    let w = 300.0;
-    let h = 150.0;
+    let w = 300.0_f64.min((graph_w - 2.0 * POPUP_REGION_PAD).max(200.0));
+
+    // The panel gives ground when the plot has none to spare.
+    //
+    // 150 px is the authored height and right in a plugin window. Embedded —
+    // a rig's EQ slot, a mixer strip — the plot can be 300 px tall, and a
+    // fixed panel then covers most of the curve it is describing, which is
+    // the one thing it must not do. So it takes at most a third of the plot,
+    // down to the 84 px the three dials and the dynamics row need to stay
+    // legible.
+    let h = 150.0_f64.min((graph_h / 3.0).max(84.0));
 
     // DOCKED to the bottom of the graph, and only tracking the band
     // horizontally.
@@ -229,8 +249,50 @@ pub fn band_popup_rect(
     // region, and callers pass both together.
     let _ = by;
     let x = (bx - w / 2.0).clamp(0.0, (graph_w - w).max(0.0));
-    let y = (graph_h - h - POPUP_GAP).max(0.0);
+    let y = (graph_h - h - popup_gap(graph_h)).max(0.0);
     (x, y, w, h)
+}
+
+#[cfg(test)]
+mod popup_fit_tests {
+    use super::*;
+
+    /// The panel never takes more than a third of the plot it sits on.
+    ///
+    /// Embedded in a rig slot the plot is a few hundred pixels tall, and the
+    /// authored 150 px then covers most of the curve the panel exists to
+    /// describe — which is the one thing it must not do.
+    #[test]
+    fn the_panel_gives_ground_on_a_short_plot() {
+        for graph_h in [200.0, 300.0, 380.0, 520.0, 800.0] {
+            let (_, y, _, h) = band_popup_rect(150.0, 40.0, 600.0, graph_h, false);
+            assert!(
+                h <= graph_h / 3.0 + 1.0 || h <= 84.0,
+                "a {h}px panel on a {graph_h}px plot takes too much"
+            );
+            assert!(h >= 84.0, "a {h}px panel cannot show its controls");
+            assert!(y >= 0.0, "the panel starts above the plot at {graph_h}");
+            assert!(
+                y + h <= graph_h + 0.001,
+                "a {h}px panel at {y} runs off a {graph_h}px plot"
+            );
+        }
+    }
+
+    /// On a short plot it docks flush; on a tall one it floats as authored.
+    #[test]
+    fn the_gap_goes_when_the_room_does() {
+        assert_eq!(popup_gap(300.0), 0.0);
+        assert_eq!(popup_gap(800.0), POPUP_GAP);
+    }
+
+    /// It narrows for a narrow plot too, rather than running off the side.
+    #[test]
+    fn the_panel_fits_a_narrow_plot() {
+        let (x, _, w, _) = band_popup_rect(60.0, 40.0, 240.0, 400.0, false);
+        assert!(w <= 240.0, "a {w}px panel does not fit 240px");
+        assert!(x >= 0.0 && x + w <= 240.0 + 0.001, "panel at {x} width {w}");
+    }
 }
 
 /// Is `(px, py)` inside the band's "keep the panel up" region?
@@ -354,9 +416,10 @@ pub fn BandPopup(
                 // plot instead of sitting on the floor of it. The wrapper this
                 // sits in spans the graph exactly, so `bottom` needs no
                 // measurement and cannot be stale.
-                "position:absolute; left:{popup_x}px; bottom:{POPUP_GAP}px; \
+                "position:absolute; left:{popup_x}px; bottom:{gap}px; \
                  width:{popup_w}px; height:{popup_h}px; \
                  z-index:10; pointer-events:{pe};",
+                gap = popup_gap(graph_h),
                 pe = if is_dragging { "none" } else { "auto" },
             ),
             "data-testid": "eq-band-popup",
