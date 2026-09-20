@@ -802,12 +802,12 @@ pipewire-sys = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-rs.git"
 # Rebased branches are parked on the fork at fts-focus-2026-08 (onto
 # main) and fts-focus-2026-08b (onto db12391a, the last commit with
 # the `incremental` feature) so the rebase does not have to be redone.
-blitz-dom = { git = "https://github.com/FastTrackStudios/blitz", rev = "c82dd238000515c44c758845b9a17e9b48eb0087" }
-blitz-traits = { git = "https://github.com/FastTrackStudios/blitz", rev = "c82dd238000515c44c758845b9a17e9b48eb0087" }
-blitz-paint = { git = "https://github.com/FastTrackStudios/blitz", rev = "c82dd238000515c44c758845b9a17e9b48eb0087" }
-blitz-shell = { git = "https://github.com/FastTrackStudios/blitz", rev = "c82dd238000515c44c758845b9a17e9b48eb0087" }
-blitz-net = { git = "https://github.com/FastTrackStudios/blitz", rev = "c82dd238000515c44c758845b9a17e9b48eb0087" }
-blitz-html = { git = "https://github.com/FastTrackStudios/blitz", rev = "c82dd238000515c44c758845b9a17e9b48eb0087" }
+blitz-dom = { git = "https://github.com/FastTrackStudios/blitz", rev = "db4318a9e635973b01ce1500203592d34f12b4bb" }
+blitz-traits = { git = "https://github.com/FastTrackStudios/blitz", rev = "db4318a9e635973b01ce1500203592d34f12b4bb" }
+blitz-paint = { git = "https://github.com/FastTrackStudios/blitz", rev = "db4318a9e635973b01ce1500203592d34f12b4bb" }
+blitz-shell = { git = "https://github.com/FastTrackStudios/blitz", rev = "db4318a9e635973b01ce1500203592d34f12b4bb" }
+blitz-net = { git = "https://github.com/FastTrackStudios/blitz", rev = "db4318a9e635973b01ce1500203592d34f12b4bb" }
+blitz-html = { git = "https://github.com/FastTrackStudios/blitz", rev = "db4318a9e635973b01ce1500203592d34f12b4bb" }
 # Vendored one-line fix: quote scalars containing `<`/`>` — upstream
 # (facet-rs/facet) styx-format emits them bare but styx-parse rejects
 # them, so serialized keybind configs (`keys "<C-s>"`) could not be
