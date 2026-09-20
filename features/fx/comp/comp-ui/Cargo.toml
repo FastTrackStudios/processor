@@ -13,6 +13,11 @@ workspace = true
 # Core-only by default in the signal workspace (wasm remotes). The plugin
 # builds enable `native` for the Blitz/nice-plug editor.
 default = []
+# The painted visualiser: the transfer curve and the detector's own traces,
+# on the GPU where there is one and in vectors where there is not. Data in,
+# no parameter tree — see `viz::CompViz`, which is the half of the graph a
+# detached surface can mount.
+viz = ["dep:anyrender", "dep:blitz-dom", "dep:dioxus-native-dom", "dep:vello", "dep:bytemuck", "fts-audio-ui/shader"]
 # The Blitz/vello plugin editor: control view, nice-plug param tree, param
 # adapter. Off → only the portable core (profile view data model) compiles.
 native = [
@@ -36,6 +41,11 @@ native = [
 audiocore-core = { workspace = true, optional = true }
 architect-ui = { workspace = true, optional = true }
 fts-audio-ui = { workspace = true }
+anyrender = { workspace = true, optional = true }
+blitz-dom = { workspace = true, features = ["custom-widget"], optional = true }
+dioxus-native-dom = { workspace = true, optional = true }
+vello = { workspace = true, optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
 nice-plug = { workspace = true, optional = true }
 fts-plug-ui = { workspace = true, optional = true }
 preset-browser = { workspace = true, optional = true }
@@ -72,6 +82,10 @@ required-features = ["native"]
 # vendored dioxus-test (libs/vendor/dioxus-test) — same harness as eq-ui.
 dioxus = { workspace = true }
 dioxus-test = { workspace = true }
+# Validate the WGSL without a GPU — nothing else would catch a shader that
+# does not compile until someone ran a plugin, because a surface that fails
+# to build is indistinguishable from a renderer that declined.
+naga = { version = "29", features = ["wgsl-in"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [[test]]
