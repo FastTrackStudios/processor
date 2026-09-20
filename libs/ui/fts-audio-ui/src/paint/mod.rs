@@ -16,6 +16,7 @@
 //! own box, in CSS pixels.
 
 pub mod knob;
+pub mod lane;
 
 use peniko::Color;
 
