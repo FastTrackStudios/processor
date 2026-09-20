@@ -21,9 +21,18 @@ fn frame(
     engine: Engine,
     t: f32,
 ) -> fts_audio_ui::shader::probe::Frame {
+    with_params(probe, engine, t, [0.9, 0.75, 0.5, 1.0])
+}
+
+fn with_params(
+    probe: &fts_audio_ui::shader::probe::Probe,
+    engine: Engine,
+    t: f32,
+    params: [f32; 4],
+) -> fts_audio_ui::shader::probe::Frame {
     let u = Uniforms {
         frame: [W as f32, H as f32, t, engine_index(engine)],
-        params: [0.9, 0.75, 0.5, 1.0],
+        params,
         color: [34.0 / 255.0, 211.0 / 255.0, 238.0 / 255.0, 1.0],
     };
     probe.render(SHADER, bytemuck::bytes_of(&u), W, H)
@@ -77,6 +86,63 @@ fn every_engine_actually_moves() {
             d > 0.002,
             "{engine:?} is the same at two different times (difference {d:.5}) — \
              a still modulation panel says the effect is not running"
+        );
+    }
+}
+
+/// Every engine answers its own knobs.
+///
+/// A panel that animates but ignores the controls is the subtlest failure
+/// here: it looks alive, so nobody checks, and the player learns to ignore
+/// it because turning a knob does nothing. Each parameter is moved on its
+/// own, at a fixed moment, so only that parameter can account for the
+/// difference.
+#[test]
+fn every_engine_answers_rate_depth_and_mix() {
+    let Some(probe) = fts_audio_ui::shader::probe::Probe::open() else {
+        eprintln!("no GPU here — skipping");
+        return;
+    };
+    const T: f32 = 1.1;
+    // rate, depth, mix — each swung from low to high with the others held.
+    let knobs: [(&str, [f32; 4], [f32; 4]); 3] = [
+        ("rate", [0.25, 0.7, 0.6, 1.0], [3.5, 0.7, 0.6, 1.0]),
+        ("depth", [1.0, 0.10, 0.6, 1.0], [1.0, 0.95, 0.6, 1.0]),
+        ("mix", [1.0, 0.7, 0.05, 1.0], [1.0, 0.7, 1.00, 1.0]),
+    ];
+    for engine in Engine::ALL {
+        for (name, low, high) in knobs {
+            let a = with_params(&probe, engine, T, low);
+            let b = with_params(&probe, engine, T, high);
+            let d = a.difference(&b);
+            assert!(
+                d > 0.002,
+                "{engine:?} ignores {name} (difference {d:.5}) — a panel that \
+                 animates but does not answer its knobs looks alive and teaches \
+                 the player to stop looking at it"
+            );
+        }
+    }
+}
+
+/// Bypassed is dimmer than engaged, and still drawn. "Off" and "not
+/// configured" must not be the same picture.
+#[test]
+fn bypassed_is_dimmer_but_not_blank() {
+    let Some(probe) = fts_audio_ui::shader::probe::Probe::open() else {
+        eprintln!("no GPU here — skipping");
+        return;
+    };
+    for engine in Engine::ALL {
+        let on = with_params(&probe, engine, 1.1, [1.0, 0.7, 0.6, 1.0]);
+        let off = with_params(&probe, engine, 1.1, [1.0, 0.7, 0.6, 0.0]);
+        assert!(
+            off.coverage() > 0.02,
+            "{engine:?} bypassed is blank — it should keep its shape"
+        );
+        assert!(
+            on.difference(&off) > 0.01,
+            "{engine:?} looks the same bypassed as engaged"
         );
     }
 }

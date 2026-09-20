@@ -74,6 +74,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let engine = u.frame.w;
     let rate = max(u.params.x, 0.01);
     let depth = clamp(u.params.y, 0.0, 1.0);
+    // `wet` rather than `mix`: `mix` is a WGSL builtin and shadowing it costs
+    // every interpolation in the file.
+    let wet_mix = clamp(u.params.z, 0.0, 1.0);
     let engaged = u.params.w;
 
     // The LFO every engine is driven by, so they share a heartbeat even when
@@ -87,39 +90,67 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var field = 0.0;
 
     if (engine < CHORUS + 0.5) {
-        // Three voices weaving apart and back together.
+        // A braid.
         //
-        // Drawn as the voices themselves rather than as their interference
-        // pattern. Summing three detuned sines is the honest maths and a bad
-        // picture: the beat envelope is slow by construction, so it is one
-        // bright lobe in the middle of the lane with two thirds of the panel
-        // empty either side, and nothing about it says "three voices".
+        // A chorus is copies of one signal, each on its own slowly-moving
+        // delay, and what you hear is them pulling apart and closing again —
+        // so what it should look like is strands weaving through one
+        // another. Drawn as three separate lines it was legible but inert;
+        // drawn as a braid the voices actually cross, and every crossing is
+        // the thickening you hear, in the place you hear it.
         //
-        // What a chorus IS, to look at, is copies of one line pulling apart
-        // and closing again. Each voice is a curve; where they converge the
-        // light piles up, which is the thickening you hear.
-        var v = 0.0;
+        // Every parameter has something to move:
+        //   rate  — how many turns the braid makes across the lane
+        //   depth — how far the strands swing apart
+        //   mix   — how bright the wet strands are against the dry one
+        //
+        // One helix in three phases, a third of a turn apart, so the strands
+        // are genuinely the same path and genuinely interleave.
+        let turns = 0.9 + 2.4 * clamp(rate / 4.0, 0.0, 1.0);
+        let swing = 0.055 + depth * 0.32;
+        let wet = 0.45 + 0.75 * wet_mix;
+
+        var ys = array<f32, 3>(0.0, 0.0, 0.0);
+        var strands = 0.0;
         for (var i = 0; i < 3; i = i + 1) {
-            let which = f32(i) - 1.0;
-            // How far this voice has wandered from the dry one, breathing
-            // with the LFO and travelling along the panel so the weave moves
-            // rather than standing still.
-            let wander = sin(uv.x * TAU * 1.6 - phase * TAU + which * 1.9);
-            let spread = (0.06 + depth * 0.30) * which * wander;
-            let y = 0.5 + spread;
-            // A soft line, wider for the outer voices so the centre stays
-            // the one that reads as the signal.
-            // Thick enough to be the brightest thing on the panel. At
-            // 0.012 a voice was under two pixels on a rig lane, which the
-            // grain simply drowned.
-            let thick = 0.055 + 0.030 * abs(which);
-            let d = (uv.y - y) / thick;
-            // A core with a wider halo around it, so the voices read as
-            // light with body rather than as hairlines.
-            v = v + exp(-d * d) + exp(-abs(d) * 0.8) * 0.45;
+            let a = uv.x * turns * TAU - phase * TAU + f32(i) * (TAU / 3.0);
+            let y = 0.5 + sin(a) * swing;
+            ys[i] = y;
+            // Thinner than the old lines, because now there is light between
+            // them doing the work the thickness used to do.
+            let d = (uv.y - y) / 0.030;
+            strands = strands + (exp(-d * d) + exp(-abs(d) * 0.75) * 0.30) * wet;
         }
-        // Where two voices cross, the light adds — which is the whole point.
-        field = clamp(v * 0.62, 0.0, 1.6);
+
+        // The dry signal, steady down the middle. Without it there is
+        // nothing for the wet voices to be diverging FROM, and a braid with
+        // no axis is just a knot.
+        let dd = (uv.y - 0.5) / 0.016;
+        let dry = exp(-dd * dd) * 0.55;
+
+        // Where two strands converge the light piles up. This is the whole
+        // point: a crossing is where two copies agree, which is exactly the
+        // moment the sound thickens.
+        var knots = 0.0;
+        for (var i = 0; i < 3; i = i + 1) {
+            for (var j = i + 1; j < 3; j = j + 1) {
+                let gap = abs(ys[i] - ys[j]);
+                let meeting = exp(-gap * 22.0);
+                let centre = (ys[i] + ys[j]) * 0.5;
+                let k = (uv.y - centre) / 0.075;
+                knots = knots + meeting * exp(-k * k) * 0.85;
+            }
+        }
+
+        // The body the braid encloses, shimmering: the chorused signal has
+        // width, and the width is the effect.
+        var lo = min(ys[0], min(ys[1], ys[2]));
+        var hi = max(ys[0], max(ys[1], ys[2]));
+        let inside = smoothstep(lo - 0.02, lo + 0.02, uv.y)
+            * (1.0 - smoothstep(hi - 0.02, hi + 0.02, uv.y));
+        let shimmer = inside * (0.55 + 0.45 * sin(uv.x * 44.0 + t * 2.6)) * 0.16 * wet_mix;
+
+        field = strands + dry + knots + shimmer;
     } else if (engine < FLANGER + 0.5) {
         // A comb, and the teeth slide.
         //
@@ -132,7 +163,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let teeth = 5.0 + 20.0 * sweep;
         // |cos| is 1 at the peaks and 0 at the notches — the comb itself.
         let comb = abs(cos(uv.x * teeth * 3.14159265));
-        let gain = mix(1.0, comb, 0.25 + 0.75 * depth);
+        // How DEEP the notches go is the wet/dry blend, not the sweep: a
+        // comb filter nulls completely at 50/50 and not at all when the wet
+        // path is muted. Depth slides the teeth; mix decides whether there
+        // are teeth at all.
+        let gain = mix(1.0, comb, 0.08 + 0.92 * wet_mix);
         field = response_curve(uv, gain);
     } else if (engine < PHASER + 0.5) {
         // Allpass notches travelling through the band.
@@ -150,7 +185,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let centre = fract(home + travel * 0.22);
             let width = 0.030 + 0.022 * depth;
             let d = (uv.x - centre) / width;
-            gain = gain - depth * 0.9 * exp(-d * d);
+            // Same division as the flanger: depth moves the notches, mix
+            // decides how deep they cut.
+            gain = gain - (0.10 + 0.85 * wet_mix) * exp(-d * d);
         }
         field = response_curve(uv, clamp(gain, 0.0, 1.0));
     } else if (engine < TREMOLO + 0.5) {
@@ -162,7 +199,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // is silent for part of its cycle, but silence in a picture is
         // indistinguishable from nothing loaded.
         let swing = sin((uv.x - phase) * TAU) * 0.5 + 0.5;
-        let env = mix(1.0 - depth * 0.80, 1.0, swing);
+        // Depth is how far the level CAN swing; mix is how much of the
+        // swung signal you are hearing. With the wet path muted there is no
+        // tremolo however deep it is set, and the panel has to say so.
+        let reach = depth * 0.80 * (0.12 + 0.88 * wet_mix);
+        let env = mix(1.0 - reach, 1.0, swing);
         let carrier = sin(uv.x * 40.0 * TAU);
         field = carrier * env;
         field = field * step(mid, env);
@@ -176,7 +217,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // that visibly bunches and spreads says "the pitch is moving" in a
         // way a bar field cannot, because a bar field has no continuity for
         // the eye to follow along.
-        let bend = depth * 1.3 * sin((uv.x * 1.6 - phase) * TAU);
+        let bend = depth * 1.3 * (0.15 + 0.85 * wet_mix)
+            * sin((uv.x * 1.6 - phase) * TAU);
         let wave = sin((uv.x * 16.0 + bend * 6.0) * TAU);
         let y = 0.5 + wave * 0.30;
         let d = abs(uv.y - y);
@@ -229,7 +271,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             wake = wake + exp(-dd * dd * 70.0) * (0.55 / f32(i));
         }
 
-        field = path + horn + wake;
+        // The room is the wet path: the orbit and the wake are what the
+        // cabinet throws, and with the wet signal down you are left with the
+        // horn itself.
+        let room = 0.18 + 0.82 * wet_mix;
+        field = path * room + horn + wake * room;
     }
 
     // Grain, so a flat region reads as material rather than as a fill.
