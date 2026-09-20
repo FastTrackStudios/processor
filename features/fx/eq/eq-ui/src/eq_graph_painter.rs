@@ -110,10 +110,12 @@ impl Widget for EqGraphWidget {
         scene
     }
 
-    fn handle_event(&mut self, _event: &UiEvent) {
+    fn handle_event(&mut self, _event: &UiEvent) -> bool {
         // Paint-only widget: pointer interaction is handled by the DOM container's
         // event handlers (now that blitz's `element_coordinates()` is fixed), so
         // the `<object>` keeps `pointer-events: none` and this is never called.
+        // Nothing changed, so nothing needs repainting.
+        false
     }
 }
 
