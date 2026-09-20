@@ -111,19 +111,69 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         field = carrier * env;
         field = field * step(mid, env);
     } else if (engine < VIBRATO + 0.5) {
-        // Pitch, bending: the argument is modulated, so cycles bunch.
-        let bend = depth * 0.6 * sin((uv.x * 2.0 - phase) * TAU);
-        field = sin((uv.x * 30.0 + bend * 8.0) * TAU) * (1.0 - mid * 0.5);
+        // Pitch, bending — drawn as a WAVEFORM whose wavelength stretches and
+        // compresses, not as a field of bars.
+        //
+        // As bars it was a comb with uneven spacing, which is a flanger with
+        // uneven spacing: the two engines came out looking like the same
+        // picture, and they are not remotely the same effect. A single line
+        // that visibly bunches and spreads says "the pitch is moving" in a
+        // way a bar field cannot, because a bar field has no continuity for
+        // the eye to follow along.
+        let bend = depth * 1.3 * sin((uv.x * 1.6 - phase) * TAU);
+        let wave = sin((uv.x * 16.0 + bend * 6.0) * TAU);
+        let y = 0.5 + wave * 0.30;
+        let d = abs(uv.y - y);
+        // The trace, plus a wider glow so it has body at a rack lane's
+        // height.
+        field = exp(-(d * d) / 0.0016) + exp(-d * 9.0) * 0.40;
+        // Where the cycles bunch, the line is doing more — brighten it, so
+        // the modulation peak is readable without counting wavelengths.
+        let bunching = abs(cos((uv.x * 1.6 - phase) * TAU)) * depth;
+        field = field * (0.75 + 0.55 * bunching);
     } else {
-        // A horn going round: distance to a point on an orbit, and the
-        // doppler that comes with it.
+        // A horn going round, seen from above: the orbit it travels, the
+        // horn on it, and the doppler it throws into the room.
+        //
+        // Measured in ASPECT-CORRECTED space. `distance(uv, c)` on a lane
+        // that is three times wider than it is tall squashes the orbit into
+        // a sliver and puts almost all of the falloff in x — which is why
+        // this drew a single blob near the bottom and nothing else.
+        let aspect = max(u.frame.x, 1.0) / max(u.frame.y, 1.0);
+        let p = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
+
         let a = phase * TAU;
-        let c = vec2<f32>(0.5 + cos(a) * 0.32 * (0.5 + depth * 0.5), 0.5 + sin(a) * 0.30);
-        let d = distance(uv, c);
-        let near = sin(a) * 0.5 + 0.5;
-        field = exp(-d * d * (70.0 - 30.0 * near)) * 2.0 - 0.4;
-        // The room it throws into.
-        field = field + exp(-abs(d - 0.22) * 14.0) * 0.35 * near;
+        let radius = 0.36 * (0.60 + 0.40 * depth);
+        // Wider than tall, because a rotor seen from the front is an ellipse
+        // and the lane is wide.
+        let c = vec2<f32>(cos(a) * radius * 1.9, sin(a) * radius);
+        let d = distance(p, c);
+
+        // The orbit itself, faint: the path is context for the horn on it.
+        let on_path = abs(length(vec2<f32>(p.x / 1.9, p.y)) - radius);
+        // Bright enough to be the picture rather than a hint of one: the
+        // orbit is what says "this thing goes round", and the horn alone is
+        // a dot moving in the dark.
+        let path = exp(-on_path * 13.0) * 0.55;
+
+        // The horn. Coming toward you it is bright and tight; going away it
+        // is dim and smeared — which IS the doppler, drawn rather than
+        // described.
+        let toward = sin(a) * 0.5 + 0.5;
+        let tight = mix(45.0, 170.0, toward);
+        let horn = exp(-d * d * tight) * (0.85 + 1.05 * toward);
+
+        // The wake it drags behind itself around the orbit.
+        var wake = 0.0;
+        for (var i = 1u; i < 5u; i = i + 1u) {
+            let lag = f32(i) * 0.16;
+            let ca = a - lag;
+            let cp = vec2<f32>(cos(ca) * radius * 1.9, sin(ca) * radius);
+            let dd = distance(p, cp);
+            wake = wake + exp(-dd * dd * 70.0) * (0.55 / f32(i));
+        }
+
+        field = path + horn + wake;
     }
 
     // Grain, so a flat region reads as material rather than as a fill.

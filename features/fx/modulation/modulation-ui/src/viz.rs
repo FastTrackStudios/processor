@@ -74,7 +74,10 @@ pub struct ModView {
 pub type Shared<T> = Rc<RefCell<T>>;
 
 /// The WGSL the shader path runs. See `mod_shader.wgsl`.
-const MOD_SHADER: &str = include_str!("viz.wgsl");
+///
+/// Public so the engine contact sheet can render the real thing rather than a
+/// copy of it — see `examples/engine_sheet.rs`.
+pub const SHADER: &str = include_str!("viz.wgsl");
 
 /// The engine, painted — on the GPU where there is one, in vectors where
 /// there is not.
@@ -102,7 +105,7 @@ impl Widget for ModWidget {
     fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
         self.gpu = render_ctx
             .renderer_specific_context()
-            .and_then(|ctx| ShaderSurface::new(ctx, MOD_SHADER));
+            .and_then(|ctx| ShaderSurface::new(ctx, SHADER));
     }
 
     fn paint(
@@ -154,7 +157,7 @@ impl Widget for ModWidget {
 
 /// The engine, as the shader's `u.frame.w`. The order is the shader's
 /// constants; the two must agree, so they are written next to each other.
-fn engine_index(engine: Engine) -> f32 {
+pub fn engine_index(engine: Engine) -> f32 {
     match engine {
         Engine::Chorus => 0.0,
         Engine::Flanger => 1.0,
@@ -554,7 +557,7 @@ mod tests {
     /// and a feature that quietly never runs.
     #[test]
     fn the_shader_compiles_and_validates() {
-        let source = fts_audio_ui::shader::compose(MOD_SHADER);
+        let source = fts_audio_ui::shader::compose(SHADER);
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|e| panic!("the shader does not parse: {}", e.emit_to_string(&source)));
         let mut validator = naga::valid::Validator::new(

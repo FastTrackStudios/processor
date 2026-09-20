@@ -49,4 +49,9 @@ dioxus-test = { workspace = true }
 # Validate the WGSL without a GPU — nothing else would catch a shader that
 # does not compile until someone ran a plugin.
 naga = { version = "29", features = ["wgsl-in"] }
+# The engine contact sheet (examples/engine_sheet.rs) renders the real shader
+# on a real device — see .
+fts-audio-ui = { workspace = true, features = ["probe"] }
+bytemuck = { version = "1", features = ["derive"] }
+png = "0.18"
 tokio = { workspace = true, features = ["macros", "rt"] }
