@@ -64,6 +64,13 @@ pub struct CompView {
     /// Rolling gain-reduction trace, 0..=1, oldest → newest.
     pub gr: Vec<f32>,
     pub on: bool,
+    /// The pointer is within reach of the threshold line.
+    ///
+    /// A control you can grab should look like one before you try to. The
+    /// threshold is the only thing on this panel that is draggable and it
+    /// looks exactly like the rules that are not, so without this the only
+    /// way to find it is to press and see whether anything moved.
+    pub grabbable: bool,
     /// The lane's colour. The compressor's input is drawn white-grey — it is
     /// the signal ITSELF rather than an effect's contribution, and giving it
     /// a hue would make it look like one more coloured block in the rack.
@@ -75,6 +82,89 @@ pub struct CompView {
 
 /// The numbers a widget reads, written by the component that owns it.
 pub type Shared<T> = Rc<RefCell<T>>;
+
+/// The widget's own box, in the units a pointer arrives in.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CompMetrics {
+    /// Physical pixels.
+    pub width: f32,
+    pub height: f32,
+    /// Device pixel ratio, so a host can get back to CSS pixels.
+    pub scale: f32,
+}
+
+impl CompMetrics {
+    /// The panel's height in CSS pixels — the units `element_coordinates()`
+    /// reports in. Zero before the first paint, which a caller must treat as
+    /// "not measured yet" rather than as a real height.
+    #[must_use]
+    pub fn css_height(self) -> f64 {
+        if self.scale <= 0.0 {
+            return 0.0;
+        }
+        f64::from(self.height) / f64::from(self.scale)
+    }
+}
+
+/// A handle the widget writes its own box into, so a host can map a pointer
+/// into graph space WITHOUT measuring the element.
+///
+/// This exists because measuring is asynchronous and therefore wrong. A host
+/// that calls `get_client_rect().await` on pointer-down does not know whether
+/// the press hit anything until the await resolves — so the gesture starts a
+/// frame or more late, the first movement is dropped, and the cached rect is
+/// stale for the rest of the drag. `eq_graph` hit exactly this and says so in
+/// its own source: the offsets "were often stale (`get_client_rect` is async)
+/// which made hit-tests miss entirely".
+///
+/// The widget already knows its box — Blitz hands it one every paint — so it
+/// publishes it here and the host reads it synchronously.
+///
+/// A `Cell`, not a `RefCell`: this is read from event handlers and written
+/// from Blitz's paint traversal, and a `Copy` payload behind a `Cell` cannot
+/// be caught mid-borrow by either.
+#[derive(Clone, Default)]
+pub struct MetricsHandle(Rc<std::cell::Cell<CompMetrics>>);
+
+impl MetricsHandle {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// What the widget last painted into. All zeroes before the first paint.
+    #[must_use]
+    pub fn get(&self) -> CompMetrics {
+        self.0.get()
+    }
+
+    fn set(&self, m: CompMetrics) {
+        self.0.set(m);
+    }
+}
+
+impl From<CompMetrics> for MetricsHandle {
+    /// A handle that already holds a box, for a host's tests: the pointer
+    /// maths is worth testing without standing a renderer up to paint one.
+    fn from(m: CompMetrics) -> Self {
+        Self(Rc::new(std::cell::Cell::new(m)))
+    }
+}
+
+impl PartialEq for MetricsHandle {
+    /// By identity. Comparing the contents would make a prop that changes
+    /// every frame — the box is written on every paint — and re-render the
+    /// panel for a number nothing in the DOM draws.
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for MetricsHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MetricsHandle").field(&self.get()).finish()
+    }
+}
 
 /// The WGSL the shader path runs.
 const COMP_SHADER: &str = include_str!("viz.wgsl");
@@ -90,7 +180,7 @@ pub struct CompUniforms {
     pub frame: [f32; 4],
     /// `[threshold_db, ratio, knee_db, range_db]`.
     pub curve: [f32; 4],
-    /// `[in_db, gr_db, trace_len, _]`.
+    /// `[in_db, gr_db, trace_len, grabbable]`.
     pub meter: [f32; 4],
     /// The lane's colour; `w` unused.
     pub color: [f32; 4],
@@ -148,7 +238,7 @@ impl CompUniforms {
             } else {
                 TRACE_LEN as f32
             },
-            0.0,
+            if view.grabbable { 1.0 } else { 0.0 },
         ];
         u.color = [
             f32::from(r) / 255.0,
@@ -165,6 +255,8 @@ impl CompUniforms {
 /// The compressor's curve and traces, painted.
 pub struct CompWidget {
     view: Shared<CompView>,
+    /// Where this widget publishes its own box. See [`MetricsHandle`].
+    metrics: MetricsHandle,
     /// Built once, from whatever `can_create_surfaces` hands over. `None` on a
     /// renderer with no device to give, which is not an error: the vector
     /// painter below draws the same picture.
@@ -175,9 +267,10 @@ pub struct CompWidget {
 
 impl CompWidget {
     #[must_use]
-    pub fn new(view: Shared<CompView>) -> Self {
+    pub fn new(view: Shared<CompView>, metrics: MetricsHandle) -> Self {
         Self {
             view,
+            metrics,
             gpu: None,
             uniforms: CompUniforms::default(),
             born: std::time::Instant::now(),
@@ -202,8 +295,15 @@ impl Widget for CompWidget {
         _styles: &ComputedStyles,
         width: u32,
         height: u32,
-        _scale: f64,
+        scale: f64,
     ) -> Scene {
+        // Published before the early-out: a host mapping a pointer needs the
+        // box even on a frame this widget declines to draw.
+        self.metrics.set(CompMetrics {
+            width: width as f32,
+            height: height as f32,
+            scale: scale.max(1.0) as f32,
+        });
         let mut scene = Scene::new();
         let (w, h) = (f64::from(width), f64::from(height));
         if w < 2.0 || h < 2.0 {
@@ -243,10 +343,15 @@ impl Widget for CompWidget {
 fn paint_threshold(scene: &mut Scene, view: &CompView, w: f64, h: f64) {
     let (signal, _) = lane::palette(view.on, view.color);
     let y = db_to_y(f64::from(view.threshold), h);
+    let (width, alpha) = if view.grabbable {
+        (2.0, 0.95)
+    } else {
+        (1.0, 0.55)
+    };
     scene.stroke(
-        &Stroke::new(1.0),
+        &Stroke::new(width),
         Affine::IDENTITY,
-        lane::faded(signal, 0.55),
+        lane::faded(signal, alpha),
         None,
         &Line::new(Point::new(0.0, y), Point::new(w, y)),
     );
@@ -386,12 +491,23 @@ pub fn CompViz(
     /// Rolling traces `(input, gain reduction)`, each 0..=1, oldest → newest.
     wave: (Vec<f32>, Vec<f32>),
     on: bool,
+    /// The pointer is within reach of the threshold line. See
+    /// [`CompView::grabbable`].
+    #[props(default = false)]
+    grabbable: bool,
+    /// Where the widget publishes its own box, for a host that maps pointer
+    /// events into graph space. See [`MetricsHandle`].
+    #[props(default)]
+    metrics: MetricsHandle,
     color: [u8; 3],
 ) -> Element {
     use_repaint_clock();
     let view: Shared<CompView> = use_hook(|| Rc::new(RefCell::new(CompView::default())));
-    let attr =
-        use_hook(|| dioxus_native_dom::CustomWidgetAttr::new(CompWidget::new(Rc::clone(&view))));
+    let attr = use_hook({
+        let metrics = metrics.clone();
+        let view = Rc::clone(&view);
+        move || dioxus_native_dom::CustomWidgetAttr::new(CompWidget::new(view, metrics))
+    });
 
     let (input, gr) = wave;
     *view.borrow_mut() = CompView {
@@ -403,6 +519,7 @@ pub fn CompViz(
         input,
         gr,
         on,
+        grabbable,
         color,
         // The widget keeps its own clock; this is only a starting value.
         time: 0.0,
@@ -431,6 +548,7 @@ mod tests {
             input: (0..40).map(|i| i as f32 / 40.0).collect(),
             gr: (0..40).map(|i| i as f32 / 80.0).collect(),
             on: true,
+            grabbable: false,
             color: [228, 228, 231],
             time: 0.0,
         }

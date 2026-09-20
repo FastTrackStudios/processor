@@ -17,7 +17,7 @@ struct Comp {
     frame: vec4<f32>,
     // threshold_db, ratio, knee_db, range_db
     curve: vec4<f32>,
-    // in_db, gr_db, trace_len, unused
+    // in_db, gr_db, trace_len, grabbable
     meter: vec4<f32>,
     // the lane's colour; w unused
     color: vec4<f32>,
@@ -162,6 +162,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let work = (knee_top - uv.y) / max(knee_top, 1e-3);
         rgb += cut * work * 0.10;
         alpha += work * 0.09;
+    }
+
+    // ── The threshold, when it can be taken ─────────────────────────────
+    //
+    // The line itself stays geometry — the vector pass draws it, so it lands
+    // exactly where the pointer maths says it does. What the shader adds is
+    // the affordance: a glow along it while the pointer is in reach, so the
+    // one draggable thing on this panel stops looking like the rules that
+    // are not.
+    if (u.meter.w > 0.5) {
+        let ty = db_to_v(u.curve.x);
+        let near = exp(-abs(uv.y - ty) * 26.0);
+        let pulse = 0.78 + 0.22 * sin(t * TAU * 0.9);
+        let handle = near * 0.30 * pulse;
+        rgb += mix(cut, vec3<f32>(1.0), 0.35) * handle;
+        alpha += handle * 0.7;
     }
 
     // ── The ball ────────────────────────────────────────────────────────
