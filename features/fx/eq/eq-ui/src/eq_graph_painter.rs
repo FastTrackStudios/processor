@@ -110,14 +110,16 @@ impl Widget for EqGraphWidget {
         scene
     }
 
-    fn handle_event(&mut self, _event: &UiEvent) -> bool {
+    fn handle_event(&mut self, _event: &UiEvent) {
         // Paint-only widget: pointer interaction is handled by the DOM container's
         // event handlers (now that blitz's `element_coordinates()` is fixed), so
         // the `<object>` keeps `pointer-events: none` and this is never called.
         //
-        // The `bool` is "did this need repainting". Always `false` here: a
-        // widget that ignores the event changed nothing to draw.
-        false
+        // This returned a `bool` — "did this need repainting" — for a blitz
+        // that asks for one. The rev this workspace pins does not: its
+        // `Widget::handle_event` returns `()`, and the `bool` version does not
+        // compile here (E0053). Restore it together with the blitz bump, not
+        // before; the answer was always `false`, so nothing is lost meanwhile.
     }
 }
 
