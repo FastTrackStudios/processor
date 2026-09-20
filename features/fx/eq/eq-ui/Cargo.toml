@@ -31,6 +31,8 @@ default = []
 # — and a detached surface has none of that and wants none of it.
 graph = [
     "dep:nice-plug-dioxus",
+    "dep:bytemuck",
+    "fts-audio-ui/shader",
     "dep:architect-ui",
     "dep:futures-timer",
     "dep:atomic_float",
@@ -67,6 +69,7 @@ eq-dsp = { workspace = true }
 audiocore-core = { workspace = true, optional = true }
 architect-ui = { workspace = true, optional = true }
 fts-audio-ui = { workspace = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
 nice-plug = { workspace = true, optional = true }
 fts-plug-ui = { workspace = true, optional = true }
 nice-plug-dioxus = { workspace = true, optional = true }
@@ -102,6 +105,9 @@ name = "screenshots"
 required-features = ["native"]
 
 [dev-dependencies]
+# Validate the WGSL without a GPU — nothing else catches a shader that does
+# not compile until someone runs a plugin.
+naga = { version = "29", features = ["wgsl-in"] }
 # Headless GUI tests:
 # - tests/gui_smoke.rs — SSR structure tests (plain VirtualDom + dioxus-ssr).
 # - tests/gui_headless.rs — REAL event dispatch on a headless Blitz DOM via

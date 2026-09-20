@@ -49,6 +49,10 @@ pub mod preset_view;
 /// Exported as bytes because `include_str!` cannot cross a crate boundary.
 #[cfg(feature = "graph")]
 pub const TAILWIND_CSS: &str = include_str!("../assets/tailwind.css");
+/// The graph's shader layer — the analyser as a field, a bloom under every
+/// band. Painted under the vector graph; see [`eq_glow`].
+#[cfg(feature = "graph")]
+pub mod eq_glow;
 #[cfg(feature = "graph")]
 pub mod eq_graph_painter;
 #[cfg(feature = "graph")]

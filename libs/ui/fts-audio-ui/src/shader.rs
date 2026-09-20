@@ -91,6 +91,22 @@ impl ShaderSurface {
     /// a chance to get it wrong.
     #[must_use]
     pub fn new(ctx: Box<dyn std::any::Any>, source: &str) -> Option<Self> {
+        Self::with_uniform_size(ctx, source, std::mem::size_of::<Uniforms>() as u64)
+    }
+
+    /// Same, for a panel whose uniforms are bigger than [`Uniforms`] — a
+    /// spectrum's worth of bins, a chain's worth of band positions.
+    ///
+    /// The size is fixed at creation because a uniform buffer is: growing one
+    /// means a new buffer, a new bind group and a new pipeline, and a panel
+    /// that needed that every frame would be rebuilding its GPU state instead
+    /// of drawing.
+    #[must_use]
+    pub fn with_uniform_size(
+        ctx: Box<dyn std::any::Any>,
+        source: &str,
+        uniform_size: u64,
+    ) -> Option<Self> {
         let handle = ctx.downcast::<vello::util::DeviceHandle>().ok()?;
         let device = Arc::new(handle.device.clone());
         let queue = Arc::new(handle.queue.clone());
@@ -101,7 +117,7 @@ impl ShaderSurface {
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fx-shader-uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
+            size: uniform_size.max(16),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -181,6 +197,19 @@ impl ShaderSurface {
         h: u32,
         uniforms: Uniforms,
     ) -> bool {
+        self.draw_raw(ctx, scene, w, h, bytemuck::bytes_of(&uniforms))
+    }
+
+    /// Same, for a panel with its own uniform block. See
+    /// [`with_uniform_size`](Self::with_uniform_size).
+    pub fn draw_raw(
+        &mut self,
+        ctx: &mut dyn RenderContext,
+        scene: &mut Scene,
+        w: u32,
+        h: u32,
+        uniforms: &[u8],
+    ) -> bool {
         if w == 0 || h == 0 {
             return false;
         }
@@ -191,8 +220,7 @@ impl ShaderSurface {
             return false;
         };
 
-        self.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        self.queue.write_buffer(&self.uniforms, 0, uniforms);
 
         let mut encoder = self
             .device

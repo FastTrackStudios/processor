@@ -79,18 +79,106 @@ impl CoordMapper {
 /// `object` element via `CustomWidgetAttr::new(EqGraphWidget::new(state))`.
 pub struct EqGraphWidget {
     state: Arc<EqGraphRenderState>,
+    /// The light: the analyser as a field and a bloom under every band,
+    /// painted beneath the vector graph. `None` where the renderer gave no
+    /// device — the graph is complete without it, which is why the glow is a
+    /// layer rather than a rewrite.
+    glow: Option<fts_audio_ui::shader::ShaderSurface>,
+    /// Kept between frames so the arrays are not rebuilt from nothing each
+    /// time; the analyser is rewritten, the bands are cleared and re-pushed.
+    glow_uniforms: crate::eq_glow::Glow,
+    born: std::time::Instant,
 }
 
 impl EqGraphWidget {
-    pub const fn new(state: Arc<EqGraphRenderState>) -> Self {
-        Self { state }
+    pub fn new(state: Arc<EqGraphRenderState>) -> Self {
+        Self {
+            state,
+            glow: None,
+            glow_uniforms: crate::eq_glow::Glow::default(),
+            born: std::time::Instant::now(),
+        }
+    }
+}
+
+impl EqGraphWidget {
+    /// Fill the glow's uniforms from the graph's own state and draw it.
+    ///
+    /// Reads the same `EqGraphRenderState` the vector pass reads, so the light
+    /// and the drawing can never disagree about where a band is — which is
+    /// the entire reason the halo is convincing.
+    fn paint_glow(
+        &mut self,
+        render_ctx: &mut dyn RenderContext,
+        scene: &mut Scene,
+        width: u32,
+        height: u32,
+    ) {
+        let Some(glow) = self.glow.as_mut() else {
+            return;
+        };
+        let cfg = self.state.config.read().clone();
+        let bands = self.state.bands.read().clone();
+        let spectrum = self.state.spectrum_db.read().clone();
+
+        let u = &mut self.glow_uniforms;
+        u.frame[0] = f64::from(width) as f32;
+        u.frame[1] = f64::from(height) as f32;
+        u.frame[2] = self.born.elapsed().as_secs_f32();
+        u.cfg[1] = cfg.db_range as f32;
+        let _ = &cfg;
+        u.set_spectrum(&spectrum, -90.0);
+        u.clear_nodes();
+
+        // Zero padding, as the vector pass uses, so the light lands exactly
+        // under the node rather than a few pixels off it.
+        let cfg = GraphConfig {
+            rect_w: f64::from(width),
+            rect_h: f64::from(height),
+            ..cfg
+        };
+        let cm = CoordMapper::new(&cfg, 0.0);
+        for band in bands.iter().filter(|b| b.used && b.enabled) {
+            let x = cm.freq_to_x(f64::from(band.frequency)) as f32;
+            let y = cm.db_to_y(f64::from(band.gain)) as f32;
+            // A band that is doing more gets a bigger, brighter halo — the
+            // light says how much the filter is moving, which the node's
+            // position alone does not.
+            let lift =
+                (f64::from(band.gain).abs() / cfg.db_range.max(1.0)).clamp(0.0, 1.0) as f32;
+            let radius = 9.0 + 26.0 * lift;
+            let strength = 0.22 + 0.78 * lift;
+            // The band's own colour, from the one function that decides it —
+            // a halo in a different hue from its ring would read as two
+            // things sitting on top of each other.
+            let c = hex_to_color(&freq_to_color(f64::from(band.frequency))).to_rgba8();
+            u.push_node(
+                x,
+                y,
+                radius,
+                strength,
+                [
+                    f32::from(c.r) / 255.0,
+                    f32::from(c.g) / 255.0,
+                    f32::from(c.b) / 255.0,
+                ],
+            );
+        }
+
+        glow.draw_raw(render_ctx, scene, width, height, bytemuck::bytes_of(u));
     }
 }
 
 impl Widget for EqGraphWidget {
+    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+        self.glow = render_ctx
+            .renderer_specific_context()
+            .and_then(crate::eq_glow::surface);
+    }
+
     fn paint(
         &mut self,
-        _render_ctx: &mut dyn RenderContext,
+        render_ctx: &mut dyn RenderContext,
         _styles: &ComputedStyles,
         width: u32,
         height: u32,
@@ -106,6 +194,9 @@ impl Widget for EqGraphWidget {
             cfg.rect_h = f64::from(height);
             cfg.scale = scale.max(1.0);
         }
+        // The light goes down first, so the curves and the node rings are read
+        // against it rather than through it.
+        self.paint_glow(render_ctx, &mut scene, width, height);
         paint_eq_graph_scene(&mut scene, &self.state, Affine::IDENTITY, width, height);
         scene
     }
