@@ -81,6 +81,39 @@ struct Target {
     size: (u32, u32),
 }
 
+/// The wgpu device and queue inside whatever the renderer boxed up, or
+/// `None` if it boxed something this build cannot read.
+///
+/// `RenderContext::renderer_specific_context` hands back a `Box<dyn Any>`, so
+/// the type has to be guessed exactly — and there is more than one right
+/// answer. `anyrender_vello` boxes `wgpu_context::DeviceHandle`, and the
+/// `wgpu_context` major depends on which `anyrender_vello` the host linked:
+/// 0.11 (nice-plug's baseview path, for the plugins) brings 0.6, 0.12 (the
+/// Blitz desktop path) brings 0.7. To `Any` those are unrelated types, and
+/// the same binary can contain both.
+///
+/// Guessing only one of them is the failure this function exists to prevent:
+/// the downcast fails, the panel keeps its vector fallback, and nothing
+/// anywhere reports an error — the picture is simply less good than it should
+/// be, for months, which is exactly what happened.
+///
+/// `vello::util::DeviceHandle` is tried too: vello declares its own, and a
+/// host that hands that one over is not wrong to.
+fn device_and_queue(ctx: Box<dyn std::any::Any>) -> Option<(wgpu::Device, wgpu::Queue)> {
+    let ctx = match ctx.downcast::<wgpu_context_07::DeviceHandle>() {
+        Ok(h) => return Some((h.device.clone(), h.queue.clone())),
+        Err(ctx) => ctx,
+    };
+    let ctx = match ctx.downcast::<wgpu_context_06::DeviceHandle>() {
+        Ok(h) => return Some((h.device.clone(), h.queue.clone())),
+        Err(ctx) => ctx,
+    };
+    match ctx.downcast::<vello::util::DeviceHandle>() {
+        Ok(h) => Some((h.device.clone(), h.queue.clone())),
+        Err(_) => None,
+    }
+}
+
 impl ShaderSurface {
     /// Build a surface from whatever the renderer handed over, if it handed
     /// over a wgpu device at all.
@@ -107,13 +140,25 @@ impl ShaderSurface {
         source: &str,
         uniform_size: u64,
     ) -> Option<Self> {
-        let handle = ctx.downcast::<vello::util::DeviceHandle>().ok()?;
-        let device = Arc::new(handle.device.clone());
-        let queue = Arc::new(handle.queue.clone());
+        // A renderer that declines and a surface that fails to build look
+        // identical from the panel's side — both leave the panel with no
+        // surface and a scene that is still a legal drawing. One line says
+        // which, so the next person chasing a missing shader does not have to
+        // guess at it from the picture.
+        let Some((device, queue)) = device_and_queue(ctx) else {
+            tracing::debug!(
+                shader.surface = "declined",
+                "the renderer handed out no wgpu device; the vector fallback is what will draw"
+            );
+            return None;
+        };
+        tracing::debug!(shader.surface = "built", shader.uniform_bytes = uniform_size);
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fx-shader"),
-            source: wgpu::ShaderSource::Wgsl(format!("{PRELUDE}\n{source}").into()),
+            source: wgpu::ShaderSource::Wgsl(compose(source).into()),
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fx-shader-uniforms"),
@@ -291,8 +336,14 @@ impl ShaderSurface {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            // Rendered into by us, sampled by vello.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // Rendered into by us, then handed to vello — which does not
+            // sample it in place: it blits the registered texture into its own
+            // image atlas, so COPY_SRC is as required as the other two. Leave
+            // it off and the frame dies in the command encoder rather than at
+            // registration, which reads as a vello bug and is not one.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -322,9 +373,13 @@ impl Drop for ShaderSurface {
     }
 }
 
-/// The half of every shader that is the same: a full-screen triangle and the
-/// uniforms, so a panel's WGSL is only its `fs_main`.
-pub const PRELUDE: &str = r#"
+/// The default uniform block, for a panel that is happy with [`Uniforms`].
+///
+/// Kept out of [`PRELUDE`] because a panel with a uniform block of its own
+/// binds the same slot: two `@group(0) @binding(0) var<uniform> u` in one
+/// module is a redefinition, and the shader does not compile. See
+/// [`compose`].
+pub const DEFAULT_UNIFORMS: &str = r#"
 struct Uniforms {
     // width, height, seconds, engine
     frame: vec4<f32>,
@@ -334,7 +389,11 @@ struct Uniforms {
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+"#;
 
+/// The half of every shader that is the same: a full-screen triangle, so a
+/// panel's WGSL is only its `fs_main`.
+pub const PRELUDE: &str = r#"
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -353,6 +412,27 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VsOut {
     return out;
 }
 "#;
+
+/// A panel's WGSL as the device actually sees it.
+///
+/// The vertex stage is always supplied. The default uniform block is supplied
+/// only when the panel did not bring its own: a panel with a bigger block —
+/// a spectrum's worth of bins, a chain's worth of band positions — declares
+/// `@group(0) @binding(0)` itself, and adding ours on top of it is a
+/// redefinition that fails to compile.
+///
+/// This is also what the shader tests must validate. Validating a panel's
+/// WGSL on its own passes while the composed module does not compile, which
+/// is how the binding collision survived: every panel silently fell back to
+/// vectors and no test was looking at the text the device was given.
+#[must_use]
+pub fn compose(source: &str) -> String {
+    if source.contains("@binding(0)") {
+        format!("{PRELUDE}\n{source}")
+    } else {
+        format!("{DEFAULT_UNIFORMS}\n{PRELUDE}\n{source}")
+    }
+}
 
 #[cfg(test)]
 mod tests {

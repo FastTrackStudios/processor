@@ -16,6 +16,16 @@ tracing = { workspace = true }
 anyrender = { workspace = true }
 wgpu = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
+# The device handle the renderer hands a custom widget, in every shape it
+# comes in. `anyrender_vello` boxes `wgpu_context::DeviceHandle`, and which
+# `wgpu_context` that is depends on which `anyrender_vello` the host links:
+# 0.11 (the baseview/plugin path) carries 0.6, 0.12 (the Blitz desktop path)
+# carries 0.7. They are different types to `Any`, so a downcast that knows
+# only one of them fails — silently, because the fallback is a legal drawing.
+# Both resolve to the same `wgpu`, so once unwrapped the device and queue are
+# interchangeable. See `ShaderSurface::with_uniform_size`.
+wgpu-context-06 = { package = "wgpu_context", version = "0.6", optional = true }
+wgpu-context-07 = { package = "wgpu_context", version = "0.7", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }
@@ -31,7 +41,7 @@ default = []
 # The GPU path for painted panels: a WGSL fragment shader rendered into a
 # texture the compositor is handed. Off by default because it pulls wgpu,
 # and a surface that only ever draws vectors should not carry it.
-shader = ["dep:wgpu", "dep:vello", "dep:bytemuck"]
+shader = ["dep:wgpu", "dep:vello", "dep:bytemuck", "dep:wgpu-context-06", "dep:wgpu-context-07"]
 # Enable nih_plug ParamPtr adapter for ParamHandle.
 # Consumers building plugins should enable this; UI-only consumers can leave it off.
 nih-plug = []
