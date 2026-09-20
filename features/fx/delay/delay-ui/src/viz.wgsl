@@ -197,6 +197,43 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             alpha += rail * 0.7;
         }
     }
+    if (is_family(DIGITAL) && lit) {
+        // A quantisation lattice: fine, exact, evenly spaced, and utterly
+        // regular. A digital delay's character is that it does the
+        // arithmetic and nothing else, which is a hard thing to DRAW —
+        // "absence of artefact" has no shape. The grid is the positive
+        // version of it: the machine's own ruler, visible behind the
+        // repeats that land exactly on it.
+        let ticks = 64.0;
+        let cell = fract(uv.x * ticks);
+        let tick = smoothstep(0.90, 1.0, abs(cell - 0.5) * 2.0);
+        let near_rule = exp(-abs(uv.y - 0.5) * 7.0);
+        let lattice = tick * near_rule * 0.09;
+        rgb += tint * lattice;
+        alpha += lattice * 0.6;
+    }
+    if (is_family(TAPE) && lit) {
+        // The transport itself: the tape path running the length of the
+        // lane, wowing as it goes. The repeats sit ON it, which is why they
+        // are not where the arithmetic says — the picture shows the thing
+        // that moved them rather than only the result.
+        let wow = sin(uv.x * 4.0 + t * 0.7) * 0.10 + sin(uv.x * 9.0 - t * 2.3) * 0.025;
+        let path = exp(-abs((uv.y - 0.5) - wow) * 26.0);
+        let ribbon = path * (0.10 + 0.05 * sin(uv.x * 30.0 - t * 4.0));
+        rgb += mix(tint, vec3<f32>(1.0, 0.72, 0.42), 0.55) * ribbon;
+        alpha += ribbon * 0.55;
+    }
+    if (is_family(ANALOG) && lit) {
+        // A bucket brigade's noise floor, rising along the lane. The chip
+        // hisses and the clock leaks, and by the end of the tail there is
+        // more of that than there is repeat — which is the reason nobody
+        // runs one at high feedback and is invisible in a clean drawing.
+        let grain = hash1(floor(px.x * 0.9) * 2.3 + floor(px.y * 0.9) * 7.1 + floor(t * 12.0));
+        let floor_h = exp(-abs(uv.y - 0.5) * 4.5);
+        let hiss = grain * floor_h * (0.05 + 0.30 * uv.x) * 0.22;
+        rgb += mix(tint, vec3<f32>(0.42, 0.36, 0.50), 0.6) * hiss;
+        alpha += hiss * 0.7;
+    }
     if (is_family(SPECIAL) && lit) {
         // A repeat that is no longer one: reversed, filtered, dissolved.
         // The lane itself is unstable — a drifting veil that says the
@@ -332,6 +369,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let cap_rgb = mix(voice, vec3<f32>(1.0), 0.45);
         rgb += cap_rgb * cap * (0.5 + 0.5 * level + 0.5 * hit);
         alpha += cap * (0.5 + 0.4 * level + 0.4 * hit);
+
+        // A pitch delay's rung: a short horizontal tick beside each repeat,
+        // stepped further from the centre with every one. The colour says a
+        // note changed; the ladder says BY HOW MUCH, and in which direction
+        // — an interval is a distance and a distance wants to be drawn as
+        // one.
+        if (is_family(PITCH)) {
+            let rising = pan < 0.0;
+            let step_n = age * 5.0;
+            let rung_y = mid + select(1.0, -1.0, rising) * u.frame.y * 0.055 * step_n;
+            let rung_w = max(u.frame.x * 0.010, 5.0);
+            let rx = 1.0 - smoothstep(rung_w * 0.55, rung_w, abs(dx));
+            let ry = exp(-abs(px.y - rung_y) / max(u.frame.y * 0.008, 1.0));
+            let rung = rx * ry * 0.55;
+            rgb += mix(voice, vec3<f32>(1.0), 0.3) * rung;
+            alpha += rung * 0.65;
+        }
 
         // A pitch delay's repeats get a standing halo in their own colour,
         // not only a lit one. The note each repeat lands on is the whole

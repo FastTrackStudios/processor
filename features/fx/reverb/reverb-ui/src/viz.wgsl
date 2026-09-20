@@ -52,13 +52,97 @@ fn is_family(f: f32) -> bool {
 // them all with the same early field made every algorithm look alike, which
 // is the one thing a per-algorithm picture must not do.
 fn early_count(density: f32) -> f32 {
-    if (is_family(ROOM)) { return 5.0 + 9.0 * density; }
-    if (is_family(HALL)) { return 8.0 + 22.0 * density; }
+    if (is_family(ROOM)) { return 6.0 + 8.0 * density; }
+    if (is_family(HALL)) { return 8.0 + 20.0 * density; }
+    // A plate has no walls and a spring's early field IS its chirp; an
+    // ambient's is velvet's grains. None of them has discrete arrivals to
+    // draw, and drawing some anyway is what made every family look alike.
     if (is_family(PLATE)) { return 0.0; }
-    if (is_family(SPRING)) { return 3.0 + 4.0 * density; }
+    if (is_family(SPRING)) { return 0.0; }
     if (is_family(AMBIENT)) { return 0.0; }
-    if (is_family(CONVOLUTION)) { return 14.0 + 40.0 * density; }
-    return 6.0 + 30.0 * density;
+    if (is_family(SPECIAL)) { return 16.0 + 16.0 * density; }
+    if (is_family(CONVOLUTION)) { return 20.0 + 28.0 * density; }
+    return 6.0 + 26.0 * density;
+}
+
+/// The most arrivals the early field draws.
+const MAX_EARLY: u32 = 48u;
+
+// WHERE the early reflections land, which is the family's fingerprint.
+//
+// Every family used one hash for placement and differed only in how many
+// arrivals it drew — so a room, a hall, a gated reverb and a convolution all
+// showed the same scatter at different densities, and the eye reads the same
+// scatter as the same machine. The pattern has to differ, because the pattern
+// is the thing: a room's returns come off parallel walls in pairs, a hall's
+// thicken as the space diffuses, a measured space arrives in clusters with
+// real gaps between them, and a random space's do not stay where they were.
+//
+// `k` is 0..1 across the early span, `py` is -1..1 across the lane.
+fn early_field(k: f32, py: f32, density: f32, t: f32) -> f32 {
+    let total = early_count(density);
+    if (total < 0.5) { return 0.0; }
+    let n = u32(min(total, f32(MAX_EARLY)));
+
+    var acc = 0.0;
+    for (var i = 0u; i < MAX_EARLY; i = i + 1u) {
+        if (i >= n) { break; }
+        let fi = f32(i);
+        let fn_ = f32(n);
+        let s1 = hash11(fi + 1.0);
+        let s2 = hash11(fi + 17.0);
+
+        var kx = (fi + 0.5) / fn_;
+        var y = mix(-0.8, 0.8, s2);
+        var amp = 0.45 + 0.55 * s1;
+        var w = 0.030;
+
+        if (is_family(ROOM)) {
+            // Off parallel walls, in pairs, evenly: a box returns the same
+            // slap from two sides and it is regular enough to count.
+            kx = (fi + 0.5) / fn_;
+            y = select(0.62, -0.62, (i % 2u) == 0u) * (0.65 + 0.35 * s1);
+            amp = (1.0 - kx * 0.45) * (0.7 + 0.3 * s1);
+            w = 0.022;
+        } else if (is_family(HALL)) {
+            // Sparse at first and thickening: a big space takes time to
+            // diffuse, and watching it fill in IS the size.
+            kx = pow((fi + 0.5) / fn_, 0.62);
+            amp = (0.35 + 0.65 * s1) * (0.55 + 0.45 * kx);
+            w = 0.034;
+        } else if (is_family(RANDOM)) {
+            // They do not stay where they were. Position AND height drift,
+            // which is the one family whose character is that it is never
+            // the same twice.
+            kx = clamp((fi + 0.5) / fn_ + sin(t * 0.55 + fi * 1.7) * 0.045, 0.0, 1.0);
+            y = sin(t * 0.7 + fi * 2.3) * 0.82;
+            amp = 0.45 + 0.55 * s1;
+            w = 0.032;
+        } else if (is_family(SPECIAL)) {
+            // A lattice. Gated reverbs are dense and machine-made, and the
+            // regularity is why the cliff at the end reads as a decision
+            // rather than as an ending.
+            kx = (fi + 0.5) / fn_;
+            y = (f32(i % 5u) / 4.0 - 0.5) * 1.7;
+            amp = 0.85;
+            w = 0.018;
+        } else if (is_family(CONVOLUTION)) {
+            // Clusters with real gaps between them. A measured space is not
+            // evenly spaced — that is exactly how a recording differs from
+            // a synthesis, and it is the only honest way to draw one.
+            let group = floor(fi / 5.0);
+            let within = fi - group * 5.0;
+            kx = clamp(group * 0.235 + within * 0.028 + s1 * 0.018, 0.0, 1.0);
+            y = mix(-0.92, 0.92, s2);
+            amp = (0.3 + 0.7 * s1) * (1.0 - kx * 0.35);
+            w = 0.016;
+        }
+
+        let dk = (k - kx) / w;
+        let dy = (py - y) / 0.26;
+        acc = acc + exp(-(dk * dk + dy * dy)) * amp;
+    }
+    return acc;
 }
 
 // How far into the window the early field reaches, as a fraction.
@@ -189,7 +273,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // reflection is the clearest thing separating a room from a hall and it
     // should look like silence — but it is not black, or the gap reads as a
     // panel that has not loaded.
-    let base = mix(vec3<f32>(0.018, 0.010, 0.034), tint, 0.10);
+    // Violet-led rather than near-neutral: the ground is most of the panel,
+    // so where it sits between black and the lane's colour is what the eye
+    // actually calls the panel's colour.
+    let base = mix(vec3<f32>(0.036, 0.016, 0.068), tint, 0.16);
     let along = mix(1.30, 0.78, uv.x);
     let across = mix(1.12, 0.70, clamp(off, 0.0, 1.0));
     let ground_rgb = base * along * across * (1.0 - gap * 0.45);
@@ -256,23 +343,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // until they stop being countable and become the wash. That transition
     // IS density, and it is why this is grain rather than a number.
     let early_span = predelay + max(u.params.x, 1e-3) * early_reach();
-    let n = early_count(density);
-    if (at < early_span && at >= predelay && n > 0.5) {
+    if (at < early_span && at >= predelay) {
         let k = (at - predelay) / max(early_span - predelay, 1e-4);
-        let cell = floor(k * n);
-        let seed = hash11(cell + 1.0);
-        // Each reflection sits somewhere off the centre; its own height
-        // falls with the envelope like everything else.
-        let y = mix(-0.8, 0.8, hash11(cell + 17.0));
-        let d = length(vec2<f32>((fract(k * n) - 0.5) * (u.frame.x / n), (uv.y - mid) * 2.0 - y) * vec2<f32>(1.0, u.frame.y * 0.25));
-        let r = max(u.frame.x * 0.0016, 1.6) + 4.0 * (1.0 - density) + 2.5 * seed;
         // Early reflections thin out towards the wash rather than stopping at
         // a hard line — the transition from countable to uncountable IS the
         // density, and an edge would draw a boundary the ear does not hear.
-        let into_wash = 1.0 - smoothstep(0.55, 1.0, k);
-        let spark = exp(-(d * d) / (r * r)) * env * (0.45 + 0.55 * seed) * into_wash;
-        rgb += hot * spark * 1.35;
-        alpha += spark * 0.85;
+        let into_wash = 1.0 - smoothstep(0.58, 1.0, k);
+        let field = early_field(k, (uv.y - mid) * 2.0, density, t);
+        let spark = field * env * into_wash;
+        rgb += hot * spark * 1.25;
+        alpha += spark * 0.80;
     }
 
     // ── The wash ────────────────────────────────────────────────────────
