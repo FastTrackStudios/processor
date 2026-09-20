@@ -11,6 +11,10 @@ workspace = true
 
 [features]
 default = []
+# The painted visualiser: what the effect is actually doing, on the GPU where
+# there is one and in vectors where there is not. Wants a Blitz host for the
+# custom-widget mechanism, which is why it is not on by default.
+viz = ["dep:anyrender", "dep:blitz-dom", "dep:dioxus-native-dom", "dep:vello", "dep:bytemuck", "fts-audio-ui/shader"]
 native = [
     "dep:nice-plug",
     "dep:fts-plug-ui",
@@ -23,6 +27,11 @@ native = [
 [dependencies]
 architect-ui = { workspace = true, optional = true }
 fts-audio-ui = { workspace = true }
+anyrender = { workspace = true, optional = true }
+blitz-dom = { workspace = true, features = ["custom-widget"], optional = true }
+dioxus-native-dom = { workspace = true, optional = true }
+vello = { workspace = true, optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
 nice-plug = { workspace = true, optional = true }
 fts-plug-ui = { workspace = true, optional = true }
 nice-plug-dioxus = { workspace = true, optional = true }
@@ -42,6 +51,10 @@ required-features = ["native"]
 [dev-dependencies]
 dioxus = { workspace = true }
 dioxus-test = { workspace = true }
+# Validate the WGSL without a GPU — nothing else would catch a shader that
+# does not compile until someone ran a plugin, because a surface that fails
+# to build is indistinguishable from a renderer that declined.
+naga = { version = "29", features = ["wgsl-in"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [[test]]

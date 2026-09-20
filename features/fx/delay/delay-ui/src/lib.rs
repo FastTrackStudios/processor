@@ -7,6 +7,13 @@
 
 pub mod faces;
 
+/// The live picture of what the effect is doing — one widget, two painters:
+/// WGSL where the renderer hands over a device, vectors where it does not.
+/// Behind a feature because it wants a Blitz host for the custom-widget
+/// mechanism, which a plain wasm remote has not got.
+#[cfg(feature = "viz")]
+pub mod viz;
+
 #[cfg(feature = "native")]
 pub mod control_view;
 #[cfg(feature = "native")]

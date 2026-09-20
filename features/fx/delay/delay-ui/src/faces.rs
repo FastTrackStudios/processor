@@ -370,7 +370,7 @@ pub fn EchoFace(
     let design = design_for(&profile_id);
     let profile =
         delay_profiles::profile_by_id(&profile_id).unwrap_or(&delay_profiles::PROFILES[0]);
-    let scale = fts_audio_ui::hardware::panel::panel_scale(W, H, crate::control_view::RAIL_W);
+    let scale = fts_audio_ui::hardware::panel::panel_scale(W, H, fts_audio_ui::shell::RAIL_W);
 
     let value = |name: &str| handles.get(name).map_or(0.5, |h| f64::from(h.normalized()));
     let (feedback, time, tone) = (value("feedback"), value("time_l"), value("tone"));
