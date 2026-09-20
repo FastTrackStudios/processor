@@ -554,7 +554,7 @@ mod tests {
     /// and a feature that quietly never runs.
     #[test]
     fn the_shader_compiles_and_validates() {
-        let source = format!("{}\n{}", fts_audio_ui::shader::PRELUDE, MOD_SHADER);
+        let source = fts_audio_ui::shader::compose(MOD_SHADER);
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|e| panic!("the shader does not parse: {}", e.emit_to_string(&source)));
         let mut validator = naga::valid::Validator::new(

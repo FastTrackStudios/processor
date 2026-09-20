@@ -19,6 +19,10 @@ struct Glow {
     frame: vec4<f32>,
     // node_count, db_range, spectrum_floor_db, unused
     cfg: vec4<f32>,
+    // node_glow, spectrum_glow, hue_spread, bloom — the look, mirroring
+    // `GlowStyle` in eq_glow.rs. Everything else here is measurement; this
+    // row is the only taste.
+    style: vec4<f32>,
     // Each bin's magnitude in dB, packed four to a row.
     bins: array<vec4<f32>, 32>,
     // x, y, radius, strength — in pixels, already laid out by the graph.
@@ -29,21 +33,9 @@ struct Glow {
 
 @group(0) @binding(0) var<uniform> u: Glow;
 
-struct VsOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> VsOut {
-    var out: VsOut;
-    let x = f32((idx << 1u) & 2u);
-    let y = f32(idx & 2u);
-    let uv = vec2<f32>(x, y) * 2.0;
-    out.uv = vec2<f32>(uv.x, 1.0 - uv.y);
-    out.pos = vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
-    return out;
-}
+// `VsOut` and `vs_main` come from the shared prelude — every panel draws the
+// same full-screen triangle, and a second copy here is a redefinition the
+// device rejects.
 
 // One bin, by index, out of the packed rows.
 fn bin_at(i: u32) -> f32 {
@@ -71,11 +63,43 @@ fn spectrum_height(x: f32) -> f32 {
     return clamp((db - floor_db) / (0.0 - floor_db), 0.0, 1.0);
 }
 
+// The analyser's hue at this point on the frequency axis.
+//
+// The graph already colours a band by where it sits — a low shelf is not the
+// same colour as an air band — and the analyser using the same sweep means the
+// light under a node and the node itself agree. It also does the work a single
+// colour cannot: with one hue the only thing carrying frequency is horizontal
+// position, and on a log axis that is exactly where the eye is worst at it.
+//
+// `hue_spread` at 0 collapses the sweep to one hue, for a panel that wants the
+// analyser to read as one object.
+fn spectrum_hue(x: f32, energy: f32) -> vec3<f32> {
+    let low = vec3<f32>(1.00, 0.36, 0.42);
+    let mid = vec3<f32>(0.45, 0.85, 0.55);
+    let high = vec3<f32>(0.40, 0.72, 1.00);
+    let air = vec3<f32>(0.78, 0.60, 1.00);
+
+    let k = clamp(x, 0.0, 1.0) * 3.0;
+    var swept = mix(low, mid, clamp(k, 0.0, 1.0));
+    swept = mix(swept, high, clamp(k - 1.0, 0.0, 1.0));
+    swept = mix(swept, air, clamp(k - 2.0, 0.0, 1.0));
+
+    // The neutral the sweep collapses towards.
+    let flat = vec3<f32>(0.52, 0.80, 1.0);
+    let hue = mix(flat, swept, clamp(u.style.z, 0.0, 1.0));
+    // Loud runs towards white: a peak should look hot, not merely tall.
+    return mix(hue, vec3<f32>(1.0), 0.45 * energy * energy);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
     let px = uv * vec2<f32>(u.frame.x, u.frame.y);
     let t = u.frame.z;
+
+    let node_glow = max(u.style.x, 0.0);
+    let spectrum_glow = max(u.style.y, 0.0);
+    let bloom = max(u.style.w, 0.0);
 
     var rgb = vec3<f32>(0.0);
     var alpha = 0.0;
@@ -86,6 +110,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // what makes a loud band look loud rather than just tall: energy spilling
     // past its own edge is how light behaves, and the eye reads it before it
     // reads a height.
+    //
+    // This is the ONLY analyser on the panel. The vector pass is told to skip
+    // its own (`GraphPaint::spectrum`), because the same data drawn twice with
+    // two different smoothings reads as the analyser being wrong rather than
+    // as a second layer.
     let h = spectrum_height(uv.x);
     let top = 1.0 - h;
     let below = smoothstep(0.0, 0.012, uv.y - top);
@@ -94,16 +123,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The rim, tight to the edge.
     let rim = exp(-abs(uv.y - top) * 190.0) * (0.35 + 0.65 * h);
     // The spill above it, wider where there is more energy.
-    let spill = exp(-max(top - uv.y, 0.0) * (26.0 - 12.0 * h)) * 0.30 * h;
+    let spill = exp(-max(top - uv.y, 0.0) * (26.0 - 12.0 * h)) * 0.30 * h * bloom;
+    // A vertical shimmer riding the rim, so a held note is alive rather than a
+    // frozen outline. Tied to the energy, so silence is genuinely still.
+    let shimmer = exp(-abs(uv.y - top) * 70.0)
+        * 0.18 * h * (0.5 + 0.5 * sin(uv.x * 46.0 + t * 2.1));
 
-    // Cool at the bottom of the band, hot at the top — a spectrum that is all
-    // one colour hides where the energy actually is.
-    let warm = vec3<f32>(0.42, 0.78, 1.0);
-    let hot = vec3<f32>(0.75, 0.93, 1.0);
-    let spectrum_rgb = mix(warm, hot, h);
+    let spectrum_rgb = spectrum_hue(uv.x, h);
 
-    rgb += spectrum_rgb * (body + rim * 1.5 + spill);
-    alpha += body * 0.55 + rim * 0.85 + spill * 0.7;
+    rgb += spectrum_rgb * ((body + rim * 1.5 + spill + shimmer) * spectrum_glow);
+    alpha += (body * 0.55 + rim * 0.85 + spill * 0.7 + shimmer * 0.5) * spectrum_glow;
 
     // ── The bands ───────────────────────────────────────────────────────
     //
@@ -123,9 +152,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let breath = 1.0 + 0.06 * sin(t * TAU * 0.35 + f32(i) * 1.7);
         let core = exp(-(d * d) / (r * r * 0.55 * breath));
         let halo = exp(-d / (r * 3.2 * breath)) * 0.45;
-        let lit = (core + halo) * strength;
+        // A tight bright centre on top of the two soft falloffs, so the node
+        // reads as a source of the light rather than as a patch of it.
+        let spark = exp(-(d * d) / (r * r * 0.05)) * 0.9;
+        let lit = (core + halo + spark * bloom) * strength * node_glow;
 
-        rgb += u.node_color[i].rgb * lit;
+        // The band's own colour, undiluted at the centre and kept saturated in
+        // the falloff. Each node glowing its OWN hue is the whole point: it is
+        // what ties a halo to the ring drawn over it and to its place on the
+        // frequency sweep.
+        let tint = mix(u.node_color[i].rgb, vec3<f32>(1.0), 0.35 * spark);
+        rgb += tint * lit;
         alpha += lit * 0.60;
     }
 
