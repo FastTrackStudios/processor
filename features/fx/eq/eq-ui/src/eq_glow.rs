@@ -41,6 +41,9 @@ pub struct Glow {
     pub frame: [f32; 4],
     /// `[node_count, db_range, spectrum_floor_db, _]`.
     pub cfg: [f32; 4],
+    /// The look, and the only thing here that is taste rather than data:
+    /// `[node_glow, spectrum_glow, hue_spread, bloom]`. See [`GlowStyle`].
+    pub style: [f32; 4],
     /// Bin magnitudes in dB, packed four per row.
     pub bins: [[f32; 4]; MAX_BINS / 4],
     /// `[x, y, radius, strength]` in pixels.
@@ -49,11 +52,57 @@ pub struct Glow {
     pub node_color: [[f32; 4]; MAX_NODES],
 }
 
+/// The dials on the look of the light.
+///
+/// Separate from the data rows because it is the half of the shader that is a
+/// choice rather than a measurement: the same spectrum and the same bands can
+/// read as a clinical analyser or as a lit instrument, and which one a panel
+/// wants depends on where it is — a rig's rack panel and the plugin's own
+/// full-size window are not after the same picture.
+#[derive(Clone, Copy, Debug)]
+pub struct GlowStyle {
+    /// Brightness of each band's halo, 0..~2.
+    pub node_glow: f32,
+    /// Brightness of the analyser's body and rim, 0..~2.
+    pub spectrum_glow: f32,
+    /// How far the analyser's colour travels across the frequency axis, 0..1.
+    /// At 0 it is one hue; at 1 it runs the full sweep low → high.
+    pub hue_spread: f32,
+    /// How far energy spills past its own edge, 0..~2. This is what makes a
+    /// loud band look loud rather than merely tall.
+    pub bloom: f32,
+}
+
+impl Default for GlowStyle {
+    fn default() -> Self {
+        Self {
+            node_glow: 1.0,
+            spectrum_glow: 1.0,
+            hue_spread: 1.0,
+            bloom: 1.0,
+        }
+    }
+}
+
+impl GlowStyle {
+    /// The row the shader reads.
+    #[must_use]
+    pub fn pack(self) -> [f32; 4] {
+        [
+            self.node_glow,
+            self.spectrum_glow,
+            self.hue_spread,
+            self.bloom,
+        ]
+    }
+}
+
 impl Default for Glow {
     fn default() -> Self {
         Self {
             frame: [0.0; 4],
             cfg: [0.0; 4],
+            style: GlowStyle::default().pack(),
             bins: [[0.0; 4]; MAX_BINS / 4],
             nodes: [[0.0; 4]; MAX_NODES],
             node_color: [[0.0; 4]; MAX_NODES],
@@ -125,17 +174,23 @@ mod tests {
     #[test]
     fn the_uniform_block_is_vec4_rows() {
         assert_eq!(std::mem::size_of::<Glow>() % 16, 0);
-        // frame + cfg + 32 bin rows + 24 node rows + 24 colour rows.
-        assert_eq!(std::mem::size_of::<Glow>(), (2 + 32 + 24 + 24) * 16);
+        // frame + cfg + style + 32 bin rows + 24 node rows + 24 colour rows.
+        assert_eq!(std::mem::size_of::<Glow>(), (3 + 32 + 24 + 24) * 16);
     }
 
     /// The shader compiles. Nothing else would notice if it did not: a
     /// surface that fails to build is indistinguishable from a renderer that
     /// declined, so the glow would silently never appear.
+    ///
+    /// Validated as `compose` assembles it, not on its own: the glow declares
+    /// its own uniform binding, and validating the fragment alone passed
+    /// happily while the composed module was a redefinition of `u` that no
+    /// device would accept.
     #[test]
     fn the_shader_compiles_and_validates() {
-        let module = naga::front::wgsl::parse_str(SHADER)
-            .unwrap_or_else(|e| panic!("the glow shader does not parse: {}", e.emit_to_string(SHADER)));
+        let source = fts_audio_ui::shader::compose(SHADER);
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|e| panic!("the glow shader does not parse: {}", e.emit_to_string(&source)));
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::empty(),

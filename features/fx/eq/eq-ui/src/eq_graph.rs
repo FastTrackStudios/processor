@@ -32,7 +32,10 @@ pub use super::eq_graph_model::{
 use super::eq_graph_painter::EqGraphWidget;
 use super::eq_graph_popup::{BandContextMenu, BandPopup, BandReadoutChip, EmptyGraphContextMenu};
 pub use super::eq_graph_response::{calculate_band_response, calculate_combined_response};
-use spectrum_analyzer::dsp::AnalyzerSnapshot;
+// Re-exported: `analyzer_snapshot` is a prop, so anything that mounts the
+// graph has to be able to name its type. A host outside this repo should not
+// have to take a dependency on the analyzer crate to feed the analyzer.
+pub use spectrum_analyzer::dsp::AnalyzerSnapshot;
 
 /// Get current timestamp in milliseconds.
 pub(crate) fn now_ms() -> f64 {

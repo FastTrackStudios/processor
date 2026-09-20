@@ -87,6 +87,9 @@ pub struct EqGraphWidget {
     /// Kept between frames so the arrays are not rebuilt from nothing each
     /// time; the analyser is rewritten, the bands are cleared and re-pushed.
     glow_uniforms: crate::eq_glow::Glow,
+    /// The look of the light — taste, not data. See
+    /// [`GlowStyle`](crate::eq_glow::GlowStyle).
+    glow_style: crate::eq_glow::GlowStyle,
     born: std::time::Instant,
 }
 
@@ -96,8 +99,17 @@ impl EqGraphWidget {
             state,
             glow: None,
             glow_uniforms: crate::eq_glow::Glow::default(),
+            glow_style: crate::eq_glow::GlowStyle::default(),
             born: std::time::Instant::now(),
         }
+    }
+
+    /// Restyle the light. A host that wants a quieter or hotter panel than the
+    /// default sets it here rather than editing the shader.
+    #[must_use]
+    pub fn with_glow_style(mut self, style: crate::eq_glow::GlowStyle) -> Self {
+        self.glow_style = style;
+        self
     }
 }
 
@@ -107,15 +119,18 @@ impl EqGraphWidget {
     /// Reads the same `EqGraphRenderState` the vector pass reads, so the light
     /// and the drawing can never disagree about where a band is — which is
     /// the entire reason the halo is convincing.
+    ///
+    /// `true` when the light actually went down, which tells the caller the
+    /// vector pass must not lay its own ground on top of it.
     fn paint_glow(
         &mut self,
         render_ctx: &mut dyn RenderContext,
         scene: &mut Scene,
         width: u32,
         height: u32,
-    ) {
+    ) -> bool {
         let Some(glow) = self.glow.as_mut() else {
-            return;
+            return false;
         };
         let cfg = self.state.config.read().clone();
         let bands = self.state.bands.read().clone();
@@ -126,6 +141,7 @@ impl EqGraphWidget {
         u.frame[1] = f64::from(height) as f32;
         u.frame[2] = self.born.elapsed().as_secs_f32();
         u.cfg[1] = cfg.db_range as f32;
+        u.style = self.glow_style.pack();
         let _ = &cfg;
         u.set_spectrum(&spectrum, -90.0);
         u.clear_nodes();
@@ -144,10 +160,16 @@ impl EqGraphWidget {
             // A band that is doing more gets a bigger, brighter halo — the
             // light says how much the filter is moving, which the node's
             // position alone does not.
+            // Presence first, gain second. A band that exists is lit in its
+            // own colour whether or not it is boosting: an EQ sitting flat is
+            // the ordinary case, and sizing the halo off `|gain|` alone left
+            // every node on a flat curve as a 9 px, 22%-bright dot — which is
+            // indistinguishable from no glow at all. Gain still reads, as a
+            // halo that grows and brightens; it just is not the whole of it.
             let lift =
                 (f64::from(band.gain).abs() / cfg.db_range.max(1.0)).clamp(0.0, 1.0) as f32;
-            let radius = 9.0 + 26.0 * lift;
-            let strength = 0.22 + 0.78 * lift;
+            let radius = 30.0 + 34.0 * lift;
+            let strength = 0.80 + 0.45 * lift;
             // The band's own colour, from the one function that decides it —
             // a halo in a different hue from its ring would read as two
             // things sitting on top of each other.
@@ -165,7 +187,7 @@ impl EqGraphWidget {
             );
         }
 
-        glow.draw_raw(render_ctx, scene, width, height, bytemuck::bytes_of(u));
+        glow.draw_raw(render_ctx, scene, width, height, bytemuck::bytes_of(u))
     }
 }
 
@@ -195,9 +217,39 @@ impl Widget for EqGraphWidget {
             cfg.scale = scale.max(1.0);
         }
         // The light goes down first, so the curves and the node rings are read
-        // against it rather than through it.
-        self.paint_glow(render_ctx, &mut scene, width, height);
-        paint_eq_graph_scene(&mut scene, &self.state, Affine::IDENTITY, width, height);
+        // against it rather than through it. That only works if nothing
+        // repaints the ground afterwards — and the graph's own background fill
+        // covers the whole panel, so left to itself it draws the glow and then
+        // hides every pixel of it. The widget lays the ground here instead,
+        // once, before the light, and tells the graph not to lay it again.
+        let wants_ground = self.state.config.read().fill_background;
+        if wants_ground && self.glow.is_some() {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(10, 10, 10),
+                None,
+                &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+            );
+        }
+        let glowed = self.paint_glow(render_ctx, &mut scene, width, height);
+        paint_eq_graph_scene_with(
+            &mut scene,
+            &self.state,
+            Affine::IDENTITY,
+            width,
+            height,
+            GraphPaint {
+                // Laid above when there was a glow to protect; otherwise the
+                // graph lays it exactly as it always did.
+                background: wants_ground && !glowed,
+                // The glow draws the analyser itself, as light. Drawing it
+                // again as geometry puts two curves of the same data on the
+                // panel with different smoothing — which reads as the
+                // analyser being wrong, not as a second layer.
+                spectrum: !glowed,
+            },
+        );
         scene
     }
 
@@ -226,6 +278,49 @@ pub fn paint_eq_graph_scene(
     width: u32,
     height: u32,
 ) {
+    let paint = GraphPaint {
+        background: state.config.read().fill_background,
+        ..GraphPaint::default()
+    };
+    paint_eq_graph_scene_with(scene, state, transform, width, height, paint);
+}
+
+/// What the vector pass should draw, for a caller that has drawn some of it
+/// already.
+///
+/// The GPU glow paints the ground and the analyser *under* the graph, so the
+/// vector pass must not paint either on top: an opaque background rect hides
+/// every pixel of the light, and a second analyser curve over the lit one is
+/// the same data drawn twice, in two different styles, disagreeing about
+/// smoothing at every pixel.
+#[derive(Clone, Copy, Debug)]
+pub struct GraphPaint {
+    /// Fill the panel's ground before drawing.
+    pub background: bool,
+    /// Draw the analyser as vector geometry.
+    pub spectrum: bool,
+}
+
+impl Default for GraphPaint {
+    /// Everything — what a caller with no GPU surface wants.
+    fn default() -> Self {
+        Self {
+            background: true,
+            spectrum: true,
+        }
+    }
+}
+
+/// Same as [`paint_eq_graph_scene`], for a caller that has drawn some of the
+/// graph itself. See [`GraphPaint`].
+pub fn paint_eq_graph_scene_with(
+    scene: &mut Scene,
+    state: &EqGraphRenderState,
+    transform: Affine,
+    width: u32,
+    height: u32,
+    paint: GraphPaint,
+) {
     let elem_w = f64::from(width);
     let elem_h = f64::from(height);
     if elem_w < 1.0 || elem_h < 1.0 {
@@ -250,7 +345,7 @@ pub fn paint_eq_graph_scene(
     let cm = CoordMapper::new(&cfg, padding);
     let area = Rect::new(0.0, 0.0, elem_w, elem_h);
 
-    if cfg.fill_background {
+    if paint.background {
         let bg = Color::from_rgb8(10, 10, 10);
         scene.fill(Fill::NonZero, transform, bg, None, &area);
     }
@@ -269,10 +364,12 @@ pub fn paint_eq_graph_scene(
     let has_analyzer = analyzer.freq_hz.len() >= 2
         && (analyzer.pre_db.len() == analyzer.freq_hz.len()
             || analyzer.post_db.len() == analyzer.freq_hz.len());
-    if has_analyzer {
-        paint_analyzer(scene, &cm, &cfg, &analyzer, transform, elem_h);
-    } else if spectrum.len() >= 2 {
-        paint_spectrum(scene, &cm, &cfg, &spectrum, transform);
+    if paint.spectrum {
+        if has_analyzer {
+            paint_analyzer(scene, &cm, &cfg, &analyzer, transform, elem_h);
+        } else if spectrum.len() >= 2 {
+            paint_spectrum(scene, &cm, &cfg, &spectrum, transform);
+        }
     }
 
     let num_points = 400;
