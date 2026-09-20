@@ -35,6 +35,38 @@ fn noise(p: vec2<f32>) -> f32 {
     );
 }
 
+// A frequency response, drawn as a curve with a body under it.
+//
+// `gain` is 0..1 at this column — 1 is untouched, 0 is a full notch. The
+// filter engines are drawn this way rather than as a field of brightness
+// because a field cannot say HOW MANY notches there are or how deep they go,
+// and that is the entire difference between the two of them: a flanger is a
+// dense harmonic comb, a phaser is four or six dips wandering through the
+// band. Rendered as brightness they were both "vertical banding" and the
+// pair was indistinguishable.
+fn response_curve(uv: vec2<f32>, gain: f32) -> f32 {
+    // 1 near the top of the lane, 0 near the bottom, with a margin so a full
+    // notch still has somewhere to be.
+    let y = 0.14 + (1.0 - clamp(gain, 0.0, 1.0)) * 0.72;
+    let d = uv.y - y;
+
+    // A tight core inside a wider glow, rather than one falloff doing both
+    // jobs: the core is what makes the curve readable to a pixel, the glow
+    // is what makes it look like light.
+    let core = exp(-(d * d) / 0.00035);
+    let glow = exp(-abs(d) * 11.0) * 0.34;
+    // A body under it, so the curve reads as a filled response and not as a
+    // wire — falling away beneath its own edge rather than filling flat. A
+    // constant fill is a coloured rectangle with a line on top: it says the
+    // response reached here and nothing about the shape, and on a short lane
+    // it is most of the lane.
+    let below = max(d, 0.0);
+    let under = smoothstep(0.0, 0.014, d) * (0.09 + 0.24 * gain) * exp(-below * 2.6);
+    // And a haze above it, so a peak looks like one.
+    let halo = exp(-max(-d, 0.0) * 9.0) * 0.18 * gain;
+    return core * 1.25 + glow + under + halo;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
@@ -89,21 +121,38 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // Where two voices cross, the light adds — which is the whole point.
         field = clamp(v * 0.62, 0.0, 1.6);
     } else if (engine < FLANGER + 0.5) {
-        // A comb whose teeth slide: cos of a frequency that sweeps.
+        // A comb, and the teeth slide.
+        //
+        // HARMONIC: the notches are integer multiples of one delay, evenly
+        // spaced all the way up, and there are a lot of them. That is what a
+        // flanger is and what separates it from the phaser beside it — the
+        // count and the regularity, both of which a response curve states
+        // and a brightness field cannot.
         let sweep = (lfo * 0.5 + 0.5) * depth;
-        let teeth = 6.0 + 26.0 * sweep;
-        field = cos(uv.x * teeth * TAU) * (1.0 - mid * 0.5);
-        // Sharpen toward notches, which is where a flanger lives.
-        field = sign(field) * pow(abs(field), 0.45);
+        let teeth = 5.0 + 20.0 * sweep;
+        // |cos| is 1 at the peaks and 0 at the notches — the comb itself.
+        let comb = abs(cos(uv.x * teeth * 3.14159265));
+        let gain = mix(1.0, comb, 0.25 + 0.75 * depth);
+        field = response_curve(uv, gain);
     } else if (engine < PHASER + 0.5) {
-        // Four allpass notches travelling through the band.
-        var v = 1.0;
-        for (var i = 0; i < 4; i = i + 1) {
-            let centre = fract(0.12 + 0.2 * f32(i) + (lfo * 0.5 + 0.5) * 0.3);
-            let d = (uv.x - centre) / (0.035 + 0.02 * depth);
-            v = v - depth * exp(-d * d);
+        // Allpass notches travelling through the band.
+        //
+        // FEW, and NOT harmonically spaced — that is the whole difference
+        // from the comb next door. Six of them, drifting at their own rates,
+        // wide enough to see individually.
+        let travel = lfo * 0.5 + 0.5;
+        var gain = 1.0;
+        for (var i = 0; i < 6; i = i + 1) {
+            let fi = f32(i);
+            // Spacing that widens as it climbs, so no two gaps match and the
+            // eye cannot read it as a comb.
+            let home = 0.08 + fi * 0.13 + fi * fi * 0.012;
+            let centre = fract(home + travel * 0.22);
+            let width = 0.030 + 0.022 * depth;
+            let d = (uv.x - centre) / width;
+            gain = gain - depth * 0.9 * exp(-d * d);
         }
-        field = (v - 0.5) * 2.0 * (1.0 - mid * 0.6);
+        field = response_curve(uv, clamp(gain, 0.0, 1.0));
     } else if (engine < TREMOLO + 0.5) {
         // Amplitude, pumping: the carrier's envelope is the LFO.
         //
@@ -228,11 +277,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // switched off, not unloaded.
     let ground_rgb = ground_base * across * along * mix(0.45, 1.0, engaged);
     let edge = 1.0 - smoothstep(0.80, 1.0, mid) * 0.40;
+    // An inner shadow along the top, and a hairline of light along the
+    // bottom. Costs almost nothing and is the difference between a panel
+    // that sits IN the rack and a rectangle of colour laid on top of it.
+    let inset = 1.0 - exp(-uv.y * 34.0) * 0.55;
+    let sill = exp(-(1.0 - uv.y) * 46.0) * 0.14;
     let ground_a = 0.94 * edge;
+    let ground_lit = ground_rgb * inset + base * sill;
 
     // Field over ground, composited rather than summed. The ground is not
     // light the panel is emitting, it is the panel.
     let out_a = alpha + ground_a * (1.0 - alpha);
-    let out_rgb = rgb * alpha + ground_rgb * ground_a * (1.0 - alpha);
+    let out_rgb = rgb * alpha + ground_lit * ground_a * (1.0 - alpha);
     return vec4<f32>(out_rgb, out_a);
 }

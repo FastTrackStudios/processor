@@ -43,6 +43,10 @@ dioxus = { workspace = true }
 name = "screenshots"
 required-features = ["native"]
 
+[[test]]
+name = "engines_differ"
+required-features = ["viz"]
+
 [dev-dependencies]
 dioxus = { workspace = true }
 dioxus-test = { workspace = true }
