@@ -42,8 +42,49 @@ pub enum Engine {
     Rotary,
 }
 
+/// Which of the two slots an engine belongs in.
+///
+/// Not a preset and not a colour: the rig has two modulation slots and they
+/// hold different machines. One colours a signal where it stands, the other
+/// moves it — and a panel that offered a tremolo in the slot meant for a
+/// chorus would be offering the wrong thing, whatever hue it was drawn in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    /// Chorus, flanger, phaser — they change the signal's colour in place.
+    Colouring,
+    /// Tremolo, vibrato, rotary — they move it: in level, in pitch, in space.
+    Moving,
+}
+
 impl Engine {
+    /// The three that colour a signal. The rig's MOD slot.
+    pub const COLOURING: [Self; 3] = [Self::Chorus, Self::Flanger, Self::Phaser];
+
+    /// The three that move it. The rig's MOTION slot.
+    pub const MOVING: [Self; 3] = [Self::Tremolo, Self::Vibrato, Self::Rotary];
+
+    /// Which slot this engine belongs in.
+    #[must_use]
+    pub const fn group(self) -> Group {
+        match self {
+            Self::Chorus | Self::Flanger | Self::Phaser => Group::Colouring,
+            Self::Tremolo | Self::Vibrato | Self::Rotary => Group::Moving,
+        }
+    }
+
+    /// The engines in `group`.
+    #[must_use]
+    pub const fn of(group: Group) -> [Self; 3] {
+        match group {
+            Group::Colouring => Self::COLOURING,
+            Group::Moving => Self::MOVING,
+        }
+    }
+
     /// Every engine, in the order the shader's constants declare them.
+    ///
+    /// Which is also [`COLOURING`](Self::COLOURING) followed by
+    /// [`MOVING`](Self::MOVING) — the rig's two slots, in order.
     pub const ALL: [Self; 6] = [
         Self::Chorus,
         Self::Flanger,
@@ -515,6 +556,31 @@ mod tests {
             color: [34, 211, 238],
             time: 0.0,
         }
+    }
+
+    /// The two slots partition the engines: every engine is in exactly one,
+    /// and `ALL` is the two of them in order. A host that lists the wrong
+    /// three offers a tremolo where a chorus belongs.
+    #[test]
+    fn the_groups_partition_the_engines() {
+        for engine in Engine::ALL {
+            let group = engine.group();
+            assert!(
+                Engine::of(group).contains(&engine),
+                "{engine:?} says {group:?} but is not listed there"
+            );
+            let other = match group {
+                Group::Colouring => Group::Moving,
+                Group::Moving => Group::Colouring,
+            };
+            assert!(
+                !Engine::of(other).contains(&engine),
+                "{engine:?} is in both groups"
+            );
+        }
+        let mut joined = Engine::COLOURING.to_vec();
+        joined.extend(Engine::MOVING);
+        assert_eq!(joined, Engine::ALL.to_vec(), "ALL is the two slots in order");
     }
 
     /// Every engine paints, at every size a panel takes, at every point in its
