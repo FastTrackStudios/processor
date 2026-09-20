@@ -145,7 +145,10 @@ impl Default for DelayView {
 pub type Shared<T> = Rc<RefCell<T>>;
 
 /// The WGSL the shader path runs.
-const DELAY_SHADER: &str = include_str!("viz.wgsl");
+///
+/// Public so the family contact sheet can render the real thing rather than a
+/// copy of it — see `examples/family_sheet.rs`.
+pub const SHADER: &str = include_str!("viz.wgsl");
 
 /// The uniform block, laid out to match `Delay` in `viz.wgsl`.
 ///
@@ -236,7 +239,7 @@ impl Widget for DelayWidget {
         self.gpu = render_ctx.renderer_specific_context().and_then(|ctx| {
             ShaderSurface::with_uniform_size(
                 ctx,
-                DELAY_SHADER,
+                SHADER,
                 std::mem::size_of::<DelayUniforms>() as u64,
             )
         });
@@ -822,7 +825,7 @@ mod tests {
     /// composed module collides with the prelude.
     #[test]
     fn the_shader_compiles_and_validates() {
-        let source = fts_audio_ui::shader::compose(DELAY_SHADER);
+        let source = fts_audio_ui::shader::compose(SHADER);
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
             panic!("the delay shader does not parse: {}", e.emit_to_string(&source))
         });

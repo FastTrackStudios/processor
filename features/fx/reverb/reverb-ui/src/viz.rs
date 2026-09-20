@@ -116,7 +116,10 @@ impl Default for ReverbView {
 pub type Shared<T> = Rc<RefCell<T>>;
 
 /// The WGSL the shader path runs.
-const REVERB_SHADER: &str = include_str!("viz.wgsl");
+///
+/// Public so the family contact sheet can render the real thing rather than a
+/// copy of it — see `examples/family_sheet.rs`.
+pub const SHADER: &str = include_str!("viz.wgsl");
 
 /// The uniform block, laid out to match `Reverb` in `viz.wgsl`.
 ///
@@ -200,7 +203,7 @@ impl Widget for ReverbWidget {
         self.gpu = render_ctx.renderer_specific_context().and_then(|ctx| {
             ShaderSurface::with_uniform_size(
                 ctx,
-                REVERB_SHADER,
+                SHADER,
                 std::mem::size_of::<ReverbUniforms>() as u64,
             )
         });
@@ -571,7 +574,7 @@ mod tests {
     /// for why validating the fragment alone is not enough.
     #[test]
     fn the_shader_compiles_and_validates() {
-        let source = fts_audio_ui::shader::compose(REVERB_SHADER);
+        let source = fts_audio_ui::shader::compose(SHADER);
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
             panic!("the reverb shader does not parse: {}", e.emit_to_string(&source))
         });

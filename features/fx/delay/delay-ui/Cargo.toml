@@ -55,6 +55,11 @@ dioxus-test = { workspace = true }
 # does not compile until someone ran a plugin, because a surface that fails
 # to build is indistinguishable from a renderer that declined.
 naga = { version = "29", features = ["wgsl-in"] }
+# The family contact sheet (examples/family_sheet.rs) renders the real shader
+# on a real device — see .
+fts-audio-ui = { workspace = true, features = ["probe"] }
+bytemuck = { version = "1", features = ["derive"] }
+png = "0.18"
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [[test]]

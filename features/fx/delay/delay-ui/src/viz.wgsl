@@ -55,9 +55,9 @@ fn hash1(p: f32) -> f32 {
 // clock that was never clean. Drawn as the bar getting wider and losing its
 // cap, because that is what the ear hears as the repeat going soft.
 fn smear(age: f32) -> f32 {
-    if (is_family(TAPE)) { return age * 0.55; }
-    if (is_family(ANALOG)) { return age * 1.05; }
-    if (is_family(SPECIAL)) { return age * 0.85; }
+    if (is_family(TAPE)) { return age * 1.6; }
+    if (is_family(ANALOG)) { return age * 3.2; }
+    if (is_family(SPECIAL)) { return age * 1.4; }
     return 0.0;
 }
 
@@ -65,13 +65,21 @@ fn smear(age: f32) -> f32 {
 // repeat. Zero for everything that is not a transport — a digital delay that
 // wobbled would be lying about the one thing it is for.
 fn wobble(age: f32, t: f32) -> f32 {
+    // In PIXELS of the panel, so the wobble is as visible on a rack lane as
+    // it is on a plugin window. A constant here is invisible on one and
+    // absurd on the other.
+    let unit = max(u.frame.x * 0.012, 4.0);
     if (is_family(TAPE)) {
         // Wow is slow and deep, flutter fast and shallow; both grow with how
-        // many passes the repeat has had.
-        return (sin(t * 0.7 + age * 1.3) * 2.2 + sin(t * 6.1 + age * 2.7) * 0.6) * age;
+        // many passes the repeat has had. This is the single cue that a
+        // transport is involved, so it has to be plainly visible — a repeat
+        // that has been round the reels five times is not where the
+        // arithmetic says it should be, and that is the whole point.
+        return (sin(t * 0.7 + age * 4.0) * 1.0 + sin(t * 6.1 + age * 9.0) * 0.30)
+            * age * unit;
     }
     if (is_family(ANALOG)) {
-        return sin(t * 1.1 + age * 2.1) * 1.4 * age;
+        return sin(t * 1.1 + age * 6.0) * 0.55 * age * unit;
     }
     return 0.0;
 }
@@ -137,26 +145,54 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // where the repeats are allowed to be, so their mark is on the lane
     // rather than on the bars.
     if (is_family(RHYTHMIC) && lit) {
-        // The grid IS the effect. A rhythmic delay places its repeats on
-        // sixteenths rather than at multiples of one time, so the panel
-        // shows the slots — occupied or not — and the pattern reads as a
-        // pattern instead of as an uneven row of sticks.
+        // The grid IS the effect, so it is drawn as one: sixteenth SLOTS,
+        // every one of them, lit whether or not a repeat landed in it. A
+        // rhythmic delay places its repeats on a pattern rather than at
+        // multiples of one time, and a pattern is only readable against the
+        // slots it could have used — an uneven row of sticks with nothing
+        // behind it is just an uneven row of sticks.
         let beat = max(u.params.w, 1e-3);
         let slots = max(floor(window / (beat * 0.25) + 0.5), 1.0);
         let slot = uv.x * slots;
-        let edge = abs(fract(slot) - 0.5) * 2.0;
-        let tick = smoothstep(0.86, 1.0, edge) * 0.10;
-        rgb += tint * tick;
-        alpha += tick * 0.5;
+        let which = floor(slot);
+        let inside = fract(slot);
+
+        // Every slot gets a step pad, the downbeats brighter, so the bar
+        // line is countable without a caption. Bright enough to be furniture
+        // you read the pattern ON, which is the whole job — at a tenth of
+        // this it was a smudge and the family was indistinguishable from
+        // Digital.
+        let is_beat = abs(which - floor(which / 4.0) * 4.0) < 0.5;
+        let pad_h = select(0.055, 0.085, is_beat);
+        let pad = (1.0 - smoothstep(pad_h * 0.55, pad_h, abs(uv.y - 0.5)))
+            * (1.0 - smoothstep(0.62, 0.90, abs(inside - 0.5) * 2.0));
+        let lit_pad = pad * select(0.30, 0.55, is_beat);
+        rgb += mix(tint, hot, 0.25) * lit_pad;
+        alpha += lit_pad * 0.8;
+
+        // A full-height rail on the downbeats: the bar lines the pattern is
+        // counted against.
+        if (is_beat) {
+            let rail = smoothstep(0.86, 1.0, abs(inside - 0.5) * 2.0) * 0.16;
+            rgb += tint * rail;
+            alpha += rail * 0.7;
+        }
     }
     if (is_family(SPECIAL) && lit) {
         // A repeat that is no longer one: reversed, filtered, dissolved.
         // The lane itself is unstable — a drifting veil that says the
         // repeats are being taken apart rather than merely fading.
-        let veil = (sin(uv.x * 11.0 - t * 0.8) * sin(uv.y * 7.0 + t * 0.5)) * 0.5 + 0.5;
-        let haze = veil * (1.0 - uv.x * 0.35) * 0.07;
-        rgb += mix(tint, hot, 0.5) * haze;
-        alpha += haze * 0.6;
+        // Grain that thickens along the lane: the repeats are coming apart,
+        // and by the end of the tail there is more cloud than repeat. A flat
+        // wash would say "this panel has a haze on it" rather than "this
+        // machine is dissolving what you put into it".
+        let drift = vec2<f32>(uv.x * 26.0 - t * 0.5, (uv.y - 0.5) * 14.0 + t * 0.3);
+        let cell = floor(drift);
+        let grit = hash1(cell.x * 3.7 + cell.y * 11.3);
+        let puff = exp(-length(fract(drift) - 0.5) * 4.0) * step(0.55, grit);
+        let dissolve = puff * (0.12 + 0.85 * uv.x) * 0.30;
+        rgb += mix(tint, hot, 0.55) * dissolve;
+        alpha += dissolve * 0.7;
     }
 
     // ── The channel rule ────────────────────────────────────────────────
@@ -223,18 +259,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // Everything else keeps the lane's hue and only loses brightness.
         var voice = tint;
         if (is_family(PITCH)) {
-            let up = vec3<f32>(0.62, 0.86, 1.0);
-            let down = vec3<f32>(1.0, 0.62, 0.42);
+            // Each repeat is a different NOTE, so each repeat is a different
+            // colour — the full sweep, not a tint. A shimmer climbing an
+            // octave a repeat should look like it climbs.
+            let up = vec3<f32>(0.35, 1.00, 0.75);
+            let down = vec3<f32>(1.00, 0.45, 0.30);
             // Alternating sides climb and fall independently, which is what
             // a dual-tap pitch delay actually does.
-            let dir = select(-1.0, 1.0, pan < 0.0);
-            voice = mix(tint, select(down, up, dir > 0.0), age * 0.85);
+            let rising = pan < 0.0;
+            voice = mix(tint, select(down, up, rising), min(age * 1.5, 1.0));
         } else if (is_family(TAPE)) {
-            // Oxide: the repeats go warm as they go soft.
-            voice = mix(tint, vec3<f32>(1.0, 0.72, 0.42), age * 0.45);
+            // Oxide: the repeats go warm as they go soft. Pushed far enough
+            // to read at a glance — the last repeat of a tape delay is a
+            // different colour from the first, and that IS what it sounds
+            // like.
+            voice = mix(tint, vec3<f32>(1.0, 0.58, 0.22), min(age * 1.25, 0.95));
         } else if (is_family(ANALOG)) {
             // A bucket brigade loses the top first and ends up muddy.
-            voice = mix(tint, vec3<f32>(0.55, 0.48, 0.62), age * 0.60);
+            voice = mix(tint, vec3<f32>(0.42, 0.36, 0.50), min(age * 1.35, 0.9));
         }
 
         // The bar: bright along its own column, growing from the rule
@@ -263,8 +305,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // The cap goes as the repeat smears — a soft repeat has no edge to
         // read a level off, which is exactly the point.
         let cap = exp(-(d * d) / (r * r * 0.8)) * step(0.02, bar) / (1.0 + sm * 2.4);
-        rgb += hot * cap * (0.5 + 0.5 * level + 0.5 * hit);
+        // The cap carries the repeat's OWN colour, lifted toward white
+        // rather than replaced by it. Always-hot caps meant a pitch delay's
+        // repeats — whose whole character is that each one is a different
+        // note — differed from a digital delay's only along a two-pixel
+        // stem, which is to say not at all.
+        let cap_rgb = mix(voice, vec3<f32>(1.0), 0.45);
+        rgb += cap_rgb * cap * (0.5 + 0.5 * level + 0.5 * hit);
         alpha += cap * (0.5 + 0.4 * level + 0.4 * hit);
+
+        // A pitch delay's repeats get a standing halo in their own colour,
+        // not only a lit one. The note each repeat lands on is the whole
+        // character of the family, and a colour that only exists on a stem
+        // is a colour nobody sees.
+        if (is_family(PITCH)) {
+            let halo = exp(-d / (r * 5.0)) * level * 0.45;
+            rgb += voice * halo;
+            alpha += halo * 0.45;
+        }
 
         // A reversed repeat swells INTO its hit instead of starting at it.
         // That is the whole character of the family, and it is the one thing
@@ -282,7 +340,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (hit > 0.01) {
             let br = 4.0 + 18.0 * hit * (0.4 + level);
             let bloom = exp(-d / br) * hit;
-            rgb += tint * bloom * 0.55;
+            rgb += voice * bloom * 0.55;
             alpha += bloom * 0.30;
         }
     }

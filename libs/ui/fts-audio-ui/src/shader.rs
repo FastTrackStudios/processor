@@ -413,6 +413,9 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VsOut {
 }
 "#;
 
+#[cfg(feature = "probe")]
+pub mod probe;
+
 /// A panel's WGSL as the device actually sees it.
 ///
 /// The vertex stage is always supplied. The default uniform block is supplied

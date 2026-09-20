@@ -133,6 +133,10 @@ fn envelope(t: f32) -> f32 {
 // damping they coincide and the whole tail is bright, which is what an
 // undamped reverb sounds like.
 fn envelope_high(t: f32) -> f32 {
+    // A gate defines its own end. Damping the highs early would cut the
+    // bright core before the cliff and put TWO edges on the panel, which
+    // reads as a reverb that stops twice — the opposite of what a gate is.
+    if (is_family(SPECIAL)) { return envelope(t); }
     let damp = clamp(u.time.z, 0.0, 1.0);
     let decay = max(u.params.x, 1e-3) * (1.0 - 0.78 * damp);
     return envelope_at(t, decay);
@@ -193,6 +197,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let body = inside * env_w * 0.55;
     rgb += tint * body;
     alpha += body * 0.75;
+
+    // ── Steel ───────────────────────────────────────────────────────────
+    //
+    // A plate is a sheet of metal under tension, and what it sounds like is
+    // bright and ringing rather than roomy. It has no early reflections to
+    // set it apart — that IS its character, density from the first
+    // millisecond — so without something else it is the dullest panel here
+    // and reads as a hall with the interesting part missing. The shimmer is
+    // the modal ringing the sheet actually has.
+    if (is_family(PLATE) && lit && at >= predelay) {
+        let modes = sin(uv.y * 38.0 + t * 1.3) * sin(uv.x * 19.0 - t * 2.1);
+        let ring = max(modes, 0.0) * env * inside * 0.30;
+        rgb += mix(hot, vec3<f32>(1.0), 0.45) * ring;
+        alpha += ring * 0.55;
+    }
 
     // The lit rim where the body ends — the decay curve itself, as an edge
     // made of light rather than a stroked path.

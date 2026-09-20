@@ -27,6 +27,7 @@ vello = { workspace = true, optional = true }
 wgpu-context-06 = { package = "wgpu_context", version = "0.6", optional = true }
 wgpu-context-07 = { package = "wgpu_context", version = "0.7", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }
 
@@ -42,6 +43,10 @@ default = []
 # texture the compositor is handed. Off by default because it pulls wgpu,
 # and a surface that only ever draws vectors should not carry it.
 shader = ["dep:wgpu", "dep:vello", "dep:bytemuck", "dep:wgpu-context-06", "dep:wgpu-context-07"]
+# The offline shader renderer (): a wgpu device with no window,
+# for contact sheets and for tests that assert two states actually differ.
+# A development tool — never on a panel's path at runtime.
+probe = ["shader", "dep:pollster"]
 # Enable nih_plug ParamPtr adapter for ParamHandle.
 # Consumers building plugins should enable this; UI-only consumers can leave it off.
 nih-plug = []
