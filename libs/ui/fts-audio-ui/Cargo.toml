@@ -14,6 +14,9 @@ tracing = { workspace = true }
 # commands — no DOM, no renderer — so the control graphics stay portable;
 # peniko brings kurbo with it. Spec: `fx.control.painted`.
 anyrender = { workspace = true }
+wgpu = { workspace = true, optional = true }
+vello = { workspace = true, optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }
 
@@ -25,6 +28,10 @@ dioxus-native-dom = { workspace = true }
 
 [features]
 default = []
+# The GPU path for painted panels: a WGSL fragment shader rendered into a
+# texture the compositor is handed. Off by default because it pulls wgpu,
+# and a surface that only ever draws vectors should not carry it.
+shader = ["dep:wgpu", "dep:vello", "dep:bytemuck"]
 # Enable nih_plug ParamPtr adapter for ParamHandle.
 # Consumers building plugins should enable this; UI-only consumers can leave it off.
 nih-plug = []

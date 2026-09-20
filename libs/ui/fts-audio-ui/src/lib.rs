@@ -24,6 +24,10 @@ pub mod marks;
 pub mod meters;
 pub mod paint;
 pub mod param;
+/// A WGSL fragment shader composited into a panel, with the contract for
+/// falling back to vectors when a renderer will not take a texture.
+#[cfg(feature = "shader")]
+pub mod shader;
 pub mod shell;
 pub mod theme;
 #[cfg(not(target_arch = "wasm32"))]
