@@ -167,7 +167,10 @@ impl std::fmt::Debug for MetricsHandle {
 }
 
 /// The WGSL the shader path runs.
-const COMP_SHADER: &str = include_str!("viz.wgsl");
+///
+/// Public so the panel sheet can render the real thing rather than a copy of
+/// it — see `examples/comp_sheet.rs`.
+pub const SHADER: &str = include_str!("viz.wgsl");
 
 /// The uniform block, laid out to match `Comp` in `viz.wgsl`.
 ///
@@ -283,7 +286,7 @@ impl Widget for CompWidget {
         self.gpu = render_ctx.renderer_specific_context().and_then(|ctx| {
             ShaderSurface::with_uniform_size(
                 ctx,
-                COMP_SHADER,
+                SHADER,
                 std::mem::size_of::<CompUniforms>() as u64,
             )
         });
@@ -626,7 +629,7 @@ mod tests {
     /// fragment alone passes happily while the composed module does not.
     #[test]
     fn the_shader_compiles_and_validates() {
-        let source = fts_audio_ui::shader::compose(COMP_SHADER);
+        let source = fts_audio_ui::shader::compose(SHADER);
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
             panic!("the comp shader does not parse: {}", e.emit_to_string(&source))
         });

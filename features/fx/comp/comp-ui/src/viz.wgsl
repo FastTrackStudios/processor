@@ -47,7 +47,11 @@ fn input_at(x: f32) -> f32 {
     let i = u32(floor(pos));
     let j = min(i + 1u, count - 1u);
     var rows = u.input;
-    return mix(lane_at(&rows, i), lane_at(&rows, j), fract(pos));
+    // Smoothstep between samples, not a straight line. A linear blend makes
+    // the trace a polyline, and a polyline's corners are visible as facets
+    // along every edge drawn from it — which reads as the picture being
+    // jagged when it is the interpolation that is.
+    return mix(lane_at(&rows, i), lane_at(&rows, j), smoothstep(0.0, 1.0, fract(pos)));
 }
 
 fn gr_at(x: f32) -> f32 {
@@ -57,7 +61,7 @@ fn gr_at(x: f32) -> f32 {
     let i = u32(floor(pos));
     let j = min(i + 1u, count - 1u);
     var rows = u.gr;
-    return mix(lane_at(&rows, i), lane_at(&rows, j), fract(pos));
+    return mix(lane_at(&rows, i), lane_at(&rows, j), smoothstep(0.0, 1.0, fract(pos)));
 }
 
 // The soft-knee transfer function — the SAME maths as `compress_transfer` in
@@ -104,7 +108,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // ── The input, rising from the floor ────────────────────────────────
     let lvl = input_at(uv.x);
     let top = 1.0 - lvl;
-    let below = smoothstep(0.0, 0.010, uv.y - top);
+    // Analytic anti-aliasing. `fwidth` is how much this value changes across
+    // one pixel, so a smoothstep over it is exactly one pixel of softness
+    // wherever the edge happens to be — a constant width is too narrow where
+    // the waveform is steep (stairs) and too wide where it is flat (a blur).
+    let d_in = uv.y - top;
+    let aa_in = max(fwidth(d_in), 0.0008);
+    let below = smoothstep(-aa_in, aa_in, d_in);
     // Falls away beneath its own edge rather than filling flat. A constant
     // fill under a waveform is a grey rectangle: it says the level reached
     // here and nothing about the shape, and on a tall panel it is most of
@@ -128,7 +138,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // knobs cannot show.
     let red = gr_at(uv.x);
     if (red > 0.001) {
-        let inside = 1.0 - smoothstep(red - 0.004, red + 0.010, uv.y);
+        let d_gr = uv.y - red;
+        let aa_gr = max(fwidth(d_gr), 0.0008);
+        let inside = 1.0 - smoothstep(-aa_gr, aa_gr, d_gr);
         // Same gradient, hanging the other way: brightest at the edge the
         // reduction reaches, thinning back up to the ceiling.
         let gr_falloff = exp(-max(red - uv.y, 0.0) * 6.0);
@@ -149,7 +161,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let range = max(u.curve.w, 1.0);
     let in_db = (uv.x - 1.0) * range;
     let out_v = db_to_v(transfer(in_db));
-    let dist = abs(uv.y - out_v) * u.frame.y;
+    // Widened by the curve's own slope. A fixed-width line measured
+    // vertically is thin where the curve is steep — the 1:1 region below the
+    // knee is a 45° diagonal, and a vertical measure there is the one place
+    // a transfer curve looks like a staircase.
+    let d_curve = uv.y - out_v;
+    let slope = max(fwidth(out_v), 1e-5);
+    let dist = abs(d_curve) / sqrt(1.0 + slope * slope * u.frame.x * u.frame.x
+        / max(u.frame.y * u.frame.y, 1.0)) * u.frame.y;
     let line = exp(-(dist * dist) / 3.0);
     let bloom = exp(-dist / 9.0) * 0.34;
     rgb += hot * (line * 0.95 + bloom);
