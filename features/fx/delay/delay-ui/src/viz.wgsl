@@ -126,7 +126,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // reads as a configured delay that happens to be off.
     var tint = u.color.rgb;
     if (!lit) { tint = vec3<f32>(0.32, 0.32, 0.36); }
-    let hot = mix(tint, vec3<f32>(1.0), 0.55);
+    let hot = hotter(tint, 0.55);
 
     var rgb = vec3<f32>(0.0);
     var alpha = 0.0;
@@ -366,7 +366,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // repeats — whose whole character is that each one is a different
         // note — differed from a digital delay's only along a two-pixel
         // stem, which is to say not at all.
-        let cap_rgb = mix(voice, vec3<f32>(1.0), 0.45);
+        let cap_rgb = hotter(voice, 0.45);
         rgb += cap_rgb * cap * (0.5 + 0.5 * level + 0.5 * hit);
         alpha += cap * (0.5 + 0.4 * level + 0.4 * hit);
 
@@ -383,7 +383,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let rx = 1.0 - smoothstep(rung_w * 0.55, rung_w, abs(dx));
             let ry = exp(-abs(px.y - rung_y) / max(u.frame.y * 0.008, 1.0));
             let rung = rx * ry * 0.55;
-            rgb += mix(voice, vec3<f32>(1.0), 0.3) * rung;
+            rgb += hotter(voice, 0.3) * rung;
             alpha += rung * 0.65;
         }
 
@@ -471,8 +471,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // everything below 1.0, and 1.0 is brighter than anything this panel
     // produces — so without the drive the whole picture sits in the bottom
     // quarter of the curve and reads as switched off.
-    rgb = rgb * 2.2;
-    rgb = rgb / (rgb + vec3<f32>(1.0));
+    rgb = tonemap(rgb * 2.2);
     alpha = clamp(alpha, 0.0, 0.92);
 
     // Marks over ground, composited properly rather than summed, and handed

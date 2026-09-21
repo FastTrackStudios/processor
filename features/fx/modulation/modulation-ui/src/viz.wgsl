@@ -297,9 +297,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Colour: the group's hue, lifted toward white where the field is
     // strongest, so the bright parts read as energy rather than as a
     // different colour arriving.
+    // The brightest parts are MORE of the group's colour, not less. Mixing
+    // toward white meant a chorus knot or a dense comb turned into a white
+    // highlight exactly where the picture had the most to say — and the
+    // colour is what tells you whether you are reading MOD or MOTION.
     let base = u.color.rgb;
-    let hot = mix(base, vec3<f32>(1.0), clamp(lit - 0.55, 0.0, 1.0) * 0.85);
-    let rgb = hot * clamp(lit, 0.0, 1.0);
+    let heat = clamp(lit - 0.45, 0.0, 1.0);
+    let rgb = tonemap(hotter(base, heat * 1.15) * clamp(lit, 0.0, 1.4));
     let alpha = clamp(lit * 0.82, 0.0, 0.92);
 
     // ── The lane itself ─────────────────────────────────────────────────

@@ -243,7 +243,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Only a little toward white. At 0.55 the tail came out grey — the
     // body covers most of the panel, so whatever colour it is IS the colour
     // of the effect, and a purple reverb whose tail is white is not one.
-    let hot = mix(tint, vec3<f32>(1.0), 0.28);
+    let hot = hotter(tint, 0.34);
 
     var rgb = vec3<f32>(0.0);
     var alpha = 0.0;
@@ -314,7 +314,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (is_family(PLATE) && lit && at >= predelay) {
         let modes = sin(uv.y * 38.0 + t * 1.3) * sin(uv.x * 19.0 - t * 2.1);
         let ring = max(modes, 0.0) * env * inside * 0.30;
-        rgb += mix(hot, vec3<f32>(1.0), 0.45) * ring;
+        rgb += hotter(hot, 0.45) * ring;
         alpha += ring * 0.55;
     }
 
@@ -334,7 +334,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let inside_hi = 1.0 - smoothstep(span_hi * 0.66, span_hi * 1.05, off);
     let core = inside_hi * env_hi * 0.26;
     let core_rim = exp(-abs(off - span_hi) * 20.0) * env_hi * 0.65;
-    rgb += mix(hot, vec3<f32>(1.0), 0.22) * (core + core_rim);
+    rgb += hotter(hot, 0.22) * (core + core_rim);
     alpha += core * 0.6 + core_rim * 0.7;
 
     // ── The early reflections ───────────────────────────────────────────
@@ -404,7 +404,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // Flutter outlives the early field but not the tail.
         let live = exp(-k * 2.2);
         let flutter = hit * live * env * inside * 0.55;
-        rgb += mix(hot, vec3<f32>(1.0), 0.30) * flutter;
+        rgb += hotter(hot, 0.30) * flutter;
         alpha += flutter * 0.65;
     }
 
@@ -429,7 +429,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let w = 0.05 + 0.10 * fall;
             chirp = chirp + exp(-(d * d) / (w * w)) * env * exp(-age * 1.6);
         }
-        rgb += mix(hot, vec3<f32>(1.0), 0.25) * chirp * 0.75;
+        rgb += hotter(hot, 0.25) * chirp * 0.75;
         alpha += chirp * 0.6;
     }
 
@@ -468,8 +468,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // an empty lane and need lifting, where a reverb's tail covers most of
     // the panel — driven as hard it saturates into one solid mass and loses
     // the decay shape that is the entire message.
-    rgb = rgb * 1.5;
-    rgb = rgb / (rgb + vec3<f32>(1.0));
+    rgb = tonemap(rgb * 1.5);
     alpha = clamp(alpha, 0.0, 0.92);
 
     // Marks over ground, composited properly rather than summed, and handed

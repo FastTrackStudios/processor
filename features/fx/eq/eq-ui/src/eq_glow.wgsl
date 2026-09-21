@@ -87,8 +87,10 @@ fn spectrum_hue(x: f32, energy: f32) -> vec3<f32> {
     // The neutral the sweep collapses towards.
     let flat = vec3<f32>(0.52, 0.80, 1.0);
     let hue = mix(flat, swept, clamp(u.style.z, 0.0, 1.0));
-    // Loud runs towards white: a peak should look hot, not merely tall.
-    return mix(hue, vec3<f32>(1.0), 0.45 * energy * energy);
+    // Loud runs HOTTER, not whiter: a peak should look like more of its own
+    // frequency band, and a white peak has thrown away the one thing the
+    // hue sweep was drawn to say.
+    return hotter(hue, 0.55 * energy * energy);
 }
 
 @fragment
@@ -161,7 +163,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // the falloff. Each node glowing its OWN hue is the whole point: it is
         // what ties a halo to the ring drawn over it and to its place on the
         // frequency sweep.
-        let tint = mix(u.node_color[i].rgb, vec3<f32>(1.0), 0.35 * spark);
+        // The band's own colour, intensified at the centre rather than
+        // bleached. Two bands whose halos overlap should pile up into a
+        // deeper mix of their colours, not a white patch.
+        let tint = hotter(u.node_color[i].rgb, 0.45 * spark);
         rgb += tint * lit;
         alpha += lit * 0.60;
     }
@@ -169,7 +174,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Tone-map rather than clamp: without this two overlapping halos clip to
     // white and the colour information in both is lost exactly where they
     // matter most.
-    rgb = rgb / (rgb + vec3<f32>(1.0));
+    rgb = tonemap(rgb);
     alpha = clamp(alpha, 0.0, 0.88);
 
     // Premultiplied, because that is what the compositor expects of the

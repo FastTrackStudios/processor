@@ -391,9 +391,48 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 "#;
 
-/// The half of every shader that is the same: a full-screen triangle, so a
-/// panel's WGSL is only its `fs_main`.
+/// The half of every shader that is the same: a full-screen triangle and the
+/// colour rules, so a panel's WGSL is only its `fs_main`.
 pub const PRELUDE: &str = r#"
+// A brighter version of a colour that is MORE of that colour, not less.
+//
+// The obvious way to say "hotter" is `mix(tint, white, k)`, and it is wrong:
+// it desaturates. Two delay taps overlapping used to pile up into a white
+// blob — at the exact moment the picture should have been saying "there is a
+// lot of delay here", it stopped being blue and started being a highlight.
+// The colour carries which effect you are reading, and the brightest parts
+// are where you are looking.
+//
+// So the hue is kept and deepened while the value rises. `k` above 1 is
+// allowed and overdrives; the tone map picks up the rolloff.
+fn hotter(c: vec3<f32>, k: f32) -> vec3<f32> {
+    let peak = max(max(c.r, c.g), c.b);
+    if (peak <= 0.0001) { return c; }
+    // The hue at full value.
+    let hue = c / peak;
+    // Deepen it as it brightens: the dominant channel pulls further ahead,
+    // which is what a saturated colour getting brighter actually looks like.
+    let deep = mix(hue, hue * hue, clamp(k, 0.0, 1.0) * 0.55);
+    return deep * peak * (1.0 + k * 1.35);
+}
+
+// Reinhard on LUMINANCE rather than per channel.
+//
+// Per-channel Reinhard compresses each channel toward 1 independently, so
+// anything bright converges on white no matter what colour it started as —
+// the same desaturation as above, arriving through the back door after every
+// panel had been careful about its hue.
+//
+// On luminance the ratios between channels survive, so a very bright blue
+// stays blue. Channels can land above 1 and clip, which desaturates the
+// extreme top only: that is the one place it reads as intensity rather than
+// as a mistake.
+fn tonemap(c: vec3<f32>) -> vec3<f32> {
+    let l = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    if (l <= 0.0001) { return c; }
+    return c * ((l / (1.0 + l)) / l);
+}
+
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,

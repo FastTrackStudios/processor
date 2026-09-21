@@ -93,7 +93,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     var tint = u.color.rgb;
     if (!lit) { tint = vec3<f32>(0.30, 0.30, 0.34); }
-    let hot = mix(tint, vec3<f32>(1.0), 0.5);
+    let hot = hotter(tint, 0.5);
     // The one hue in the picture, and it is the loss.
     var cut = vec3<f32>(0.94, 0.35, 0.35);
     if (!lit) { cut = vec3<f32>(0.34, 0.28, 0.30); }
@@ -176,7 +176,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let near = exp(-abs(uv.y - ty) * 26.0);
         let pulse = 0.78 + 0.22 * sin(t * TAU * 0.9);
         let handle = near * 0.30 * pulse;
-        rgb += mix(cut, vec3<f32>(1.0), 0.35) * handle;
+        rgb += hotter(cut, 0.35) * handle;
         alpha += handle * 0.7;
     }
 
@@ -204,8 +204,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // everything below 1.0, and 1.0 is brighter than anything this panel
     // produces — so without the drive the whole picture sits in the bottom
     // quarter of the curve and reads as switched off.
-    rgb = rgb * 2.2;
-    rgb = rgb / (rgb + vec3<f32>(1.0));
+    rgb = tonemap(rgb * 2.2);
     alpha = clamp(alpha, 0.0, 0.94);
     return vec4<f32>(rgb * alpha, alpha);
 }
