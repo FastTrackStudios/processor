@@ -284,10 +284,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (at > window) { continue; }
 
         let hit = recency(at, head);
-        // How many repeats deep this one is, 0..1 across the tail. Every
-        // family effect is a function of this: a repeat's character is what
-        // the machine has done to it by now.
-        let age = f32(i) / max(f32(count - 1u), 1.0);
+        // How far down the tail this repeat is, 0..1 — measured in TIME, not
+        // in array position.
+        //
+        // The index is not the age. A stereo delay reports its taps as two
+        // runs concatenated: every left repeat, then every right repeat. By
+        // index, the right channel's FIRST repeat sits halfway through the
+        // array and came out drawn as a half-aged one — on a tape delay that
+        // meant the right channel was orange and smeared from its very first
+        // repeat while the left was still clean blue, which reads as a fault
+        // in the picture because it is one.
+        //
+        // Time is side-independent and is what the machine has actually had
+        // to work on: two repeats that land together have had the same done
+        // to them, whichever channel they are in.
+        let age = clamp(at / window, 0.0, 1.0);
         let sm = smear(age);
         let x = at / window * u.frame.x + wobble(age, t);
 
