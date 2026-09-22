@@ -22,7 +22,10 @@ workspace = true
 [features]
 default = ["dsp"]
 dsp = ["dep:spectrum-analyzer-dsp"]
+# The painters — portable, no plugin host.
 ui = ["dsp", "dep:spectrum-analyzer-ui"]
+# The Dioxus settings panel too (a plugin editor's panel).
+ui-panel = ["ui", "spectrum-analyzer-ui/panel"]
 
 [dependencies]
 spectrum-analyzer-dsp = { workspace = true, optional = true }

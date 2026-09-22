@@ -20,10 +20,9 @@ use nice_plug_dioxus::prelude::*;
 use nice_plug_dioxus::widget::CustomWidgetAttr;
 
 use super::eq_graph_interaction::{
-    GraphMapper, bands_in_rect, drag_gain_for_shape, filter_type_for_position, nearest_band,
-    wheel_band,
-    CreateMode, DotAction, DragMode, Mods, WheelTarget, create_mode, dot_action, drag_mode,
-    dyn_range_step, fine_scale, gain_step, wheel_target,
+    CreateMode, DotAction, DragMode, GraphMapper, Mods, WheelTarget, bands_in_rect, create_mode,
+    dot_action, drag_gain_for_shape, drag_mode, dyn_range_step, filter_type_for_position,
+    fine_scale, gain_step, nearest_band, wheel_band, wheel_target,
 };
 pub use super::eq_graph_model::{
     BAND_COLORS, EqBand, EqBandShape, EqGraphRenderState, GraphConfig, InteractionState, MAX_BANDS,
@@ -179,8 +178,7 @@ pub fn EqGraph(
     /// lassoed, which is what these carry up.
     #[props(default)]
     selected_bands_out: Option<Signal<Vec<usize>>>,
-    #[props(default)]
-    hovered_band_out: Option<Signal<Option<usize>>>,
+    #[props(default)] hovered_band_out: Option<Signal<Option<usize>>>,
     /// The band currently under the hand, if one is being dragged.
     #[props(default)]
     dragging_band_out: Option<Signal<Option<usize>>>,
@@ -609,18 +607,15 @@ pub fn EqGraph(
         // Feed the painter the dynamics envelope alongside the curve, so a
         // dynamic band shows how far it may travel rather than only where it
         // currently sits.
-        *render_state.band_dynamics.write() = band_dynamics.as_ref().map_or_else(
-            Vec::new,
-            |v| {
-                v.iter()
-                    .map(|d| crate::eq_graph_model::BandDyn {
-                        range_db: d.range_db(),
-                        live_db: d.live_db,
-                        spectral: d.spectral.normalized() > 0.5,
-                    })
-                    .collect()
-            },
-        );
+        *render_state.band_dynamics.write() = band_dynamics.as_ref().map_or_else(Vec::new, |v| {
+            v.iter()
+                .map(|d| crate::eq_graph_model::BandDyn {
+                    range_db: d.range_db(),
+                    live_db: d.live_db,
+                    spectral: d.spectral.normalized() > 0.5,
+                })
+                .collect()
+        });
         let mut cfg = render_state.config.write();
         cfg.db_range = db_range;
         cfg.min_freq = min_freq;

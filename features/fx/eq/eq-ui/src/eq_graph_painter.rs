@@ -6,14 +6,17 @@
 
 use std::sync::Arc;
 
-use nice_plug_dioxus::prelude::vello::kurbo::{Affine, BezPath, Circle, Line, Rect, Stroke};
-use nice_plug_dioxus::prelude::vello::peniko::{Color, Fill};
-// Paint the EQ graph as a blitz native custom widget: `paint()` records into an
-// anyrender `Scene` that blitz composites into its own paint pass at the node's
-// box. `PaintScene` brings the `fill`/`stroke` methods into scope.
-use nice_plug_dioxus::widget::{
-    ComputedStyles, PaintScene as _, RenderContext, Scene, UiEvent, Widget,
-};
+use kurbo::{Affine, BezPath, Circle, Line, Rect, Stroke};
+use peniko::{Color, Fill};
+// The painters record into an `anyrender::Scene` — a command list, not
+// pixels — so the graph reaches whatever is drawing: vello behind a plugin
+// editor, Blitz on the desktop, WebGL2 on a browser's canvas. `PaintScene`
+// brings the `fill`/`stroke` methods into scope.
+use anyrender::{PaintScene as _, Scene};
+// The custom widget that hosts them on the desktop and in a plugin. The
+// painters above need none of it.
+#[cfg(feature = "graph")]
+use nice_plug_dioxus::widget::{ComputedStyles, RenderContext, UiEvent, Widget};
 
 use eq_dsp::PreparedFilter;
 
@@ -71,200 +74,211 @@ impl CoordMapper {
 }
 
 // ── Painter ─────────────────────────────────────────────────────────
+// ── The custom widget ───────────────────────────────────────────────────
+//
+// Only where there is a plugin host to paint into; the painters below are
+// the portable half and stand alone (`graph-paint`).
+#[cfg(feature = "graph")]
+mod widget_host {
+    use super::*;
 
-/// Blitz custom widget that paints the EQ graph directly into blitz's scene.
-///
-/// Holds an `Arc` to the shared [`EqGraphRenderState`] the `EqGraph` component
-/// writes to, so it always paints the latest bands/curve. Attach it to an
-/// `object` element via `CustomWidgetAttr::new(EqGraphWidget::new(state))`.
-pub struct EqGraphWidget {
-    state: Arc<EqGraphRenderState>,
-    /// The light: the analyser as a field and a bloom under every band,
-    /// painted beneath the vector graph. `None` where the renderer gave no
-    /// device — the graph is complete without it, which is why the glow is a
-    /// layer rather than a rewrite.
-    glow: Option<fts_audio_ui::shader::ShaderSurface>,
-    /// Kept between frames so the arrays are not rebuilt from nothing each
-    /// time; the analyser is rewritten, the bands are cleared and re-pushed.
-    glow_uniforms: crate::eq_glow::Glow,
-    /// The look of the light — taste, not data. See
-    /// [`GlowStyle`](crate::eq_glow::GlowStyle).
-    glow_style: crate::eq_glow::GlowStyle,
-    born: std::time::Instant,
-}
-
-impl EqGraphWidget {
-    pub fn new(state: Arc<EqGraphRenderState>) -> Self {
-        Self {
-            state,
-            glow: None,
-            glow_uniforms: crate::eq_glow::Glow::default(),
-            glow_style: crate::eq_glow::GlowStyle::default(),
-            born: std::time::Instant::now(),
-        }
-    }
-
-    /// Restyle the light. A host that wants a quieter or hotter panel than the
-    /// default sets it here rather than editing the shader.
-    #[must_use]
-    pub fn with_glow_style(mut self, style: crate::eq_glow::GlowStyle) -> Self {
-        self.glow_style = style;
-        self
-    }
-}
-
-impl EqGraphWidget {
-    /// Fill the glow's uniforms from the graph's own state and draw it.
+    /// Blitz custom widget that paints the EQ graph directly into blitz's scene.
     ///
-    /// Reads the same `EqGraphRenderState` the vector pass reads, so the light
-    /// and the drawing can never disagree about where a band is — which is
-    /// the entire reason the halo is convincing.
-    ///
-    /// `true` when the light actually went down, which tells the caller the
-    /// vector pass must not lay its own ground on top of it.
-    fn paint_glow(
-        &mut self,
-        render_ctx: &mut dyn RenderContext,
-        scene: &mut Scene,
-        width: u32,
-        height: u32,
-    ) -> bool {
-        let Some(glow) = self.glow.as_mut() else {
-            return false;
-        };
-        let cfg = self.state.config.read().clone();
-        let bands = self.state.bands.read().clone();
-        let spectrum = self.state.spectrum_db.read().clone();
-
-        let u = &mut self.glow_uniforms;
-        u.frame[0] = f64::from(width) as f32;
-        u.frame[1] = f64::from(height) as f32;
-        u.frame[2] = self.born.elapsed().as_secs_f32();
-        u.cfg[1] = cfg.db_range as f32;
-        u.style = self.glow_style.pack();
-        let _ = &cfg;
-        u.set_spectrum(&spectrum, -90.0);
-        u.clear_nodes();
-
-        // Zero padding, as the vector pass uses, so the light lands exactly
-        // under the node rather than a few pixels off it.
-        let cfg = GraphConfig {
-            rect_w: f64::from(width),
-            rect_h: f64::from(height),
-            ..cfg
-        };
-        let cm = CoordMapper::new(&cfg, 0.0);
-        for band in bands.iter().filter(|b| b.used && b.enabled) {
-            let x = cm.freq_to_x(f64::from(band.frequency)) as f32;
-            let y = cm.db_to_y(f64::from(band.gain)) as f32;
-            // A band that is doing more gets a bigger, brighter halo — the
-            // light says how much the filter is moving, which the node's
-            // position alone does not.
-            // Presence first, gain second. A band that exists is lit in its
-            // own colour whether or not it is boosting: an EQ sitting flat is
-            // the ordinary case, and sizing the halo off `|gain|` alone left
-            // every node on a flat curve as a 9 px, 22%-bright dot — which is
-            // indistinguishable from no glow at all. Gain still reads, as a
-            // halo that grows and brightens; it just is not the whole of it.
-            let lift =
-                (f64::from(band.gain).abs() / cfg.db_range.max(1.0)).clamp(0.0, 1.0) as f32;
-            let radius = 30.0 + 34.0 * lift;
-            let strength = 0.80 + 0.45 * lift;
-            // The band's own colour, from the one function that decides it —
-            // a halo in a different hue from its ring would read as two
-            // things sitting on top of each other.
-            let c = hex_to_color(&freq_to_color(f64::from(band.frequency))).to_rgba8();
-            u.push_node(
-                x,
-                y,
-                radius,
-                strength,
-                [
-                    f32::from(c.r) / 255.0,
-                    f32::from(c.g) / 255.0,
-                    f32::from(c.b) / 255.0,
-                ],
-            );
-        }
-
-        glow.draw_raw(render_ctx, scene, width, height, bytemuck::bytes_of(u))
-    }
-}
-
-impl Widget for EqGraphWidget {
-    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
-        self.glow = render_ctx
-            .renderer_specific_context()
-            .and_then(crate::eq_glow::surface);
+    /// Holds an `Arc` to the shared [`EqGraphRenderState`] the `EqGraph` component
+    /// writes to, so it always paints the latest bands/curve. Attach it to an
+    /// `object` element via `CustomWidgetAttr::new(EqGraphWidget::new(state))`.
+    pub struct EqGraphWidget {
+        state: Arc<EqGraphRenderState>,
+        /// The light: the analyser as a field and a bloom under every band,
+        /// painted beneath the vector graph. `None` where the renderer gave no
+        /// device — the graph is complete without it, which is why the glow is a
+        /// layer rather than a rewrite.
+        glow: Option<fts_audio_ui::shader::ShaderSurface>,
+        /// Kept between frames so the arrays are not rebuilt from nothing each
+        /// time; the analyser is rewritten, the bands are cleared and re-pushed.
+        glow_uniforms: crate::eq_glow::Glow,
+        /// The look of the light — taste, not data. See
+        /// [`GlowStyle`](crate::eq_glow::GlowStyle).
+        glow_style: crate::eq_glow::GlowStyle,
+        born: std::time::Instant,
     }
 
-    fn paint(
-        &mut self,
-        render_ctx: &mut dyn RenderContext,
-        _styles: &ComputedStyles,
-        width: u32,
-        height: u32,
-        scale: f64,
-    ) -> Scene {
-        let mut scene = Scene::new();
-        // Publish the live canvas size + DPR so the component's hit-testing stays
-        // in sync (it derives CSS px as `rect_w / scale`). blitz hands us the
-        // node's box in physical pixels, so we draw 1:1 with an identity transform.
-        {
-            let mut cfg = self.state.config.write();
-            cfg.rect_w = f64::from(width);
-            cfg.rect_h = f64::from(height);
-            cfg.scale = scale.max(1.0);
+    impl EqGraphWidget {
+        pub fn new(state: Arc<EqGraphRenderState>) -> Self {
+            Self {
+                state,
+                glow: None,
+                glow_uniforms: crate::eq_glow::Glow::default(),
+                glow_style: crate::eq_glow::GlowStyle::default(),
+                born: std::time::Instant::now(),
+            }
         }
-        // The light goes down first, so the curves and the node rings are read
-        // against it rather than through it. That only works if nothing
-        // repaints the ground afterwards — and the graph's own background fill
-        // covers the whole panel, so left to itself it draws the glow and then
-        // hides every pixel of it. The widget lays the ground here instead,
-        // once, before the light, and tells the graph not to lay it again.
-        let wants_ground = self.state.config.read().fill_background;
-        if wants_ground && self.glow.is_some() {
-            scene.fill(
-                Fill::NonZero,
+
+        /// Restyle the light. A host that wants a quieter or hotter panel than the
+        /// default sets it here rather than editing the shader.
+        #[must_use]
+        pub fn with_glow_style(mut self, style: crate::eq_glow::GlowStyle) -> Self {
+            self.glow_style = style;
+            self
+        }
+    }
+
+    impl EqGraphWidget {
+        /// Fill the glow's uniforms from the graph's own state and draw it.
+        ///
+        /// Reads the same `EqGraphRenderState` the vector pass reads, so the light
+        /// and the drawing can never disagree about where a band is — which is
+        /// the entire reason the halo is convincing.
+        ///
+        /// `true` when the light actually went down, which tells the caller the
+        /// vector pass must not lay its own ground on top of it.
+        fn paint_glow(
+            &mut self,
+            render_ctx: &mut dyn RenderContext,
+            scene: &mut Scene,
+            width: u32,
+            height: u32,
+        ) -> bool {
+            let Some(glow) = self.glow.as_mut() else {
+                return false;
+            };
+            let cfg = self.state.config.read().clone();
+            let bands = self.state.bands.read().clone();
+            let spectrum = self.state.spectrum_db.read().clone();
+
+            let u = &mut self.glow_uniforms;
+            u.frame[0] = f64::from(width) as f32;
+            u.frame[1] = f64::from(height) as f32;
+            u.frame[2] = self.born.elapsed().as_secs_f32();
+            u.cfg[1] = cfg.db_range as f32;
+            u.style = self.glow_style.pack();
+            let _ = &cfg;
+            u.set_spectrum(&spectrum, -90.0);
+            u.clear_nodes();
+
+            // Zero padding, as the vector pass uses, so the light lands exactly
+            // under the node rather than a few pixels off it.
+            let cfg = GraphConfig {
+                rect_w: f64::from(width),
+                rect_h: f64::from(height),
+                ..cfg
+            };
+            let cm = CoordMapper::new(&cfg, 0.0);
+            for band in bands.iter().filter(|b| b.used && b.enabled) {
+                let x = cm.freq_to_x(f64::from(band.frequency)) as f32;
+                let y = cm.db_to_y(f64::from(band.gain)) as f32;
+                // A band that is doing more gets a bigger, brighter halo — the
+                // light says how much the filter is moving, which the node's
+                // position alone does not.
+                // Presence first, gain second. A band that exists is lit in its
+                // own colour whether or not it is boosting: an EQ sitting flat is
+                // the ordinary case, and sizing the halo off `|gain|` alone left
+                // every node on a flat curve as a 9 px, 22%-bright dot — which is
+                // indistinguishable from no glow at all. Gain still reads, as a
+                // halo that grows and brightens; it just is not the whole of it.
+                let lift =
+                    (f64::from(band.gain).abs() / cfg.db_range.max(1.0)).clamp(0.0, 1.0) as f32;
+                let radius = 30.0 + 34.0 * lift;
+                let strength = 0.80 + 0.45 * lift;
+                // The band's own colour, from the one function that decides it —
+                // a halo in a different hue from its ring would read as two
+                // things sitting on top of each other.
+                let c = hex_to_color(&freq_to_color(f64::from(band.frequency))).to_rgba8();
+                u.push_node(
+                    x,
+                    y,
+                    radius,
+                    strength,
+                    [
+                        f32::from(c.r) / 255.0,
+                        f32::from(c.g) / 255.0,
+                        f32::from(c.b) / 255.0,
+                    ],
+                );
+            }
+
+            glow.draw_raw(render_ctx, scene, width, height, bytemuck::bytes_of(u))
+        }
+    }
+
+    impl Widget for EqGraphWidget {
+        fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+            self.glow = render_ctx
+                .renderer_specific_context()
+                .and_then(crate::eq_glow::surface);
+        }
+
+        fn paint(
+            &mut self,
+            render_ctx: &mut dyn RenderContext,
+            _styles: &ComputedStyles,
+            width: u32,
+            height: u32,
+            scale: f64,
+        ) -> Scene {
+            let mut scene = Scene::new();
+            // Publish the live canvas size + DPR so the component's hit-testing stays
+            // in sync (it derives CSS px as `rect_w / scale`). blitz hands us the
+            // node's box in physical pixels, so we draw 1:1 with an identity transform.
+            {
+                let mut cfg = self.state.config.write();
+                cfg.rect_w = f64::from(width);
+                cfg.rect_h = f64::from(height);
+                cfg.scale = scale.max(1.0);
+            }
+            // The light goes down first, so the curves and the node rings are read
+            // against it rather than through it. That only works if nothing
+            // repaints the ground afterwards — and the graph's own background fill
+            // covers the whole panel, so left to itself it draws the glow and then
+            // hides every pixel of it. The widget lays the ground here instead,
+            // once, before the light, and tells the graph not to lay it again.
+            let wants_ground = self.state.config.read().fill_background;
+            if wants_ground && self.glow.is_some() {
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    Color::from_rgb8(10, 10, 10),
+                    None,
+                    &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                );
+            }
+            let glowed = self.paint_glow(render_ctx, &mut scene, width, height);
+            paint_eq_graph_scene_with(
+                &mut scene,
+                &self.state,
                 Affine::IDENTITY,
-                Color::from_rgb8(10, 10, 10),
-                None,
-                &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                width,
+                height,
+                GraphPaint {
+                    // Laid above when there was a glow to protect; otherwise the
+                    // graph lays it exactly as it always did.
+                    background: wants_ground && !glowed,
+                    // The glow draws the analyser itself, as light. Drawing it
+                    // again as geometry puts two curves of the same data on the
+                    // panel with different smoothing — which reads as the
+                    // analyser being wrong, not as a second layer.
+                    spectrum: !glowed,
+                },
             );
+            scene
         }
-        let glowed = self.paint_glow(render_ctx, &mut scene, width, height);
-        paint_eq_graph_scene_with(
-            &mut scene,
-            &self.state,
-            Affine::IDENTITY,
-            width,
-            height,
-            GraphPaint {
-                // Laid above when there was a glow to protect; otherwise the
-                // graph lays it exactly as it always did.
-                background: wants_ground && !glowed,
-                // The glow draws the analyser itself, as light. Drawing it
-                // again as geometry puts two curves of the same data on the
-                // panel with different smoothing — which reads as the
-                // analyser being wrong, not as a second layer.
-                spectrum: !glowed,
-            },
-        );
-        scene
-    }
 
-    fn handle_event(&mut self, _event: &UiEvent) {
-        // Paint-only widget: pointer interaction is handled by the DOM container's
-        // event handlers (now that blitz's `element_coordinates()` is fixed), so
-        // the `<object>` keeps `pointer-events: none` and this is never called.
-        //
-        // This returned a `bool` — "did this need repainting" — for a blitz
-        // that asks for one. The rev this workspace pins does not: its
-        // `Widget::handle_event` returns `()`, and the `bool` version does not
-        // compile here (E0053). Restore it together with the blitz bump, not
-        // before; the answer was always `false`, so nothing is lost meanwhile.
+        fn handle_event(&mut self, _event: &UiEvent) {
+            // Paint-only widget: pointer interaction is handled by the DOM container's
+            // event handlers (now that blitz's `element_coordinates()` is fixed), so
+            // the `<object>` keeps `pointer-events: none` and this is never called.
+            //
+            // This returned a `bool` — "did this need repainting" — for a blitz
+            // that asks for one. The rev this workspace pins does not: its
+            // `Widget::handle_event` returns `()`, and the `bool` version does not
+            // compile here (E0053). Restore it together with the blitz bump, not
+            // before; the answer was always `false`, so nothing is lost meanwhile.
+        }
     }
 }
+
+#[cfg(feature = "graph")]
+pub use widget_host::EqGraphWidget;
 
 /// Paint the EQ graph into the given anyrender scene.
 ///
@@ -803,8 +817,9 @@ fn paint_dynamic_range(
     // Same accessor `paint_band_curve` uses: a filter that failed to design
     // reads NaN, and NaN points are skipped rather than drawn at zero.
     let db_at = |f: &Result<PreparedFilter, eq_dsp::Error>, hz: f64| -> f64 {
-        f.as_ref()
-            .map_or(f64::NAN, |filter| filter.magnitude_db(hz).unwrap_or(f64::NAN))
+        f.as_ref().map_or(f64::NAN, |filter| {
+            filter.magnitude_db(hz).unwrap_or(f64::NAN)
+        })
     };
 
     let mut ribbon_path = BezPath::new();

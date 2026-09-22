@@ -189,8 +189,12 @@ mod tests {
     #[test]
     fn the_shader_compiles_and_validates() {
         let source = fts_audio_ui::shader::compose(SHADER);
-        let module = naga::front::wgsl::parse_str(&source)
-            .unwrap_or_else(|e| panic!("the glow shader does not parse: {}", e.emit_to_string(&source)));
+        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
+            panic!(
+                "the glow shader does not parse: {}",
+                e.emit_to_string(&source)
+            )
+        });
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::empty(),

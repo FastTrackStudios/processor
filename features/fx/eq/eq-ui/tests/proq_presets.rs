@@ -217,7 +217,10 @@ fn a_name_the_plugin_has_no_band_for_is_ignored_rather_than_panicking() {
         &params,
         &[
             ("b99_name".to_string(), "from a bigger EQ".to_string()),
-            ("b0_name".to_string(), "one-based, so not a band".to_string()),
+            (
+                "b0_name".to_string(),
+                "one-based, so not a band".to_string(),
+            ),
             ("nonsense".to_string(), "not a band field".to_string()),
             ("b2_name".to_string(), "Boxiness".to_string()),
         ],

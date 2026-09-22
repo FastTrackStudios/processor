@@ -29,7 +29,12 @@ default = []
 # Split out of `native` because the rest of `native` is the plugin — the
 # nice-plug parameter tree, `ParamPtr`, the preset browser, the hardware faces
 # — and a detached surface has none of that and wants none of it.
+# The graph's painters alone: `anyrender` command lists and the geometry
+# they are written in — no plugin host, no GPU stack, no DOM. This is what
+# lets the same picture be drawn by a browser's canvas surface.
+graph-paint = ["dep:anyrender", "dep:kurbo", "dep:peniko", "spectrum-analyzer/ui"]
 graph = [
+    "graph-paint",
     "dep:nice-plug-dioxus",
     "dep:bytemuck",
     "fts-audio-ui/shader",
@@ -40,6 +45,8 @@ graph = [
 ]
 native = [
     "graph",
+    # The plugin editor mounts the analyser's settings panel.
+    "spectrum-analyzer/ui-panel",
     "dep:nice-plug",
     "dep:fts-plug-ui",
     "dep:audiocore-core",
@@ -66,6 +73,10 @@ gpu-tests = []
 # plugin that embeds this UI.
 blitz-dom = { workspace = true, features = ["autofocus"] }
 eq-dsp = { workspace = true }
+# The painters' own dependencies (see `graph-paint`).
+anyrender = { workspace = true, optional = true }
+kurbo = { workspace = true, optional = true }
+peniko = { workspace = true, optional = true }
 audiocore-core = { workspace = true, optional = true }
 architect-ui = { workspace = true, optional = true }
 fts-audio-ui = { workspace = true }

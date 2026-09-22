@@ -16,10 +16,6 @@
 
 // ── Portable core (compiles for wasm; the detached remotes build on it) ──
 pub mod cheatsheet;
-pub mod eq_graph_interaction;
-pub mod eq_graph_model;
-pub mod eq_graph_response;
-pub mod eq_graph_svg;
 /// Dynamic + spectral EQ: the ring, the badge, and the band panel.
 ///
 /// Portable, and gated behind `native` until 2026-09 only because it arrived
@@ -29,6 +25,10 @@ pub mod eq_graph_svg;
 /// plugin does. Keeping it native-only meant the wire-driven surfaces could
 /// draw a band's frequency and gain but never its dynamics.
 pub mod dynamics;
+pub mod eq_graph_interaction;
+pub mod eq_graph_model;
+pub mod eq_graph_response;
+pub mod eq_graph_svg;
 
 // ── The Blitz/vello graph, embeddable on its own (`graph`) ──
 #[cfg(feature = "native")]
@@ -53,7 +53,9 @@ pub const TAILWIND_CSS: &str = include_str!("../assets/tailwind.css");
 /// band. Painted under the vector graph; see [`eq_glow`].
 #[cfg(feature = "graph")]
 pub mod eq_glow;
-#[cfg(feature = "graph")]
+/// The graph's painters — portable, so a host without a plugin stack (a
+/// browser's canvas) can draw the same picture.
+#[cfg(feature = "graph-paint")]
 pub mod eq_graph_painter;
 #[cfg(feature = "graph")]
 pub mod eq_graph_popup;

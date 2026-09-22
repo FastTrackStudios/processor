@@ -283,12 +283,7 @@ fn the_preset_survives_a_save_and_reload() {
 #[test]
 fn bands_four_and_five_are_spectral_two_and_three_are_not() {
     let parameters = overheads_parameters();
-    let get = |name: &str| {
-        parameters
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| *v)
-    };
+    let get = |name: &str| parameters.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
     assert_eq!(get("b2_spectral"), Some(0.0));
     assert_eq!(get("b3_spectral"), Some(0.0));
     assert_eq!(get("b4_spectral"), Some(1.0));
@@ -303,12 +298,7 @@ fn bands_four_and_five_are_spectral_two_and_three_are_not() {
 #[test]
 fn every_band_is_at_rest_on_load() {
     let parameters = overheads_parameters();
-    let get = |name: &str| {
-        parameters
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| *v)
-    };
+    let get = |name: &str| parameters.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
     assert_eq!(get("b1_on"), Some(0.0), "band 1's high pass is off");
     for n in 2..=5 {
         assert_eq!(
