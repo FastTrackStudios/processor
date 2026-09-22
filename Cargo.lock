@@ -1253,23 +1253,30 @@ dependencies = [
 name = "comp-ui"
 version = "0.1.0"
 dependencies = [
+ "anyrender",
  "architect-ui",
  "atomic_float",
  "audiocore-core",
+ "blitz-dom",
+ "bytemuck",
  "comp-profiles",
  "dioxus",
+ "dioxus-native-dom",
  "dioxus-test",
  "eq-ui",
  "fts-audio-ui",
  "fts-plug-ui",
  "musical-time",
  "musical-time-ui",
+ "naga",
  "nice-plug",
  "nice-plug-dioxus",
  "parking_lot",
+ "png 0.18.1",
  "preset-browser",
  "preset-browser-ui",
  "tokio",
+ "vello",
 ]
 
 [[package]]
@@ -1872,21 +1879,28 @@ dependencies = [
 name = "delay-ui"
 version = "0.1.0"
 dependencies = [
+ "anyrender",
  "architect-ui",
  "atomic_float",
+ "blitz-dom",
+ "bytemuck",
  "crossbeam-channel",
  "delay-dsp",
  "delay-profiles",
  "dioxus",
+ "dioxus-native-dom",
  "dioxus-test",
  "fts-audio-ui",
  "fts-plug-ui",
  "musical-time",
  "musical-time-ui",
+ "naga",
  "nice-plug",
  "nice-plug-dioxus",
  "parking_lot",
+ "png 0.18.1",
  "tokio",
+ "vello",
 ]
 
 [[package]]
@@ -3066,10 +3080,13 @@ dependencies = [
  "dioxus-test",
  "kurbo",
  "peniko",
+ "pollster",
  "tokio",
  "tracing",
  "vello",
  "wgpu",
+ "wgpu_context 0.6.0",
+ "wgpu_context 0.7.0",
 ]
 
 [[package]]
@@ -4645,6 +4662,7 @@ dependencies = [
  "architect-ui",
  "atomic_float",
  "blitz-dom",
+ "bytemuck",
  "dioxus",
  "dioxus-native-dom",
  "dioxus-test",
@@ -4655,6 +4673,7 @@ dependencies = [
  "nice-plug",
  "nice-plug-dioxus",
  "parking_lot",
+ "png 0.18.1",
  "tokio",
  "vello",
 ]
@@ -6336,24 +6355,31 @@ dependencies = [
 name = "reverb-ui"
 version = "0.1.0"
 dependencies = [
+ "anyrender",
  "architect-ui",
  "atomic_float",
+ "blitz-dom",
+ "bytemuck",
  "crossbeam-channel",
  "dioxus",
+ "dioxus-native-dom",
  "dioxus-test",
  "eq-ui",
  "fts-audio-ui",
  "fts-plug-ui",
  "musical-time",
  "musical-time-ui",
+ "naga",
  "nice-plug",
  "nice-plug-dioxus",
  "parking_lot",
+ "png 0.18.1",
  "preset-browser",
  "preset-browser-ui",
  "reverb-dsp",
  "reverb-profiles",
  "tokio",
+ "vello",
 ]
 
 [[package]]

@@ -21,6 +21,8 @@ viz = ["dep:anyrender", "dep:blitz-dom", "dep:dioxus-native-dom", "dep:vello", "
 # The Blitz/vello plugin editor: control view, nice-plug param tree, param
 # adapter. Off → only the portable core (profile view data model) compiles.
 native = [
+    "dep:musical-time",
+    "dep:musical-time-ui",
     "dep:nice-plug",
     "dep:fts-plug-ui",
     "dep:nice-plug-dioxus",
@@ -56,8 +58,11 @@ atomic_float = { workspace = true, optional = true }
 # `#[persist]` wants a field with interior mutability.
 parking_lot = { workspace = true, optional = true }
 comp-profiles = { path = "../comp-profiles" }
-musical-time = { workspace = true, features = ["params"] }
-musical-time-ui = { workspace = true }
+# The editor's tempo-synced sections only (`sections`, `params`), so they
+# come with `native`: the portable core is wasm-safe without the plugin
+# framework `musical-time` pulls in.
+musical-time = { workspace = true, features = ["params"], optional = true }
+musical-time-ui = { workspace = true, optional = true }
 eq-ui = { workspace = true, optional = true }
 # Not dev-only: the preset surfaces are part of the editor, so the crate
 # needs `rsx!`/`Signal` in its own source and not just in its tests.
