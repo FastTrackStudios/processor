@@ -16,6 +16,7 @@ default = []
 # custom-widget mechanism, which is why it is not on by default.
 viz = ["dep:anyrender", "dep:blitz-dom", "dep:dioxus-native-dom", "dep:vello", "dep:bytemuck", "fts-audio-ui/shader"]
 native = [
+    "musical-time/params",
     "dep:nice-plug",
     "dep:fts-plug-ui",
     "dep:nice-plug-dioxus",
@@ -49,7 +50,11 @@ eq-ui = { workspace = true, optional = true }
 preset-browser = { workspace = true, optional = true }
 preset-browser-ui = { workspace = true, optional = true }
 reverb-profiles = { workspace = true }
-musical-time = { workspace = true, features = ["params"] }
+# `params` (the nice-plug parameter tree) only with `native`: the module
+# that uses it is `#[cfg(feature = "native")]`, and unconditionally it
+# dragged nice-plug — and its filesystem logging — into every wasm build
+# that mounts these visualisers.
+musical-time = { workspace = true }
 musical-time-ui = { workspace = true }
 reverb-dsp = { workspace = true }
 crossbeam-channel = { workspace = true }

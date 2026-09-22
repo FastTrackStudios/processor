@@ -21,6 +21,7 @@ viz = ["dep:anyrender", "dep:blitz-dom", "dep:dioxus-native-dom", "dep:vello", "
 # The Blitz/vello plugin editor: control view, nice-plug param tree, param
 # adapter. Off → only the portable core (profile view data model) compiles.
 native = [
+    "musical-time/params",
     "dep:nice-plug",
     "dep:fts-plug-ui",
     "dep:nice-plug-dioxus",
@@ -56,7 +57,11 @@ atomic_float = { workspace = true, optional = true }
 # `#[persist]` wants a field with interior mutability.
 parking_lot = { workspace = true, optional = true }
 comp-profiles = { path = "../comp-profiles" }
-musical-time = { workspace = true, features = ["params"] }
+# `params` (the nice-plug parameter tree) only with `native`: the module
+# that uses it is `#[cfg(feature = "native")]`, and unconditionally it
+# dragged nice-plug — and its filesystem logging — into every wasm build
+# that mounts these visualisers.
+musical-time = { workspace = true }
 musical-time-ui = { workspace = true }
 eq-ui = { workspace = true, optional = true }
 # Not dev-only: the preset surfaces are part of the editor, so the crate

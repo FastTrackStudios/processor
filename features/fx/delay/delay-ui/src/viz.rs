@@ -516,16 +516,41 @@ pub fn DelayViz(
 ) -> Element {
     use_repaint_clock();
     let view: Shared<DelayView> = use_hook(|| Rc::new(RefCell::new(DelayView::default())));
+    #[cfg(not(target_arch = "wasm32"))]
     let attr =
         use_hook(|| dioxus_native_dom::CustomWidgetAttr::new(DelayWidget::new(Rc::clone(&view))));
 
     *view.borrow_mut() = view_of(&taps, win_ms, on, beat_ms, division, family, color);
 
-    rsx! {
+    // The surface: a scene composited by Blitz natively, the same scene
+    // replayed onto a `<canvas>` (vello_hybrid, WebGL2) in the browser —
+    // one painter either way, so the picture cannot differ.
+    #[cfg(not(target_arch = "wasm32"))]
+    return rsx! {
         object {
             "data": attr,
             style: "position:absolute; top:0; left:0; right:0; bottom:0; \
                     width:100%; height:100%; display:block; pointer-events:none;",
+        }
+    };
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let view = Rc::clone(&view);
+        let paint = dioxus::prelude::use_callback(move |f: fts_audio_ui::scene_canvas::Frame| {
+            let mut scene = anyrender::Scene::new();
+            let mut v = view.borrow().clone();
+            // The widget animates on its own clock natively; here the canvas
+            // keeps it.
+            v.time = f.seconds as f32;
+            paint_delay(&mut scene, &v, f.width, f.height);
+            scene
+        });
+        rsx! {
+            fts_audio_ui::scene_canvas::SceneCanvas {
+                paint,
+                class: "absolute inset-0 w-full h-full pointer-events-none",
+            }
         }
     }
 }
