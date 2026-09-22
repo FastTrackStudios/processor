@@ -188,7 +188,13 @@ fn draw(id: &str, surface: &Rc<RefCell<Option<Surface>>>, panel: &Panel) {
         canvas.set_width(w);
         canvas.set_height(h);
         let window = Arc::new(CanvasWindow(canvas.clone()));
-        let mut renderer = VelloWindowRenderer::new();
+        // Transparent, not the renderer's default white: these panels are
+        // layers over the page's own ground, and several paint no ground of
+        // their own.
+        let mut renderer = VelloWindowRenderer::with_options(anyrender_vello::VelloRendererOptions {
+            base_color: peniko::Color::TRANSPARENT,
+            ..Default::default()
+        });
         // Async on wasm: `complete_resume` below finishes it, on some later
         // frame. Nothing is drawn until it does.
         renderer.resume(window.clone(), w, h, || {});
