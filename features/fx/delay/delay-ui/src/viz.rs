@@ -481,6 +481,7 @@ pub fn paint_delay(scene: &mut Scene, view: &DelayView, w: f64, h: f64) {
 /// in the DOM — the movement is inside a widget's scene. So the clock has to
 /// come from outside: a thread that pokes the runtime. `schedule_update` is
 /// documented as safe to call from off the runtime, which is what this is.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn use_repaint_clock() {
     use_hook(|| {
         let updater = dioxus_core::schedule_update();
@@ -492,6 +493,14 @@ pub fn use_repaint_clock() {
         });
     });
 }
+
+/// In a browser there is no thread to spawn — and no need for one: the
+/// picture is painted by `fts_audio_ui::scene_canvas`, which runs its own
+/// clock and redraws the canvas without the document changing at all. (A
+/// thread here is not a slow path in wasm32, it is a panic: the scope that
+/// mounted a visualiser died, which took the whole Control view with it.)
+#[cfg(target_arch = "wasm32")]
+pub fn use_repaint_clock() {}
 
 /// A delay lane, painted by [`DelayWidget`].
 ///
