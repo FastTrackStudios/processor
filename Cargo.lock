@@ -2647,6 +2647,7 @@ dependencies = [
  "spectrum-analyzer",
  "test-that",
  "tokio",
+ "web-time",
  "wgpu",
 ]
 

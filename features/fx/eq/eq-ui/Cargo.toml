@@ -80,6 +80,9 @@ gpu-tests = []
 # plugin that embeds this UI.
 blitz-dom = { workspace = true, features = ["autofocus"] }
 eq-dsp = { workspace = true }
+# The graph keeps its own clocks (the glow's age, the popup's fade), and
+# `std::time` panics in a browser.
+web-time = { workspace = true }
 # The painters' own dependencies (see `graph-paint`).
 anyrender = { workspace = true, optional = true }
 kurbo = { workspace = true, optional = true }

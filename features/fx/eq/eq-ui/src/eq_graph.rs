@@ -40,8 +40,11 @@ pub use super::eq_graph_response::{calculate_band_response, calculate_combined_r
 pub use spectrum_analyzer::dsp::AnalyzerSnapshot;
 
 /// Get current timestamp in milliseconds.
+///
+/// `web_time`, not `std::time`: on wasm32 the std clock has no source and
+/// `now()` panics — which took the whole graph down with it.
 pub(crate) fn now_ms() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
@@ -514,6 +517,7 @@ pub fn EqGraph(
     // theory but in practice the task waker doesn't propagate up to blitz's
     // event-loop waker reliably here — schedule_update bypasses that.
     let frame_tick: Signal<u64> = use_signal(|| 0);
+    #[cfg(not(target_arch = "wasm32"))]
     use_hook(|| {
         let updater = dioxus_core::schedule_update();
         std::thread::spawn(move || {
@@ -525,6 +529,10 @@ pub fn EqGraph(
             }
         });
     });
+    // A browser has no thread to spawn — and no need for one: the canvas
+    // runs its own clock and redraws itself without the document changing.
+    // (A thread here is not a slow path in wasm32, it is a panic, and it
+    // took the whole graph down with it.)
     // Subscribe so the component re-renders when the tick fires; we no
     // longer write the value into a `data-tick` attribute (which made
     // blitz re-layout every frame and confused content_box reporting).

@@ -101,7 +101,7 @@ mod widget_host {
         /// The look of the light — taste, not data. See
         /// [`GlowStyle`](crate::eq_glow::GlowStyle).
         glow_style: crate::eq_glow::GlowStyle,
-        born: std::time::Instant,
+        born: web_time::Instant,
     }
 
     impl EqGraphWidget {
@@ -111,7 +111,7 @@ mod widget_host {
                 glow: None,
                 glow_uniforms: crate::eq_glow::Glow::default(),
                 glow_style: crate::eq_glow::GlowStyle::default(),
-                born: std::time::Instant::now(),
+                born: web_time::Instant::now(),
             }
         }
 
