@@ -100,7 +100,12 @@ pub fn SceneCanvas(
             class: "{class}",
             // The element sizes itself; the backing store follows it in
             // `draw`, at the device's pixel ratio.
-            style: "display: block; width: 100%; height: 100%;",
+            //
+            // `pointer-events: none` because this is a picture, not a
+            // control: a positioned canvas paints above the gesture layer
+            // that sits with it (the EQ's svg, the compressor's), and
+            // without this it would swallow every press meant for that.
+            style: "display: block; width: 100%; height: 100%; pointer-events: none;",
         }
     }
 }
