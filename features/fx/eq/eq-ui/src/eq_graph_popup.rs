@@ -1,7 +1,8 @@
 //! Popup and context-menu controls for the EQ graph.
 
 use architect_ui::prelude::{Button, ButtonSize, ButtonVariant};
-use nice_plug_dioxus::prelude::*;
+// Portable: the popup is DOM, and dioxus is all it needs.
+use dioxus::prelude::*;
 
 use super::eq_graph_model::{EqBand, EqBandShape, MAX_BANDS, StereoMode, slope_db};
 use crate::dynamics::PanelKnob;

@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyrender::{PaintScene, RenderContext, Scene};
+#[cfg(not(target_arch = "wasm32"))]
 use blitz_dom::node::{ComputedStyles, Widget};
 use dioxus::prelude::*;
 use fts_audio_ui::paint::lane;
@@ -183,7 +184,7 @@ pub struct ReverbWidget {
     /// painter below draws the same decay.
     gpu: Option<ShaderSurface>,
     uniforms: ReverbUniforms,
-    born: std::time::Instant,
+    born: web_time::Instant,
 }
 
 impl ReverbWidget {
@@ -193,13 +194,15 @@ impl ReverbWidget {
             view,
             gpu: None,
             uniforms: ReverbUniforms::default(),
-            born: std::time::Instant::now(),
+            born: web_time::Instant::now(),
         }
     }
 }
 
-impl Widget for ReverbWidget {
-    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+impl ReverbWidget {
+    /// Take a GPU device and build the shader surface — the
+    /// host-agnostic half of `Widget::can_create_surfaces`.
+    pub fn create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
         self.gpu = render_ctx.renderer_specific_context().and_then(|ctx| {
             ShaderSurface::with_uniform_size(
                 ctx,
@@ -209,10 +212,10 @@ impl Widget for ReverbWidget {
         });
     }
 
-    fn paint(
+    /// Record a frame — the host-agnostic half of `Widget::paint`.
+    pub fn paint_frame(
         &mut self,
         render_ctx: &mut dyn RenderContext,
-        _styles: &ComputedStyles,
         width: u32,
         height: u32,
         _scale: f64,
@@ -250,6 +253,37 @@ impl Widget for ReverbWidget {
 
         paint_reverb(&mut scene, &view, w, h);
         scene
+    }
+}
+
+/// Blitz's custom widget, natively.
+#[cfg(not(target_arch = "wasm32"))]
+impl Widget for ReverbWidget {
+    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+        self.create_surfaces(render_ctx);
+    }
+
+    fn paint(
+        &mut self,
+        render_ctx: &mut dyn RenderContext,
+        _styles: &ComputedStyles,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Scene {
+        self.paint_frame(render_ctx, width, height, scale)
+    }
+}
+
+/// The browser's canvas — vello on WebGPU, so the shader runs there too.
+#[cfg(target_arch = "wasm32")]
+impl fts_audio_ui::scene_canvas::CanvasPanel for ReverbWidget {
+    fn can_create_surfaces(&mut self, ctx: &mut dyn RenderContext) {
+        self.create_surfaces(ctx);
+    }
+
+    fn paint(&mut self, ctx: &mut dyn RenderContext, width: u32, height: u32, scale: f64) -> Scene {
+        self.paint_frame(ctx, width, height, scale)
     }
 }
 
@@ -455,20 +489,16 @@ pub fn ReverbViz(
 
     #[cfg(target_arch = "wasm32")]
     {
-        let view = Rc::clone(&view);
-        let paint = dioxus::prelude::use_callback(move |f: fts_audio_ui::scene_canvas::Frame| {
-            let mut scene = anyrender::Scene::new();
-            let mut v = view.borrow().clone();
-            // The widget animates on its own clock natively; here the canvas
-            // keeps it.
-            v.time = f.seconds as f32;
-            paint_reverb(&mut scene, &v, f.width, f.height);
-            scene
+        // The same widget, on a canvas: vello on WebGPU gives it a real
+        // device, so it builds its shader surface and paints the lit
+        // picture — not the vector fallback.
+        let panel = use_hook(|| {
+            fts_audio_ui::scene_canvas::Panel::new(ReverbWidget::new(Rc::clone(&view)))
         });
         rsx! {
             fts_audio_ui::scene_canvas::SceneCanvas {
-                paint,
-                class: "absolute inset-0 w-full h-full pointer-events-none",
+                panel,
+                class: "absolute inset-0 w-full h-full",
             }
         }
     }
@@ -609,7 +639,10 @@ mod tests {
     fn the_shader_compiles_and_validates() {
         let source = fts_audio_ui::shader::compose(SHADER);
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
-            panic!("the reverb shader does not parse: {}", e.emit_to_string(&source))
+            panic!(
+                "the reverb shader does not parse: {}",
+                e.emit_to_string(&source)
+            )
         });
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

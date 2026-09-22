@@ -12,11 +12,12 @@ use peniko::{Color, Fill};
 // pixels — so the graph reaches whatever is drawing: vello behind a plugin
 // editor, Blitz on the desktop, WebGL2 on a browser's canvas. `PaintScene`
 // brings the `fill`/`stroke` methods into scope.
-use anyrender::{PaintScene as _, Scene};
+use anyrender::{PaintScene as _, RenderContext, Scene};
 // The custom widget that hosts them on the desktop and in a plugin. The
 // painters above need none of it.
 #[cfg(feature = "graph")]
-use nice_plug_dioxus::widget::{ComputedStyles, RenderContext, UiEvent, Widget};
+#[cfg(not(target_arch = "wasm32"))]
+use nice_plug_dioxus::widget::{ComputedStyles, UiEvent, Widget};
 
 use eq_dsp::PreparedFilter;
 
@@ -201,17 +202,19 @@ mod widget_host {
         }
     }
 
-    impl Widget for EqGraphWidget {
-        fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+    impl EqGraphWidget {
+        /// Take a GPU device and build the glow surface — the host-agnostic
+        /// half of `Widget::can_create_surfaces`.
+        pub fn create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
             self.glow = render_ctx
                 .renderer_specific_context()
                 .and_then(crate::eq_glow::surface);
         }
 
-        fn paint(
+        /// Record a frame — the host-agnostic half of `Widget::paint`.
+        pub fn paint_frame(
             &mut self,
             render_ctx: &mut dyn RenderContext,
-            _styles: &ComputedStyles,
             width: u32,
             height: u32,
             scale: f64,
@@ -262,6 +265,25 @@ mod widget_host {
             );
             scene
         }
+    }
+
+    /// The plugin's custom widget, natively.
+    #[cfg(not(target_arch = "wasm32"))]
+    impl Widget for EqGraphWidget {
+        fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+            self.create_surfaces(render_ctx);
+        }
+
+        fn paint(
+            &mut self,
+            render_ctx: &mut dyn RenderContext,
+            _styles: &ComputedStyles,
+            width: u32,
+            height: u32,
+            scale: f64,
+        ) -> Scene {
+            self.paint_frame(render_ctx, width, height, scale)
+        }
 
         fn handle_event(&mut self, _event: &UiEvent) {
             // Paint-only widget: pointer interaction is handled by the DOM container's
@@ -273,6 +295,25 @@ mod widget_host {
             // `Widget::handle_event` returns `()`, and the `bool` version does not
             // compile here (E0053). Restore it together with the blitz bump, not
             // before; the answer was always `false`, so nothing is lost meanwhile.
+        }
+    }
+
+    /// The browser's canvas — vello on WebGPU, so the glow shader runs there
+    /// too and the graph is the lit one, not the vector fallback.
+    #[cfg(target_arch = "wasm32")]
+    impl fts_audio_ui::scene_canvas::CanvasPanel for EqGraphWidget {
+        fn can_create_surfaces(&mut self, ctx: &mut dyn RenderContext) {
+            self.create_surfaces(ctx);
+        }
+
+        fn paint(
+            &mut self,
+            ctx: &mut dyn RenderContext,
+            width: u32,
+            height: u32,
+            scale: f64,
+        ) -> Scene {
+            self.paint_frame(ctx, width, height, scale)
         }
     }
 }

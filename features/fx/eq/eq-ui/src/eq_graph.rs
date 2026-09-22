@@ -16,7 +16,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dioxus_elements::input_data::MouseButton;
-use nice_plug_dioxus::prelude::*;
+// The component is portable: dioxus, and the geometry the graph is drawn
+// in. The plugin's custom-widget host is native only (below).
+use dioxus::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use nice_plug_dioxus::widget::CustomWidgetAttr;
 
 use super::eq_graph_interaction::{
@@ -482,9 +485,18 @@ pub fn EqGraph(
     // SceneOverlay / wgpu-`<canvas>` side-channels. The widget holds an `Arc` to
     // `render_state`, so it always paints the latest bands/curve; blitz repaints
     // it on the frame tick driven below.
+    // The surface the graph paints on: Blitz's custom widget natively, a
+    // canvas (vello on WebGPU) in a browser. The widget is the same either
+    // way, glow shader and all.
+    #[cfg(not(target_arch = "wasm32"))]
     let graph_widget = {
         let state = render_state.clone();
         use_memo(move || CustomWidgetAttr::new(EqGraphWidget::new(state.clone())))
+    };
+    #[cfg(target_arch = "wasm32")]
+    let graph_panel = {
+        let state = render_state.clone();
+        use_hook(|| fts_audio_ui::scene_canvas::Panel::new(EqGraphWidget::new(state)))
     };
 
     // Drive continuous repaints. Blitz only re-runs the canvas paint source
@@ -1325,14 +1337,43 @@ pub fn EqGraph(
             // standalone. Stretched to fill the positioned-absolute parent
             // (`inset:0`); pointer-events off so the SVG interaction layer above
             // still receives drags.
-            object {
-                "data": graph_widget,
-                // pointer-events:none so the container div's DOM handlers receive
-                // interaction (blitz's element_coordinates() now reports correct
-                // element-relative coords via our dioxus-native-dom fix).
-                style: "position:absolute; top:0; left:0; right:0; bottom:0; \
-                        width:100%; height:100%; \
-                        display:block; pointer-events:none;",
+            if cfg!(not(target_arch = "wasm32")) {
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        rsx! {
+                            object {
+                                "data": graph_widget,
+                                // pointer-events:none so the container div's DOM handlers receive
+                                // interaction (blitz's element_coordinates() now reports correct
+                                // element-relative coords via our dioxus-native-dom fix).
+                                style: "position:absolute; top:0; left:0; right:0; bottom:0; \
+                                        width:100%; height:100%; \
+                                        display:block; pointer-events:none;",
+                            }
+                        }
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        rsx! {}
+                    }
+                }
+            }
+            // The browser's surface for the same widget: a canvas, with the
+            // same DOM handlers above it (the canvas takes no pointer).
+            {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    rsx! {
+                        div { style: "position:absolute; inset:0; pointer-events:none;",
+                            fts_audio_ui::scene_canvas::SceneCanvas { panel: graph_panel }
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    rsx! {}
+                }
             }
 
             // Display range selector — always reachable from the graph

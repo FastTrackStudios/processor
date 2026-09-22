@@ -152,7 +152,10 @@ impl ShaderSurface {
             );
             return None;
         };
-        tracing::debug!(shader.surface = "built", shader.uniform_bytes = uniform_size);
+        tracing::debug!(
+            shader.surface = "built",
+            shader.uniform_bytes = uniform_size
+        );
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 

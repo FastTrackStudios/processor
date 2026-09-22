@@ -185,14 +185,12 @@ pub fn Knob(
         // Derived from the foreground rather than `border`: on a dark
         // theme `border` IS the panel, so the track vanished and the
         // value arc had nothing to be measured against.
-        track: crate::paint::color(&resolve_theme("foreground", "#d4d4d8"))
-            .with_alpha(0.16),
+        track: crate::paint::color(&resolve_theme("foreground", "#d4d4d8")).with_alpha(0.16),
         pointer: crate::paint::color(&resolve_theme("foreground", "#d4d4d8")),
         detent: crate::paint::color(&resolve_theme("muted-foreground", "#737380")),
         mod_color: crate::paint::color(&resolve_theme("accent", "#8b5cf6")),
         cap_fill: crate::paint::color(&resolve_theme("card", "#0c0c0f")),
-        cap_stroke: crate::paint::color(&resolve_theme("foreground", "#d4d4d8"))
-            .with_alpha(0.14),
+        cap_stroke: crate::paint::color(&resolve_theme("foreground", "#d4d4d8")).with_alpha(0.14),
     };
 
     let opacity = if disabled { "0.5" } else { "1.0" };

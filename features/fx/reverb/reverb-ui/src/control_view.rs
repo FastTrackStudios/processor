@@ -207,7 +207,10 @@ pub fn App() -> Element {
     // Zero is how the audio thread says "this host has no transport"; a note
     // value means nothing then, so it becomes `None` rather than 0 BPM.
     let tempo = {
-        let bpm = ui.state.tempo_bpm.load(std::sync::atomic::Ordering::Relaxed);
+        let bpm = ui
+            .state
+            .tempo_bpm
+            .load(std::sync::atomic::Ordering::Relaxed);
         (bpm > 0.0).then(|| f64::from(bpm))
     };
 

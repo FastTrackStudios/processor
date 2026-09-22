@@ -222,7 +222,9 @@ mod tests {
         // what the lit chamfer along the cap's edges is made of — so the tell
         // is whether anything falls OUTWARD onto the panel.
         fn casts_onto_the_panel(shadow: &str) -> bool {
-            shadow.split("), ").any(|layer| !layer.trim_start().starts_with("inset"))
+            shadow
+                .split("), ")
+                .any(|layer| !layer.trim_start().starts_with("inset"))
         }
         for style in ButtonStyle::ALL {
             let spec = style.spec();

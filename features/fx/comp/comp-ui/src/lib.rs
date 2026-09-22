@@ -21,14 +21,14 @@
 // ── Portable core (no plugin framework; compiles for wasm) ──
 pub mod comp_graph_svg;
 
+#[cfg(feature = "native")]
+pub mod preset_view;
+pub mod profile_view;
 /// The live picture of what the compressor is doing, as props — no parameter
 /// tree, no context. One widget, two painters: WGSL where the renderer hands
 /// over a device, vectors where it does not.
 #[cfg(feature = "viz")]
 pub mod viz;
-#[cfg(feature = "native")]
-pub mod preset_view;
-pub mod profile_view;
 
 /// The hardware-faceplate kit — VU movements, pointer knobs, panel switches,
 /// panel chrome — lives in `fts-audio-ui` now that the EQ wears faceplates

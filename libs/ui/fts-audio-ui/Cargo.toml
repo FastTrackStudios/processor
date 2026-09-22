@@ -41,12 +41,16 @@ dioxus-native-dom = { workspace = true }
 # vello_hybrid's WebGL2 renderer behind it, replaying the same recorded
 # scenes the custom widget composites natively.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-vello_hybrid = { workspace = true, features = ["webgl"] }
-anyrender_vello_hybrid = { workspace = true, features = ["webgl"] }
+# vello on WebGPU, through anyrender's own window renderer — which is what
+# makes the browser's canvas a real host: its painter hands a widget a wgpu
+# device (`renderer_specific_context`) and takes the texture a shader drew
+# into, exactly as Blitz's does. Anything less would mean the browser drew
+# the vector fallback of every panel.
+anyrender_vello = { workspace = true }
+raw-window-handle = "0.6"
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "Performance"] }
 gloo-timers = { workspace = true, features = ["futures"] }
-rustc-hash = "2"
 
 [features]
 default = []

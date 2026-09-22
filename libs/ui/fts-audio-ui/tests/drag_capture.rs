@@ -111,7 +111,11 @@ async fn a_drag_on_the_dial_moves_the_parameter() {
     fx.tester.pointer_up(x, y - 20.0);
     fx.settle().await;
 
-    assert!(value() > 0.5, "a 20 px drag up left the value at {}", value());
+    assert!(
+        value() > 0.5,
+        "a 20 px drag up left the value at {}",
+        value()
+    );
 }
 
 /// THE regression: once a drag is in flight the pointer belongs to the knob,

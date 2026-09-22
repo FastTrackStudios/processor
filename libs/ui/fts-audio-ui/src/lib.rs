@@ -23,11 +23,11 @@ pub mod hardware;
 pub mod marks;
 pub mod meters;
 pub mod paint;
+pub mod param;
 /// A painted panel on a `<canvas>` — the browser's answer to the custom
 /// widget in [`widget`], replaying the same scenes.
 #[cfg(target_arch = "wasm32")]
 pub mod scene_canvas;
-pub mod param;
 /// A WGSL fragment shader composited into a panel, with the contract for
 /// falling back to vectors when a renderer will not take a texture.
 #[cfg(feature = "shader")]

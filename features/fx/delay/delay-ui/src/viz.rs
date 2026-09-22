@@ -29,6 +29,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyrender::{PaintScene, RenderContext, Scene};
+#[cfg(not(target_arch = "wasm32"))]
 use blitz_dom::node::{ComputedStyles, Widget};
 use dioxus::prelude::*;
 use fts_audio_ui::paint::lane;
@@ -219,7 +220,7 @@ pub struct DelayWidget {
     /// painter below draws the same taps.
     gpu: Option<ShaderSurface>,
     uniforms: DelayUniforms,
-    born: std::time::Instant,
+    born: web_time::Instant,
 }
 
 impl DelayWidget {
@@ -229,13 +230,15 @@ impl DelayWidget {
             view,
             gpu: None,
             uniforms: DelayUniforms::default(),
-            born: std::time::Instant::now(),
+            born: web_time::Instant::now(),
         }
     }
 }
 
-impl Widget for DelayWidget {
-    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+impl DelayWidget {
+    /// Take a GPU device and build the shader surface — the
+    /// host-agnostic half of `Widget::can_create_surfaces`.
+    pub fn create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
         self.gpu = render_ctx.renderer_specific_context().and_then(|ctx| {
             ShaderSurface::with_uniform_size(
                 ctx,
@@ -245,10 +248,10 @@ impl Widget for DelayWidget {
         });
     }
 
-    fn paint(
+    /// Record a frame — the host-agnostic half of `Widget::paint`.
+    pub fn paint_frame(
         &mut self,
         render_ctx: &mut dyn RenderContext,
-        _styles: &ComputedStyles,
         width: u32,
         height: u32,
         _scale: f64,
@@ -289,6 +292,37 @@ impl Widget for DelayWidget {
 
         paint_delay(&mut scene, &view, w, h);
         scene
+    }
+}
+
+/// Blitz's custom widget, natively.
+#[cfg(not(target_arch = "wasm32"))]
+impl Widget for DelayWidget {
+    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+        self.create_surfaces(render_ctx);
+    }
+
+    fn paint(
+        &mut self,
+        render_ctx: &mut dyn RenderContext,
+        _styles: &ComputedStyles,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Scene {
+        self.paint_frame(render_ctx, width, height, scale)
+    }
+}
+
+/// The browser's canvas — vello on WebGPU, so the shader runs there too.
+#[cfg(target_arch = "wasm32")]
+impl fts_audio_ui::scene_canvas::CanvasPanel for DelayWidget {
+    fn can_create_surfaces(&mut self, ctx: &mut dyn RenderContext) {
+        self.create_surfaces(ctx);
+    }
+
+    fn paint(&mut self, ctx: &mut dyn RenderContext, width: u32, height: u32, scale: f64) -> Scene {
+        self.paint_frame(ctx, width, height, scale)
     }
 }
 
@@ -455,10 +489,12 @@ pub fn paint_delay(scene: &mut Scene, view: &DelayView, w: f64, h: f64) {
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
-            &Gradient::new_linear(Point::new(hx - w * 0.08, 0.0), Point::new(hx, 0.0)).with_stops([
-                ColorStop::from((0.0, faded(signal, 0.0))),
-                ColorStop::from((1.0, faded(signal, 0.16))),
-            ]),
+            &Gradient::new_linear(Point::new(hx - w * 0.08, 0.0), Point::new(hx, 0.0)).with_stops(
+                [
+                    ColorStop::from((0.0, faded(signal, 0.0))),
+                    ColorStop::from((1.0, faded(signal, 0.16))),
+                ],
+            ),
             None,
             &Rect::new((hx - w * 0.08).max(0.0), 0.0, hx.max(0.0), h),
         );
@@ -471,7 +507,6 @@ pub fn paint_delay(scene: &mut Scene, view: &DelayView, w: f64, h: f64) {
         );
     }
 }
-
 
 // ── Mounting ────────────────────────────────────────────────────────────────
 
@@ -545,20 +580,15 @@ pub fn DelayViz(
 
     #[cfg(target_arch = "wasm32")]
     {
-        let view = Rc::clone(&view);
-        let paint = dioxus::prelude::use_callback(move |f: fts_audio_ui::scene_canvas::Frame| {
-            let mut scene = anyrender::Scene::new();
-            let mut v = view.borrow().clone();
-            // The widget animates on its own clock natively; here the canvas
-            // keeps it.
-            v.time = f.seconds as f32;
-            paint_delay(&mut scene, &v, f.width, f.height);
-            scene
-        });
+        // The same widget, on a canvas: vello on WebGPU gives it a real
+        // device, so it builds its shader surface and paints the lit
+        // picture — not the vector fallback.
+        let panel =
+            use_hook(|| fts_audio_ui::scene_canvas::Panel::new(DelayWidget::new(Rc::clone(&view))));
         rsx! {
             fts_audio_ui::scene_canvas::SceneCanvas {
-                paint,
-                class: "absolute inset-0 w-full h-full pointer-events-none",
+                panel,
+                class: "absolute inset-0 w-full h-full",
             }
         }
     }
@@ -722,7 +752,15 @@ mod tests {
     #[test]
     fn levels_are_normalised_to_the_loudest_tap() {
         let reported = vec![(400.0, 0.08, true), (800.0, 0.04, false)];
-        let v = view_of(&reported, 2000.0, true, 400.0, "1/4".into(), Family::Tape, [56, 189, 248]);
+        let v = view_of(
+            &reported,
+            2000.0,
+            true,
+            400.0,
+            "1/4".into(),
+            Family::Tape,
+            [56, 189, 248],
+        );
         assert!((v.taps[0].level - 1.0).abs() < 1e-6);
         assert!((v.taps[1].level - 0.5).abs() < 1e-6);
     }
@@ -730,7 +768,15 @@ mod tests {
     /// Silence must not divide by its own peak.
     #[test]
     fn a_silent_delay_normalises_to_nothing() {
-        let v = view_of(&[(400.0, 0.0, true)], 2000.0, true, 400.0, String::new(), Family::Digital, [1, 2, 3]);
+        let v = view_of(
+            &[(400.0, 0.0, true)],
+            2000.0,
+            true,
+            400.0,
+            String::new(),
+            Family::Digital,
+            [1, 2, 3],
+        );
         assert_eq!(v.taps[0].level, 0.0);
     }
 
@@ -740,8 +786,16 @@ mod tests {
     fn the_window_follows_the_tail() {
         let beat = 0.4;
         let taps = vec![
-            Tap { at: 0.4, level: 1.0, pan: 0.0 },
-            Tap { at: 0.8, level: 0.3, pan: 0.0 },
+            Tap {
+                at: 0.4,
+                level: 1.0,
+                pan: 0.0,
+            },
+            Tap {
+                at: 0.8,
+                level: 0.3,
+                pan: 0.0,
+            },
         ];
         // The caller offers eight beats; two repeats need three.
         let w = window_for(&taps, beat * 8.0, beat);
@@ -752,7 +806,11 @@ mod tests {
     #[test]
     fn the_window_is_whole_beats() {
         let beat = 0.4;
-        let taps = vec![Tap { at: 0.55, level: 1.0, pan: 0.0 }];
+        let taps = vec![Tap {
+            at: 0.55,
+            level: 1.0,
+            pan: 0.0,
+        }];
         let w = window_for(&taps, beat * 8.0, beat);
         assert!((w / beat - (w / beat).round()).abs() < 1e-4, "got {w}");
     }
@@ -763,7 +821,11 @@ mod tests {
     fn the_ceiling_holds() {
         let beat = 0.4;
         let taps: Vec<Tap> = (1..40)
-            .map(|n| Tap { at: beat * n as f32, level: 0.5, pan: 0.0 })
+            .map(|n| Tap {
+                at: beat * n as f32,
+                level: 0.5,
+                pan: 0.0,
+            })
             .collect();
         assert!(window_for(&taps, beat * 8.0, beat) <= beat * 8.0 + 1e-5);
     }
@@ -773,14 +835,22 @@ mod tests {
     #[test]
     fn a_single_repeat_still_gets_a_readable_lane() {
         let beat = 0.4;
-        let taps = vec![Tap { at: 0.05, level: 1.0, pan: 0.0 }];
+        let taps = vec![Tap {
+            at: 0.05,
+            level: 1.0,
+            pan: 0.0,
+        }];
         assert!((window_for(&taps, beat * 8.0, beat) - beat * 2.0).abs() < 1e-5);
     }
 
     /// No tempo, no grid to round to — and no division by zero.
     #[test]
     fn a_free_running_delay_still_gets_a_window() {
-        let taps = vec![Tap { at: 0.35, level: 1.0, pan: 0.0 }];
+        let taps = vec![Tap {
+            at: 0.35,
+            level: 1.0,
+            pan: 0.0,
+        }];
         let w = window_for(&taps, 4.0, 0.0);
         assert!(w > 0.35 && w <= 4.0, "got {w}");
     }
@@ -791,10 +861,7 @@ mod tests {
     fn the_uniform_block_is_vec4_rows() {
         assert_eq!(std::mem::size_of::<DelayUniforms>() % 16, 0);
         // frame + params + color + style + MAX_TAPS rows.
-        assert_eq!(
-            std::mem::size_of::<DelayUniforms>(),
-            (4 + MAX_TAPS) * 16
-        );
+        assert_eq!(std::mem::size_of::<DelayUniforms>(), (4 + MAX_TAPS) * 16);
     }
 
     /// A tail longer than the array is truncated rather than overflowing, and
@@ -861,7 +928,10 @@ mod tests {
     fn the_shader_compiles_and_validates() {
         let source = fts_audio_ui::shader::compose(SHADER);
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
-            panic!("the delay shader does not parse: {}", e.emit_to_string(&source))
+            panic!(
+                "the delay shader does not parse: {}",
+                e.emit_to_string(&source)
+            )
         });
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
