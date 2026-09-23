@@ -3233,6 +3233,48 @@ const REVERB_PARAMS: &[ParamSpec] = &[
         max: 12.0,
         default: 0.0,
     },
+    // The wet's band: a low cut to keep the tail out of the guitar's low
+    // end (150–500 Hz on guitar) and a high cut to take the fizz off it
+    // (4–8 kHz). 20 Hz / 20 kHz = open.
+    ParamSpec {
+        id: 95,
+        name: "low_cut",
+        min: 20.0,
+        max: 2000.0,
+        default: 20.0,
+    },
+    ParamSpec {
+        id: 96,
+        name: "high_cut",
+        min: 1000.0,
+        max: 20000.0,
+        default: 20000.0,
+    },
+    // Ducking: the wet drops by `duck` (0 = none, 1 = silent) while the
+    // guitar plays over `duck_threshold` (dB), and swells back over
+    // `duck_release` (ms) when it stops — a big reverb that clears for the
+    // notes and blooms in the gaps.
+    ParamSpec {
+        id: 97,
+        name: "duck",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamSpec {
+        id: 98,
+        name: "duck_threshold",
+        min: -60.0,
+        max: 0.0,
+        default: -20.0,
+    },
+    ParamSpec {
+        id: 99,
+        name: "duck_release",
+        min: 20.0,
+        max: 2000.0,
+        default: 120.0,
+    },
 ];
 
 /// Native Reverb block — wraps [`reverb::DualReverb`] (two full chains +
@@ -3407,6 +3449,20 @@ impl NativeReverb {
         match id {
             0 => c.mix = v.clamp(0.0, 1.0),
             92 => c.wet_gain_db = v.clamp(-36.0, 36.0),
+            95 => {
+                c.output_hp_freq = v.clamp(20.0, 2000.0);
+                c.refresh_output_filters();
+            }
+            96 => {
+                c.output_lp_freq = v.clamp(1000.0, 20000.0);
+                c.refresh_output_filters();
+            }
+            97 => c.duck_amount = v.clamp(0.0, 1.0),
+            98 => c.duck_threshold = 10f64.powf(v.clamp(-60.0, 0.0) / 20.0),
+            99 => {
+                c.duck_release_ms = v.clamp(20.0, 2000.0);
+                c.update_params();
+            }
             1 => {
                 c.params.decay = v;
                 c.update_params();
@@ -4299,6 +4355,15 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         max: 12.0,
         default: 0.0,
     },
+    // A low-pass inside the feedback loop: each repeat darker than the
+    // last, as an analog or tape echo (3–6 kHz on guitar). 20 kHz = open.
+    ParamSpec {
+        id: 63,
+        name: "high_cut",
+        min: 500.0,
+        max: 20000.0,
+        default: 8000.0,
+    },
 ];
 
 /// Native Delay block — wraps [`delay::DualDelay`] (two full chains +
@@ -4405,6 +4470,14 @@ impl NativeDelay {
                 a.tap_div_r = div;
             }
             8 => a.high_pass_hz = v,
+            63 => {
+                // In the loop and on the wet out: repeat n passes the
+                // filter n times, the first included.
+                let hz = if v >= 19_999.0 { 0.0 } else { v.clamp(500.0, 20_000.0) };
+                a.delay_l.hicut_freq = hz;
+                a.delay_r.hicut_freq = hz;
+                a.high_cut_hz = hz;
+            }
             9 => a.repeat_dynamics = v > 0.5,
             35 => a.tap_div_l = delay::TapDivision::from_index(v.round().max(0.0) as usize),
             36 => a.tap_div_r = delay::TapDivision::from_index(v.round().max(0.0) as usize),

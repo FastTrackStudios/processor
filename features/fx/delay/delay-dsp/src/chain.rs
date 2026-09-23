@@ -211,6 +211,11 @@ pub struct DelayChain {
     pub repeat_dynamics: bool,
     /// Post-delay wet high-pass in Hz (0 = off, `TimeLine` range 20–900).
     pub high_pass_hz: f64,
+    /// Post-delay wet low-pass in Hz (0 = off). With the engine's in-loop
+    /// `hicut_freq` at the same frequency, every repeat is darker than the
+    /// last from the first one on — the write path of a tape or analog
+    /// echo, where the loop filter alone leaves the first repeat full-range.
+    pub high_cut_hz: f64,
     /// Left line output pan (-1.0 hard left … 1.0 hard right).
     /// Default -1.0 preserves the classic hard-L routing.
     pub pan_l: f64,
@@ -272,6 +277,8 @@ pub struct DelayChain {
     /// Post-delay wet high-pass.
     hp_l: Biquad,
     hp_r: Biquad,
+    lp_l: Biquad,
+    lp_r: Biquad,
     pan_l_smoother: ParamSmoother,
     pan_r_smoother: ParamSmoother,
 }
@@ -319,6 +326,7 @@ impl DelayChain {
             freeze: false,
             repeat_dynamics: false,
             high_pass_hz: 0.0,
+            high_cut_hz: 0.0,
             pan_l: -1.0,
             pan_r: 1.0,
             duck_gate: false,
@@ -358,6 +366,8 @@ impl DelayChain {
             repeat_dyn_env: EnvelopeFollower::new(0.0),
             hp_l: Biquad::new(),
             hp_r: Biquad::new(),
+            lp_l: Biquad::new(),
+            lp_r: Biquad::new(),
             pan_l_smoother: ParamSmoother::new(-1.0),
             pan_r_smoother: ParamSmoother::new(1.0),
         }
@@ -405,6 +415,8 @@ impl Processor for DelayChain {
         self.repeat_dyn_env.reset(0.0);
         self.hp_l.reset();
         self.hp_r.reset();
+        self.lp_l.reset();
+        self.lp_r.reset();
         self.pan_l_smoother.reset(self.pan_l);
         self.pan_r_smoother.reset(self.pan_r);
     }
@@ -463,6 +475,13 @@ impl Processor for DelayChain {
                 .set(FilterType::Highpass, hz, 0.707, config.sample_rate);
             self.hp_r
                 .set(FilterType::Highpass, hz, 0.707, config.sample_rate);
+        }
+        if self.high_cut_hz > 0.0 {
+            let hz = self.high_cut_hz.clamp(500.0, 20_000.0);
+            self.lp_l
+                .set(FilterType::Lowpass, hz, 0.707, config.sample_rate);
+            self.lp_r
+                .set(FilterType::Lowpass, hz, 0.707, config.sample_rate);
         }
 
         // Freeze ramp ~30 ms (click-free engage, mirrors reverb freeze).
@@ -782,6 +801,10 @@ impl Processor for DelayChain {
             if self.high_pass_hz > 0.0 {
                 wet_l = self.hp_l.tick(wet_l, 0);
                 wet_r = self.hp_r.tick(wet_r, 1);
+            }
+            if self.high_cut_hz > 0.0 {
+                wet_l = self.lp_l.tick(wet_l, 0);
+                wet_r = self.lp_r.tick(wet_r, 1);
             }
 
             // --- LR offset: delay the R channel ---

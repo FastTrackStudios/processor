@@ -1010,6 +1010,25 @@ impl ReverbChain {
         };
     }
 
+    /// Re-design the wet output's low cut and high cut from
+    /// `output_hp_freq` / `output_lp_freq` — the live path. `update` does it
+    /// too, but also re-sizes the pre-delay line (an allocation); this only
+    /// sets two filters' coefficients, so it is safe on the audio thread.
+    pub fn refresh_output_filters(&mut self) {
+        self.output_hp.set(
+            FilterType::Highpass,
+            self.output_hp_freq.max(20.0),
+            0.707,
+            self.sample_rate,
+        );
+        self.output_lp.set(
+            FilterType::Lowpass,
+            self.output_lp_freq.min(20000.0),
+            0.707,
+            self.sample_rate,
+        );
+    }
+
     pub fn update_params(&mut self) {
         self.apply_voice_pairing();
         self.configure_hall();
