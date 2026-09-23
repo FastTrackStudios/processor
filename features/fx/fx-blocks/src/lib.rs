@@ -3223,6 +3223,16 @@ const REVERB_PARAMS: &[ParamSpec] = &[
         max: 1.0,
         default: 1.0,
     },
+    // The reverb's level against the dry, in dB — a gain on the wet, on top
+    // of `mix`. A host running the reverb fully parallel pins `mix` at 1
+    // and dials this instead.
+    ParamSpec {
+        id: 94,
+        name: "level",
+        min: -60.0,
+        max: 12.0,
+        default: 0.0,
+    },
 ];
 
 /// Native Reverb block — wraps [`reverb::DualReverb`] (two full chains +
@@ -3240,20 +3250,36 @@ const REVERB_PARAMS: &[ParamSpec] = &[
 /// are zero-latency, so the paths line up.
 #[derive(Clone, Copy)]
 struct ParallelMix {
+    /// The wet gain: `mix · level`.
     wet: f64,
+    mix: f64,
+    /// `level` as a linear gain.
+    level: f64,
     dry: f64,
     wet_s: f64,
     dry_s: f64,
 }
 
 impl ParallelMix {
-    const fn new(wet: f64) -> Self {
+    const fn new(mix: f64) -> Self {
         Self {
-            wet,
+            wet: mix,
+            mix,
+            level: 1.0,
             dry: 1.0,
-            wet_s: wet,
+            wet_s: mix,
             dry_s: 1.0,
         }
+    }
+
+    fn set_mix(&mut self, v: f64) {
+        self.mix = v.clamp(0.0, 1.0);
+        self.wet = self.mix * self.level;
+    }
+
+    fn set_level_db(&mut self, db: f64) {
+        self.level = 10f64.powf(db.clamp(-60.0, 12.0) / 20.0);
+        self.wet = self.mix * self.level;
     }
 
     /// `out = dry·in + wet·out`, per sample, with ~5 ms smoothing on both
@@ -3322,7 +3348,12 @@ impl NativeReverb {
         // `ParallelMix`); the engine's own mix is derived in `sync_mix`.
         match id {
             0 => {
-                self.par.wet = v.clamp(0.0, 1.0);
+                self.par.set_mix(v);
+                self.sync_mix();
+                return;
+            }
+            94 => {
+                self.par.set_level_db(v);
                 self.sync_mix();
                 return;
             }
@@ -3344,7 +3375,7 @@ impl NativeReverb {
         self.rev.a.mix = if matches!(self.rev.routing, reverb::DualRouting::Single) {
             1.0
         } else {
-            self.par.wet
+            self.par.wet.min(1.0)
         };
     }
 
@@ -4259,6 +4290,15 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         max: 1.0,
         default: 1.0,
     },
+    // The delay's level against the dry, in dB — a gain on the wet, on top
+    // of `mix`. See the reverb's `level`.
+    ParamSpec {
+        id: 62,
+        name: "level",
+        min: -60.0,
+        max: 12.0,
+        default: 0.0,
+    },
 ];
 
 /// Native Delay block — wraps [`delay::DualDelay`] (two full chains +
@@ -4311,7 +4351,12 @@ impl NativeDelay {
         // `ParallelMix`); the engine's own mix is derived in `sync_mix`.
         match id {
             0 => {
-                self.par.wet = v.clamp(0.0, 1.0);
+                self.par.set_mix(v);
+                self.sync_mix();
+                return;
+            }
+            62 => {
+                self.par.set_level_db(v);
                 self.sync_mix();
                 return;
             }
@@ -4333,7 +4378,7 @@ impl NativeDelay {
         self.dly.a.mix = if matches!(self.dly.routing, delay::DualRouting::Single) {
             1.0
         } else {
-            self.par.wet
+            self.par.wet.min(1.0)
         };
     }
 
