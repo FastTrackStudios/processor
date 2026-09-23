@@ -273,6 +273,10 @@ pub fn EqGraph(
     // Internal state
     let mut dragging_band = use_signal(|| None::<usize>);
     let mut hovered_band = use_signal(|| None::<usize>);
+    // The pointer is over the graph. The band card follows it: shown while
+    // the pointer is here (or a drag is live), gone when it leaves — a
+    // focused band used to keep its card up indefinitely.
+    let mut pointer_inside = use_signal(|| false);
     // Focused band shows the info popup (only one at a time)
     let mut focused_band: Signal<Option<usize>> = use_signal(|| None);
     // Helper: set focused_band and sync to external signal
@@ -777,10 +781,15 @@ pub fn EqGraph(
                 // was actually released outside the window, onmousemove detects
                 // the missing held button and ends the drag then.
                 set_hovered(None);
+                pointer_inside.set(false);
             },
+            onmouseenter: move |_| pointer_inside.set(true),
 
             // Mouse move: drag, hover hit-test, focus detection
             onmousemove: move |evt: MouseEvent| {
+                if !*pointer_inside.peek() {
+                    pointer_inside.set(true);
+                }
                 if disabled { return; }
                 {
                     let m = evt.modifiers();
@@ -1819,7 +1828,12 @@ pub fn EqGraph(
                 let dragging = *dragging_band.read();
                 let focused  = *focused_band.read();
                 let hovered  = *hovered_band.read();
-                let overlay_idx = dragging.or(focused).or(hovered);
+                // Only while the pointer is over the graph (or dragging).
+                let overlay_idx = if dragging.is_some() || *pointer_inside.read() {
+                    dragging.or(focused).or(hovered)
+                } else {
+                    None
+                };
                 if let Some(band_idx) = overlay_idx {
                     let band_opt = bands.read().get(band_idx).cloned();
                     if let Some(band) = band_opt {
