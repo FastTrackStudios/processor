@@ -538,11 +538,14 @@ fn CurveView(
                 },
             }
 
-            // How much of it you are actually hearing.
-            rect {
-                x: "{cx - half * 2.0:.1}", y: "{h - 10.0:.1}",
-                width: "{half * 4.0 * mix:.1}", height: "3", rx: "1.5",
-                fill: "{body}", opacity: "{glow * 0.8:.3}",
+            // How much of it you are actually hearing (nothing at 0% — a
+            // zero-width rect is invalid SVG).
+            if mix > 0.0 {
+                rect {
+                    x: "{cx - half * 2.0:.1}", y: "{h - 10.0:.1}",
+                    width: "{half * 4.0 * mix:.1}", height: "3", rx: "1.5",
+                    fill: "{body}", opacity: "{glow * 0.8:.3}",
+                }
             }
         }
     }
