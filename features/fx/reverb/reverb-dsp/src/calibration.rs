@@ -18,8 +18,10 @@
 //! cluster dominating a short tail — and anything past an engine's stable
 //! top are dropped), so each table is strictly increasing and invertible.
 //!
-//! Generated — re-run the example and the generator after changing an
-//! engine's decay law.
+//! Generated — after changing an engine's decay law, re-measure and
+//! regenerate: `cargo run --release -p fx-blocks --example rt60_table >
+//! rt60.tsv` (add `--burst 10:0` rows for Swell), then
+//! `python3 tools/gen_calibration.py rt60.tsv src/calibration.rs`.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
