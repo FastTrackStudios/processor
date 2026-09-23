@@ -1413,11 +1413,22 @@ impl AlgorithmType {
             (Self::Hall, 2) => Some(HALL_ARENA_T60),
             (Self::Hall, _) => Some(HALL_T60),
             (Self::Random, _) => Some(RANDOM_T60),
-            // Only the base Dattorro tank is converted; the Lexicon and
-            // Progenitor variants keep their own gain mapping.
-            (Self::Plate, 0) => Some(PLATE_T60),
-            _ => None,
+            // The plates (the Dattorro tank's own conversion measured 11–12 %
+            // short) and the engines with their own feedback law: the span measured for
+            // them (`calibration`), which the chain maps `decay` across.
+            _ => match crate::calibration::table(self, variant) {
+                Some(t) => Some(t.range()),
+                None => None,
+            },
         }
+    }
+
+    /// Whether `decay` reaches this engine as a time the chain has already
+    /// converted through a measured table (`calibration`), rather than one
+    /// the engine converts itself.
+    #[must_use]
+    pub const fn decay_is_tabled(self, variant: usize) -> bool {
+        crate::calibration::table(self, variant).is_some()
     }
 }
 
@@ -1553,12 +1564,14 @@ mod decay_time_tests {
         // the old feedback-gain model topped out near 0.18 s.
         let (lo, hi) = ROOM_CHAMBER_T60;
         assert!(lo < 2.5 && hi > 2.5);
-        // The Dattorro tank is converted; its heritage variants are not.
-        assert_eq!(AlgorithmType::Plate.t60_range(0), Some(PLATE_T60));
-        assert_eq!(AlgorithmType::Plate.t60_range(1), None);
+        // The plates and the feedback-law engines report their measured
+        // span (`calibration`).
+        assert!(AlgorithmType::Plate.t60_range(0).is_some());
+        assert!(AlgorithmType::Plate.t60_range(1).is_some());
+        assert!(AlgorithmType::Cloud.t60_range(0).is_some());
         // Engines with no time model say so instead of inventing one.
         assert_eq!(AlgorithmType::Velvet.t60_range(0), None);
-        assert_eq!(AlgorithmType::Cloud.t60_range(0), None);
+        assert_eq!(AlgorithmType::Magneto.t60_range(0), None);
     }
 
     #[test]

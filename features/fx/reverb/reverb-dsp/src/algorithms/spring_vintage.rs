@@ -87,8 +87,12 @@ impl VintageSpringUnit {
 
     #[inline]
     fn tick(&mut self, input: f64) -> f64 {
-        // Mix input with saturated feedback
-        let fb_saturated = soft_clip(self.feedback * (1.0 + self.drive));
+        // Mix input with saturated feedback. The drive colours the loop; it
+        // must not also raise its gain — un-normalised, the default drive
+        // (0.5) put the small-signal loop gain at 1.5 × `loop_gain`, over 1
+        // from decay ≈ 0.45 up, and the clipper held the tank in
+        // self-oscillation: a "tail" that never ended at any decay setting.
+        let fb_saturated = soft_clip(self.feedback * (1.0 + self.drive)) / (1.0 + self.drive);
         let x = input + fb_saturated;
 
         // Spectral delay filter — chirp

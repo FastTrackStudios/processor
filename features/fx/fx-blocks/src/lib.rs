@@ -3922,7 +3922,7 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         id: 7,
         name: "tap_div",
         min: 0.0,
-        max: 7.0,
+        max: 10.0,
         default: 7.0,
     },
     ParamSpec {
@@ -4140,14 +4140,14 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         id: 35,
         name: "tap_div_l",
         min: 0.0,
-        max: 7.0,
+        max: 10.0,
         default: 7.0,
     },
     ParamSpec {
         id: 36,
         name: "tap_div_r",
         min: 0.0,
-        max: 7.0,
+        max: 10.0,
         default: 7.0,
     },
     ParamSpec {

@@ -30,6 +30,7 @@
 pub mod algorithm;
 pub mod algorithms;
 pub mod analysis;
+pub mod calibration;
 pub mod chain;
 pub mod dual;
 pub mod ir;

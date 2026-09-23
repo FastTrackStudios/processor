@@ -60,10 +60,15 @@ pub enum TapDivision {
     SilverRatio,
     /// Ignore tempo; use the engine's `time_ms` directly.
     Free,
+    /// Three eighths — the long ambient repeat.
+    DottedQuarter,
+    Half,
+    /// Three in the space of two quarters.
+    QuarterTriplet,
 }
 
 impl TapDivision {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 11;
 
     #[must_use]
     pub const fn from_index(i: usize) -> Self {
@@ -75,6 +80,9 @@ impl TapDivision {
             4 => Self::Sixteenth,
             5 => Self::GoldenRatio,
             6 => Self::SilverRatio,
+            8 => Self::DottedQuarter,
+            9 => Self::Half,
+            10 => Self::QuarterTriplet,
             _ => Self::Free,
         }
     }
@@ -90,6 +98,9 @@ impl TapDivision {
             Self::GoldenRatio => 5,
             Self::SilverRatio => 6,
             Self::Free => 7,
+            Self::DottedQuarter => 8,
+            Self::Half => 9,
+            Self::QuarterTriplet => 10,
         }
     }
 
@@ -104,6 +115,9 @@ impl TapDivision {
             Self::GoldenRatio => "GR",
             Self::SilverRatio => "SR",
             Self::Free => "Free",
+            Self::DottedQuarter => "1/4.",
+            Self::Half => "1/2",
+            Self::QuarterTriplet => "1/4T",
         }
     }
 
@@ -120,6 +134,9 @@ impl TapDivision {
             Self::GoldenRatio => Some(quarter / 1.618_033_988_749_895),
             Self::SilverRatio => Some(quarter / 2.414_213_562_373_095),
             Self::Free => None,
+            Self::DottedQuarter => Some(quarter * 1.5),
+            Self::Half => Some(quarter * 2.0),
+            Self::QuarterTriplet => Some(quarter * 2.0 / 3.0),
         }
     }
 }
@@ -1113,6 +1130,12 @@ mod tests {
         assert!((TapDivision::Eighth.to_ms(120.0).unwrap() - 250.0).abs() < 1e-9);
         assert!((TapDivision::Triplet.to_ms(120.0).unwrap() - 500.0 / 3.0).abs() < 1e-9);
         assert!((TapDivision::Sixteenth.to_ms(120.0).unwrap() - 125.0).abs() < 1e-9);
+        assert!((TapDivision::DottedQuarter.to_ms(120.0).unwrap() - 750.0).abs() < 1e-9);
+        assert!((TapDivision::Half.to_ms(120.0).unwrap() - 1000.0).abs() < 1e-9);
+        assert!((TapDivision::QuarterTriplet.to_ms(120.0).unwrap() - 1000.0 / 3.0).abs() < 1e-9);
+        for i in 0..TapDivision::COUNT {
+            assert_eq!(TapDivision::from_index(i).to_index(), i);
+        }
         // Golden/Silver: quarter divided by φ / δ.
         assert!((TapDivision::GoldenRatio.to_ms(120.0).unwrap() - 309.016_994).abs() < 1e-3);
         assert!((TapDivision::SilverRatio.to_ms(120.0).unwrap() - 207.106_781).abs() < 1e-3);
