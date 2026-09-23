@@ -2070,6 +2070,26 @@ const COMP_PARAMS: &[ParamSpec] = &[
         max: 4.0,
         default: 0.0,
     },
+    // Output level after the blend (dB). On a comp in front of an amp it is
+    // how hard the amp is driven, so it is part of the preset.
+    ParamSpec {
+        id: 8,
+        name: "makeup",
+        min: -24.0,
+        max: 24.0,
+        default: 0.0,
+    },
+    // Wet share of a parallel blend with the dry input (0 = dry, 1 = fully
+    // compressed) — the pedal "blend" knob that keeps the pick attack under a
+    // heavy squash. The compressor has no lookahead, so the two paths are
+    // time-aligned and blend without combing.
+    ParamSpec {
+        id: 9,
+        name: "mix",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
 ];
 
 /// Native Compressor block — wraps [`comp::ProC3Compressor`] (ProC3-style).
@@ -2077,6 +2097,10 @@ const COMP_PARAMS: &[ParamSpec] = &[
 pub struct NativeComp {
     comp: comp::ProC3Compressor,
     prepared: bool,
+    /// Linear output gain (`makeup`, dB).
+    makeup: f64,
+    /// Parallel blend, 0 = dry … 1 = compressed (`mix`).
+    mix: f64,
     /// The [`comp_meter`] channel this compressor draws on (0 = none) — its
     /// own panel's trace. Set by the build-time `meter` value.
     meter: usize,
@@ -2097,6 +2121,8 @@ impl NativeComp {
         Self {
             comp,
             prepared: false,
+            makeup: 1.0,
+            mix: 1.0,
             meter: comp_meter::DEFAULT_CHANNEL,
             wave_counter: 0,
             wave_peak: 0.0,
@@ -2114,11 +2140,13 @@ impl NativeComp {
             5 => self.comp.set_range_db(v),
             6 => self.comp.set_fold(v),
             7 => self.comp.set_style(v as i32),
+            8 => self.makeup = 10f64.powf(v.clamp(-24.0, 24.0) / 20.0),
+            9 => self.mix = v.clamp(0.0, 1.0),
             _ => {}
         }
     }
 
-    /// Apply a build-time parameter by name (`threshold`/`ratio`/`attack`/`release`).
+    /// Apply a build-time parameter by name (any `COMP_PARAMS` name, or `meter`).
     pub fn set_named(&mut self, name: &str, value: f64) {
         // Build-time only, and deliberately not a `COMP_PARAMS` entry: it is
         // wiring, not a knob a host should automate.
@@ -2172,9 +2200,12 @@ impl PluginInstance for NativeComp {
             self.set(id, value);
         }
         let n = out_l.len().min(out_r.len()).min(in_l.len()).min(in_r.len());
+        // Blend first, then the output level — a pedal's Level knob.
+        let (wet, dry) = (self.mix * self.makeup, (1.0 - self.mix) * self.makeup);
         for i in 0..n {
-            out_l[i] = self.comp.process(f64::from(in_l[i]), 0) as f32;
-            out_r[i] = self.comp.process(f64::from(in_r[i]), 1) as f32;
+            let (l, r) = (f64::from(in_l[i]), f64::from(in_r[i]));
+            out_l[i] = (self.comp.process(l, 0) * wet + l * dry) as f32;
+            out_r[i] = (self.comp.process(r, 1) * wet + r * dry) as f32;
             // Telemetry: rolling input peak + GR ring (see `comp_meter`).
             if self.meter == 0 {
                 continue;
