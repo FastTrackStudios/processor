@@ -53,6 +53,8 @@ members = [
     "features/fx/reverb/reverb-dsp",
     "features/fx/reverb/reverb-profiles",
     "features/fx/reverb/reverb-ui",
+    "features/fx/stretch/stretch",
+    "features/fx/stretch/stretch-dsp",
     "features/fx/saturate/saturate",
     "features/fx/saturate/saturate-dsp",
     "features/fx/saturate/saturate-profiles",
@@ -299,6 +301,8 @@ comp-dsp = { path = "features/fx/comp/comp-dsp" }
 reverb-dsp = { path = "features/fx/reverb/reverb-dsp" }
 reverb-profiles = { path = "features/fx/reverb/reverb-profiles" }
 reverb-ui = { path = "features/fx/reverb/reverb-ui" }
+stretch = { path = "features/fx/stretch/stretch" }
+stretch-dsp = { path = "features/fx/stretch/stretch-dsp" }
 delay-dsp = { path = "features/fx/delay/delay-dsp" }
 delay-profiles = { path = "features/fx/delay/delay-profiles" }
 delay-ui = { path = "features/fx/delay/delay-ui" }
