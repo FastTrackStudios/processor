@@ -644,9 +644,10 @@ impl DelayEngine {
         let (self_feedback, self_hicut, self_locut, self_tilt) =
             (feedback, hicut_freq, locut_freq, decay_tilt);
 
+        let tape_longest = self.tape_longest_head();
         match &mut self.inner {
             EngineInner::Tape(d) => {
-                d.time_ms = self.time_ms;
+                d.time_ms = self.time_ms / tape_longest;
                 d.feedback = self_feedback;
                 d.hicut_freq = self_hicut;
                 d.locut_freq = self_locut;
@@ -913,6 +914,21 @@ impl DelayEngine {
         }
     }
 
+    /// The tape's time is when the echo lands — the longest head playing,
+    /// which is what tempo sync and the time knob mean. Its heads sit at 1×,
+    /// 1.94× and 2.85× of head 1's time, so head 1 is set to this fraction
+    /// of it: with the default head 3 alone, a synced dotted eighth played
+    /// 2.85× late (a 622 ms echo at 1.77 s).
+    fn tape_longest_head(&self) -> f64 {
+        if self.head3_enabled {
+            crate::tape_delay::HEAD3_RATIO
+        } else if self.head2_enabled {
+            crate::tape_delay::HEAD2_RATIO
+        } else {
+            1.0
+        }
+    }
+
     /// Process one sample with a per-sample modulated delay time.
     ///
     /// Used by the chain for groove/feel/prime modulation. The engine's
@@ -920,9 +936,10 @@ impl DelayEngine {
     /// time smoother chases the value passed here.
     pub fn tick_at(&mut self, input: f64, ch: usize, time_ms: f64) -> f64 {
         let fb = self.eff_feedback();
+        let tape_longest = self.tape_longest_head();
         match &mut self.inner {
             EngineInner::Tape(d) => {
-                d.time_ms = time_ms;
+                d.time_ms = time_ms / tape_longest;
                 d.feedback = fb;
                 d.tick(input, ch)
             }

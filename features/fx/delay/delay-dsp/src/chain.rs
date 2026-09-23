@@ -1100,6 +1100,45 @@ mod tests {
         }
     }
 
+    /// A synced Tape delay lands on the tempo: the default head (head 3,
+    /// at 2.85× head 1) is the echo, not a head 2.85× too late.
+    #[test]
+    fn tape_tempo_sync_lands_on_the_division() {
+        let mut c = make_chain();
+        c.set_style(DelayStyle::Tape);
+        c.tempo_bpm = Some(120.0);
+        c.tap_div_l = TapDivision::DottedEighth; // 375 ms
+        c.tap_div_r = TapDivision::DottedEighth;
+        c.mix = 1.0;
+        c.update(config());
+        // Let the motor reach speed first — the transport spins up from its
+        // default time, and an echo written during the ramp reads early.
+        let mut pre_l = vec![0.0; 96000];
+        let mut pre_r = pre_l.clone();
+        c.process(&mut pre_l, &mut pre_r);
+
+        let n = 48000; // 1 s: a 2.85× late echo (1069 ms) would miss it
+        let mut l: Vec<f64> = (0..n).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
+        let mut r = l.clone();
+        c.process(&mut l, &mut r);
+
+        let expected = num::f64_to_index(375.0 * SR / 1000.0);
+        let peak = l
+            .iter()
+            .enumerate()
+            .skip(1000)
+            .max_by(|(_, a), (_, b)| a.abs().partial_cmp(&b.abs()).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+        // Tape wow and the transport's spin-up move it a little.
+        assert!(
+            (i64::try_from(peak).unwrap_or(i64::MAX) - i64::try_from(expected).unwrap_or(i64::MAX))
+                .unsigned_abs()
+                < 960,
+            "tape repeat at {peak}, expected near {expected}"
+        );
+    }
+
     #[test]
     fn tempo_sync_sets_delay_time() {
         let mut c = make_chain();
