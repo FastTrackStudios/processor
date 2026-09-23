@@ -3214,6 +3214,15 @@ const REVERB_PARAMS: &[ParamSpec] = &[
         max: 36.0,
         default: 0.0,
     },
+    // The dry guitar's level through the block (1 = all of it); `mix` is how
+    // much reverb is added in parallel. See the delay's `dry`.
+    ParamSpec {
+        id: 93,
+        name: "dry",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
 ];
 
 /// Native Reverb block — wraps [`reverb::DualReverb`] (two full chains +
@@ -3222,9 +3231,50 @@ const REVERB_PARAMS: &[ParamSpec] = &[
 ///
 /// Defaults to a subtle Hall (low mix) so it sits under the tone rather than
 /// washing it out.
+/// A time effect in parallel with the dry signal: the dry passes at `dry`
+/// (default all of it) and the effect's wet output is added at `wet` (the
+/// block's `mix`). The engines crossfade (`dry·(1−mix) + wet·mix`), which
+/// turned the guitar down by the mix whenever a delay or reverb was engaged
+/// — so a patch got several dB louder when its effects were bypassed. With
+/// a single chain the engine runs fully wet and the sum is made here; both
+/// are zero-latency, so the paths line up.
+#[derive(Clone, Copy)]
+struct ParallelMix {
+    wet: f64,
+    dry: f64,
+    wet_s: f64,
+    dry_s: f64,
+}
+
+impl ParallelMix {
+    const fn new(wet: f64) -> Self {
+        Self {
+            wet,
+            dry: 1.0,
+            wet_s: wet,
+            dry_s: 1.0,
+        }
+    }
+
+    /// `out = dry·in + wet·out`, per sample, with ~5 ms smoothing on both
+    /// gains (the engine's own mix smoother is pinned at 1 here).
+    fn apply(&mut self, in_l: &[f32], in_r: &[f32], out_l: &mut [f32], out_r: &mut [f32]) {
+        const K: f64 = 0.004;
+        let n = out_l.len().min(out_r.len()).min(in_l.len()).min(in_r.len());
+        for i in 0..n {
+            self.wet_s += (self.wet - self.wet_s) * K;
+            self.dry_s += (self.dry - self.dry_s) * K;
+            out_l[i] = (f64::from(in_l[i]) * self.dry_s + f64::from(out_l[i]) * self.wet_s) as f32;
+            out_r[i] = (f64::from(in_r[i]) * self.dry_s + f64::from(out_r[i]) * self.wet_s) as f32;
+        }
+    }
+}
+
 pub struct NativeReverb {
     rev: reverb::DualReverb,
     prepared: bool,
+    /// Chain A in parallel with the dry (see [`ParallelMix`]).
+    par: ParallelMix,
     scratch_l: Vec<f64>,
     scratch_r: Vec<f64>,
     /// Impulse re-prepare workers (native only), one per chain: re-bake
@@ -3243,7 +3293,8 @@ impl NativeReverb {
     pub fn new(_sample_rate: f64) -> Self {
         let mut rev = reverb::DualReverb::new();
         rev.a.set_algorithm(reverb::AlgorithmType::Hall);
-        rev.a.mix = 0.08;
+        // Fully wet: single routing sums the dry itself (`ParallelMix`).
+        rev.a.mix = 1.0;
         rev.a.params.decay = 0.45;
         rev.a.params.size = 0.5;
         rev.a.update_params();
@@ -3256,6 +3307,7 @@ impl NativeReverb {
         Self {
             rev,
             prepared: false,
+            par: ParallelMix::new(0.08),
             #[cfg(not(target_arch = "wasm32"))]
             reshaper_a: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -3266,6 +3318,37 @@ impl NativeReverb {
     }
 
     fn set(&mut self, id: u32, v: f64) {
+        // Chain A's mix and the dry are the parallel sum's (see
+        // `ParallelMix`); the engine's own mix is derived in `sync_mix`.
+        match id {
+            0 => {
+                self.par.wet = v.clamp(0.0, 1.0);
+                self.sync_mix();
+                return;
+            }
+            93 => {
+                self.par.dry = v.clamp(0.0, 1.0);
+                return;
+            }
+            _ => {}
+        }
+        self.set_engine(id, v);
+        if id == 3 {
+            self.sync_mix();
+        }
+    }
+
+    /// With one chain the engine runs fully wet and the dry is summed in
+    /// `process_block`; a dual routing keeps the engine's own crossfade.
+    fn sync_mix(&mut self) {
+        self.rev.a.mix = if matches!(self.rev.routing, reverb::DualRouting::Single) {
+            1.0
+        } else {
+            self.par.wet
+        };
+    }
+
+    fn set_engine(&mut self, id: u32, v: f64) {
         // Ids < 100: chain A + the dual block. Ids 100+: the same
         // chain-scoped param on chain B (`r2_*` names, id − 100).
         match id {
@@ -3683,6 +3766,9 @@ impl PluginInstance for NativeReverb {
             out_r,
             |l, r| rev.process(l, r),
         );
+        if matches!(self.rev.routing, reverb::DualRouting::Single) {
+            self.par.apply(in_l, in_r, out_l, out_r);
+        }
         Ok(())
     }
     fn deactivate(&mut self) {
@@ -4163,6 +4249,16 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         max: 1.0,
         default: 0.5,
     },
+    // The dry guitar's level through the block (1 = all of it). The delay
+    // runs in parallel with it — `mix` is how much delay is added — so
+    // engaging the block never turns the guitar down; this is how to.
+    ParamSpec {
+        id: 61,
+        name: "dry",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
 ];
 
 /// Native Delay block — wraps [`delay::DualDelay`] (two full chains +
@@ -4173,6 +4269,8 @@ const DELAY_PARAMS: &[ParamSpec] = &[
 pub struct NativeDelay {
     dly: delay::DualDelay,
     prepared: bool,
+    /// Delay A in parallel with the dry (see [`ParallelMix`]).
+    par: ParallelMix,
     sample_rate: f64,
     block_size: usize,
     scratch_l: Vec<f64>,
@@ -4191,6 +4289,8 @@ impl NativeDelay {
             chain.delay_l.feedback = 0.30;
             chain.delay_r.feedback = 0.30;
         }
+        // Fully wet: single routing sums the dry itself (`ParallelMix`).
+        dly.a.mix = 1.0;
         // B seeds slightly shorter so engaging a dual routing is
         // immediately audible before any params are set.
         dly.b.delay_l.time_ms = 300.0;
@@ -4200,12 +4300,44 @@ impl NativeDelay {
             block_size: 512,
             dly,
             prepared: false,
+            par: ParallelMix::new(0.08),
             scratch_l: Vec::new(),
             scratch_r: Vec::new(),
         }
     }
 
     fn set(&mut self, id: u32, v: f64) {
+        // Delay A's mix and the dry are the parallel sum's (see
+        // `ParallelMix`); the engine's own mix is derived in `sync_mix`.
+        match id {
+            0 => {
+                self.par.wet = v.clamp(0.0, 1.0);
+                self.sync_mix();
+                return;
+            }
+            61 => {
+                self.par.dry = v.clamp(0.0, 1.0);
+                return;
+            }
+            _ => {}
+        }
+        self.set_engine(id, v);
+        if id == 17 {
+            self.sync_mix();
+        }
+    }
+
+    /// With one delay the engine runs fully wet and the dry is summed in
+    /// `process_block`; a dual routing keeps the engine's own crossfade.
+    fn sync_mix(&mut self) {
+        self.dly.a.mix = if matches!(self.dly.routing, delay::DualRouting::Single) {
+            1.0
+        } else {
+            self.par.wet
+        };
+    }
+
+    fn set_engine(&mut self, id: u32, v: f64) {
         // Ids 0-16 address delay A; 17+ are the dual-routing block.
         let a = &mut self.dly.a;
         match id {
@@ -4612,6 +4744,9 @@ impl PluginInstance for NativeDelay {
             out_r,
             |l, r| dly.process(l, r),
         );
+        if matches!(self.dly.routing, delay::DualRouting::Single) {
+            self.par.apply(in_l, in_r, out_l, out_r);
+        }
         Ok(())
     }
     fn deactivate(&mut self) {
