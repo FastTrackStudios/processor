@@ -1435,9 +1435,31 @@ pub fn t60_to_decay(t60_s: f64, min_s: f64, max_s: f64) -> f64 {
     (t / min_s).log(max_s / min_s)
 }
 
+/// The RT60 (seconds) a decay setting gives on `algorithm` / `variant`, for
+/// the algorithms whose decay is a calibrated time ([`AlgorithmType::t60_range`]);
+/// `None` for those with their own feedback law. What a surface shows as the
+/// reverb's time, so it matches what the engine does.
+#[must_use]
+pub fn decay_seconds(algorithm: AlgorithmType, variant: usize, decay: f64) -> Option<f64> {
+    algorithm
+        .t60_range(variant)
+        .map(|(lo, hi)| decay_to_t60(decay, lo, hi))
+}
+
 #[cfg(test)]
 mod decay_time_tests {
     use super::*;
+
+    #[test]
+    fn decay_to_t60_inverts_t60_to_decay() {
+        for t in [0.5, 1.0, 4.5, 12.0] {
+            let d = t60_to_decay(t, 0.4, 30.0);
+            assert!((decay_to_t60(d, 0.4, 30.0) - t).abs() < 1e-9);
+        }
+        // Hall at 0.8: ~12 s, not the 4-5 s a Hall-law guess gave.
+        let hall = decay_seconds(AlgorithmType::Hall, 0, 0.8).unwrap();
+        assert!((hall - 0.4 * 75f64.powf(0.8)).abs() < 1e-9);
+    }
 
     #[test]
     fn spans_the_requested_range_logarithmically() {
