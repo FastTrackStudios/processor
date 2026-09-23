@@ -47,8 +47,13 @@ dioxus-native-dom = { workspace = true }
 # into, exactly as Blitz's does. Anything less would mean the browser drew
 # the vector fallback of every panel.
 anyrender_vello = { workspace = true }
-raw-window-handle = "0.6"
+# One device and one vello renderer for every canvas on the page, rather
+# than one of each per canvas (see `scene_canvas`'s module docs).
+vello = { workspace = true }
+wgpu = { workspace = true }
+wgpu-context-07 = { package = "wgpu_context", version = "0.7" }
 wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "Performance"] }
 gloo-timers = { workspace = true, features = ["futures"] }
 
