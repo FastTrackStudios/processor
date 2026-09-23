@@ -1859,6 +1859,15 @@ impl PluginInstance for NativeTune {
 /// instance is running owns the meters (multiband/per-instance telemetry comes with real
 /// per-block channels).
 pub mod comp_meter {
+    //! Compressor telemetry for the compressor panels: a rolling input-peak
+    //! and gain-reduction ring, and the current GR, **per meter channel**.
+    //!
+    //! A compressor block publishes to the channel its build-time `meter`
+    //! value names (0 = none). One shared ring meant every compressor in a
+    //! chain wrote the same trace — two active compressors interleaved into
+    //! nonsense, and with the panel's compressor bypassed the output limiter
+    //! drew the chain's final output in its place. The rig gives each of its
+    //! compressor blocks its own channel, and each panel reads its own.
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     /// Ring length — 960 slots at ~240 Hz ≈ a 4-second window (matches the
@@ -1868,40 +1877,84 @@ pub mod comp_meter {
     pub const WAVE_INTERVAL: usize = 200;
     /// GR normalization for the ring (dB full scale).
     pub const GR_FS_DB: f32 = 30.0;
+    /// Meter channels, 0 unused ("no meter"): enough for a chain's pre and
+    /// post compressors and its limiter, with room.
+    pub const CHANNELS: usize = 8;
+    /// The channel a compressor publishes to when nothing says otherwise.
+    pub const DEFAULT_CHANNEL: usize = 1;
 
-    static WAVE_IN: [AtomicU32; WAVE_LEN] = [const { AtomicU32::new(0) }; WAVE_LEN];
-    static WAVE_GR: [AtomicU32; WAVE_LEN] = [const { AtomicU32::new(0) }; WAVE_LEN];
-    static POS: AtomicUsize = AtomicUsize::new(0);
-    static GR_DB: AtomicU32 = AtomicU32::new(0);
-
-    pub(crate) fn push(input_peak: f32, gr_norm: f32) {
-        let pos = POS.load(Ordering::Relaxed) % WAVE_LEN;
-        WAVE_IN[pos].store(input_peak.to_bits(), Ordering::Relaxed);
-        WAVE_GR[pos].store(gr_norm.to_bits(), Ordering::Relaxed);
-        POS.store(pos + 1, Ordering::Relaxed);
+    struct Channel {
+        wave_in: [AtomicU32; WAVE_LEN],
+        wave_gr: [AtomicU32; WAVE_LEN],
+        pos: AtomicUsize,
+        gr_db: AtomicU32,
     }
 
-    pub(crate) fn set_gr_db(gr: f32) {
-        GR_DB.store(gr.to_bits(), Ordering::Relaxed);
+    static METERS: [Channel; CHANNELS] = [const {
+        Channel {
+            wave_in: [const { AtomicU32::new(0) }; WAVE_LEN],
+            wave_gr: [const { AtomicU32::new(0) }; WAVE_LEN],
+            pos: AtomicUsize::new(0),
+            gr_db: AtomicU32::new(0),
+        }
+    }; CHANNELS];
+
+    fn channel(ch: usize) -> Option<&'static Channel> {
+        (ch > 0).then(|| METERS.get(ch)).flatten()
     }
 
-    /// Current gain reduction (dB, positive = reducing) — straight from the
-    /// DSP's detector.
+    pub(crate) fn push(ch: usize, input_peak: f32, gr_norm: f32) {
+        let Some(m) = channel(ch) else { return };
+        let pos = m.pos.load(Ordering::Relaxed) % WAVE_LEN;
+        m.wave_in[pos].store(input_peak.to_bits(), Ordering::Relaxed);
+        m.wave_gr[pos].store(gr_norm.to_bits(), Ordering::Relaxed);
+        m.pos.store(pos + 1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_gr_db(ch: usize, gr: f32) {
+        if let Some(m) = channel(ch) {
+            m.gr_db.store(gr.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Clear a channel — its compressor was bypassed or removed, and a trace
+    /// frozen at its last value would claim it is still working.
+    pub fn clear(ch: usize) {
+        let Some(m) = channel(ch) else { return };
+        for (a, b) in m.wave_in.iter().zip(&m.wave_gr) {
+            a.store(0, Ordering::Relaxed);
+            b.store(0, Ordering::Relaxed);
+        }
+        m.gr_db.store(0, Ordering::Relaxed);
+    }
+
+    /// Current gain reduction on channel `ch` (dB, positive = reducing).
+    #[must_use]
+    pub fn gr_db_of(ch: usize) -> f32 {
+        channel(ch).map_or(0.0, |m| f32::from_bits(m.gr_db.load(Ordering::Relaxed)))
+    }
+
+    /// [`gr_db_of`] the default channel.
+    #[must_use]
     pub fn gr_db() -> f32 {
-        f32::from_bits(GR_DB.load(Ordering::Relaxed))
+        gr_db_of(DEFAULT_CHANNEL)
     }
 
-    /// Snapshot the ring in time order (oldest → newest), downsampled by
-    /// `stride`. Returns `(input_peaks 0..1, gr 0..1)`.
+    /// Snapshot channel `ch`'s ring in time order (oldest → newest),
+    /// downsampled by `stride`. Returns `(input_peaks 0..1, gr 0..1)`.
     ///
     /// Downsample groups are anchored to **absolute ring slots** (not the
     /// write position): a display column always summarises the same
     /// samples until they scroll out, so the trace crawls smoothly instead
     /// of shimmering as the head moves through a group.
-    pub fn wave_snapshot(stride: usize) -> (Vec<f32>, Vec<f32>) {
+    #[must_use]
+    pub fn wave_snapshot_of(ch: usize, stride: usize) -> (Vec<f32>, Vec<f32>) {
+        let Some(m) = channel(ch) else {
+            return (Vec::new(), Vec::new());
+        };
         let stride = stride.max(1);
         let n_groups = WAVE_LEN / stride;
-        let pos = POS.load(Ordering::Relaxed) % WAVE_LEN;
+        let pos = m.pos.load(Ordering::Relaxed) % WAVE_LEN;
         // First complete group after the write head (the head's own group
         // mixes oldest and newest data — skip it).
         let g0 = (pos / stride + 1) % n_groups;
@@ -1912,13 +1965,19 @@ pub mod comp_meter {
             let (mut pi, mut pg) = (0.0f32, 0.0f32);
             for j in 0..stride {
                 let idx = g * stride + j;
-                pi = pi.max(f32::from_bits(WAVE_IN[idx].load(Ordering::Relaxed)));
-                pg = pg.max(f32::from_bits(WAVE_GR[idx].load(Ordering::Relaxed)));
+                pi = pi.max(f32::from_bits(m.wave_in[idx].load(Ordering::Relaxed)));
+                pg = pg.max(f32::from_bits(m.wave_gr[idx].load(Ordering::Relaxed)));
             }
             input.push(pi);
             gr.push(pg);
         }
         (input, gr)
+    }
+
+    /// [`wave_snapshot_of`] the default channel.
+    #[must_use]
+    pub fn wave_snapshot(stride: usize) -> (Vec<f32>, Vec<f32>) {
+        wave_snapshot_of(DEFAULT_CHANNEL, stride)
     }
 }
 
@@ -1927,22 +1986,30 @@ pub mod comp_meter {
 /// The gate keys off it so gating stays tight regardless of what the tone (amp/EQ/drive)
 /// does to the signal it actually gates.
 pub mod sidechain {
-    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    //! The clean-DI key a post-amp gate listens to: the rig's input probe
+    //! publishes each block's DI peak, the gate reads it.
+    //!
+    //! **Per thread**, not per process. A chain renders on one thread — the
+    //! probe at its head and the gate further down run in the same callback
+    //! — so a thread-local is exactly "this chain's key". A process-wide
+    //! value let any other chain rendering at the same time (an offline
+    //! levelling render beside the live rig, or several side by side) key
+    //! this chain's gate with its own guitar.
 
-    static PEAK: AtomicU32 = AtomicU32::new(0);
-    static ENABLED: AtomicBool = AtomicBool::new(false);
+    use core::cell::Cell;
 
-    /// Publish the current DI block peak (linear). Enables the sidechain.
-    pub fn set_peak(peak: f32) {
-        PEAK.store(peak.to_bits(), Ordering::Relaxed);
-        ENABLED.store(true, Ordering::Relaxed);
+    std::thread_local! {
+        static PEAK: Cell<Option<f32>> = const { Cell::new(None) };
     }
 
-    /// The DI peak, if a probe is publishing.
+    /// Publish the current DI block peak (linear) for this thread's chain.
+    pub fn set_peak(peak: f32) {
+        PEAK.with(|p| p.set(Some(peak)));
+    }
+
+    /// The DI peak, if a probe on this thread is publishing.
     pub fn peak() -> Option<f32> {
-        ENABLED
-            .load(Ordering::Relaxed)
-            .then(|| f32::from_bits(PEAK.load(Ordering::Relaxed)))
+        PEAK.with(Cell::get)
     }
 }
 
@@ -2010,6 +2077,9 @@ const COMP_PARAMS: &[ParamSpec] = &[
 pub struct NativeComp {
     comp: comp::ProC3Compressor,
     prepared: bool,
+    /// The [`comp_meter`] channel this compressor draws on (0 = none) — its
+    /// own panel's trace. Set by the build-time `meter` value.
+    meter: usize,
     // Waveform decimation state (comp_meter ring).
     wave_counter: usize,
     wave_peak: f32,
@@ -2027,6 +2097,7 @@ impl NativeComp {
         Self {
             comp,
             prepared: false,
+            meter: comp_meter::DEFAULT_CHANNEL,
             wave_counter: 0,
             wave_peak: 0.0,
             wave_gr_peak: 0.0,
@@ -2049,6 +2120,12 @@ impl NativeComp {
 
     /// Apply a build-time parameter by name (`threshold`/`ratio`/`attack`/`release`).
     pub fn set_named(&mut self, name: &str, value: f64) {
+        // Build-time only, and deliberately not a `COMP_PARAMS` entry: it is
+        // wiring, not a knob a host should automate.
+        if name == "meter" {
+            self.meter = (value.round().max(0.0) as usize).min(comp_meter::CHANNELS - 1);
+            return;
+        }
         if let Some(id) = param_id(COMP_PARAMS, name) {
             self.set(id, value);
         }
@@ -2099,14 +2176,17 @@ impl PluginInstance for NativeComp {
             out_l[i] = self.comp.process(f64::from(in_l[i]), 0) as f32;
             out_r[i] = self.comp.process(f64::from(in_r[i]), 1) as f32;
             // Telemetry: rolling input peak + GR ring (see `comp_meter`).
+            if self.meter == 0 {
+                continue;
+            }
             let in_peak = in_l[i].abs().max(in_r[i].abs());
             self.wave_peak = self.wave_peak.max(in_peak);
             self.wave_counter += 1;
             if self.wave_counter >= comp_meter::WAVE_INTERVAL {
                 let gr = self.comp.gain_reduction_db() as f32;
                 self.wave_gr_peak = gr / comp_meter::GR_FS_DB;
-                comp_meter::push(self.wave_peak.min(1.0), self.wave_gr_peak.clamp(0.0, 1.0));
-                comp_meter::set_gr_db(gr);
+                comp_meter::push(self.meter, self.wave_peak.min(1.0), self.wave_gr_peak.clamp(0.0, 1.0));
+                comp_meter::set_gr_db(self.meter, gr);
                 self.wave_counter = 0;
                 self.wave_peak = 0.0;
             }
