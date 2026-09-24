@@ -2216,7 +2216,11 @@ impl PluginInstance for NativeComp {
             if self.wave_counter >= comp_meter::WAVE_INTERVAL {
                 let gr = self.comp.gain_reduction_db() as f32;
                 self.wave_gr_peak = gr / comp_meter::GR_FS_DB;
-                comp_meter::push(self.meter, self.wave_peak.min(1.0), self.wave_gr_peak.clamp(0.0, 1.0));
+                comp_meter::push(
+                    self.meter,
+                    self.wave_peak.min(1.0),
+                    self.wave_gr_peak.clamp(0.0, 1.0),
+                );
                 comp_meter::set_gr_db(self.meter, gr);
                 self.wave_counter = 0;
                 self.wave_peak = 0.0;
@@ -4473,7 +4477,11 @@ impl NativeDelay {
             63 => {
                 // In the loop and on the wet out: repeat n passes the
                 // filter n times, the first included.
-                let hz = if v >= 19_999.0 { 0.0 } else { v.clamp(500.0, 20_000.0) };
+                let hz = if v >= 19_999.0 {
+                    0.0
+                } else {
+                    v.clamp(500.0, 20_000.0)
+                };
                 a.delay_l.hicut_freq = hz;
                 a.delay_r.hicut_freq = hz;
                 a.high_cut_hz = hz;
@@ -4987,9 +4995,11 @@ impl NativeMod {
             1 => self.ch.depth = v,
             2 => self.ch.rate_hz = v,
             // Allocation-free: the chain holds every engine and crossfades.
-            3 => self.ch.set_engine(modulation::chorus::engine::EngineType::from_index(
-                v.round().max(0.0) as usize,
-            )),
+            3 => self
+                .ch
+                .set_engine(modulation::chorus::engine::EngineType::from_index(
+                    v.round().max(0.0) as usize,
+                )),
             4 => self.ch.color = v,
             5 => self.ch.feedback = v,
             6 => self.ch.width = v,
@@ -5219,6 +5229,233 @@ impl PluginInstance for NativeTrem {
     }
 }
 
+// ── Pitch ────────────────────────────────────────────────────────────────────
+
+const PITCH_PARAMS: &[ParamSpec] = &[
+    // Shift in semitones.
+    ParamSpec {
+        id: 0,
+        name: "semitones",
+        min: -24.0,
+        max: 24.0,
+        default: 12.0,
+    },
+    // Fine shift in cents.
+    ParamSpec {
+        id: 1,
+        name: "cents",
+        min: -100.0,
+        max: 100.0,
+        default: 0.0,
+    },
+    // Shifted signal vs dry (the dry is never delayed — see `NativePitch`).
+    ParamSpec {
+        id: 2,
+        name: "mix",
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
+    },
+    // 0 Spectral (phase vocoder), 1 WSOLA, 2 PSOLA, 3 PolyOctave.
+    ParamSpec {
+        id: 3,
+        name: "engine",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+    },
+    // 1 = short frames (Spectral 1024 = 21 ms, WSOLA 256, PSOLA 512).
+    ParamSpec {
+        id: 4,
+        name: "live",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+];
+
+/// Native Pitch block — a stereo pitch shifter over pitch-dsp's
+/// [`PitchChain`](pitch_dsp::chain::PitchChain), one per channel.
+///
+/// Engine 0 (default) is the phase-locked phase vocoder (`Spectral`): the
+/// only engine that is clean on chords and sustained notes alike —
+/// pitch-dsp `examples/pitch_quality` at +12 on its default 2048-sample
+/// frames (42.7 ms): 0.1 cents median, 0.2 % gross pitch errors, no grain
+/// AM, non-harmonic energy −68 dB, against WSOLA's 3.3 % / −29 dB (and
+/// 29 % gross at −12) and PSOLA's 44 % / −0.1 dB; ~240 ns/sample per
+/// channel. `live` halves the frame (21 ms) but the low strings then fall
+/// under the frequency resolution: 24 % gross errors at +12 — kept as an
+/// option, not the default. PolyOctave (zero latency, octaves only) stays
+/// for when feel matters more than purity.
+///
+/// Latency: the dry path is NOT delayed and the block reports 0 — in a live
+/// rig the player hears the dry note on time and the shifted voice trails
+/// it (as on a harmonizer pedal). At a different pitch the two do not comb.
+pub struct NativePitch {
+    chain_l: pitch_dsp::chain::PitchChain,
+    chain_r: pitch_dsp::chain::PitchChain,
+    semitones: f64,
+    cents: f64,
+    mix: f64,
+    prepared: bool,
+    wet_l: Vec<f64>,
+    wet_r: Vec<f64>,
+    discard: Vec<f64>,
+}
+
+impl NativePitch {
+    #[must_use]
+    pub fn new(_sample_rate: f64) -> Self {
+        let mk = || {
+            let mut c = pitch_dsp::chain::PitchChain::new();
+            c.algorithm = pitch_dsp::chain::Algorithm::Spectral;
+            c.live = false;
+            c.mix = 1.0;
+            c
+        };
+        let mut p = Self {
+            chain_l: mk(),
+            chain_r: mk(),
+            semitones: 12.0,
+            cents: 0.0,
+            mix: 0.5,
+            prepared: false,
+            wet_l: Vec::new(),
+            wet_r: Vec::new(),
+            discard: Vec::new(),
+        };
+        p.apply_shift();
+        p
+    }
+
+    fn apply_shift(&mut self) {
+        let st = (self.semitones + self.cents / 100.0).clamp(-24.0, 24.0);
+        self.chain_l.semitones = st;
+        self.chain_r.semitones = st;
+    }
+
+    fn set(&mut self, id: u32, v: f64) {
+        use pitch_dsp::chain::Algorithm;
+        match id {
+            0 => {
+                self.semitones = v.clamp(-24.0, 24.0);
+                self.apply_shift();
+            }
+            1 => {
+                self.cents = v.clamp(-100.0, 100.0);
+                self.apply_shift();
+            }
+            2 => self.mix = v.clamp(0.0, 1.0),
+            3 => {
+                let algo = match v.round().max(0.0) as u32 {
+                    1 => Algorithm::Wsola,
+                    2 => Algorithm::Psola,
+                    3 => Algorithm::PolyOctave,
+                    _ => Algorithm::Spectral,
+                };
+                self.chain_l.algorithm = algo;
+                self.chain_r.algorithm = algo;
+            }
+            4 => {
+                self.chain_l.live = v >= 0.5;
+                self.chain_r.live = v >= 0.5;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn set_named(&mut self, name: &str, value: f64) {
+        if let Some(id) = param_id(PITCH_PARAMS, name) {
+            self.set(id, value);
+        }
+    }
+}
+
+impl PluginInstance for NativePitch {
+    fn descriptor(&self) -> PluginDescriptor {
+        descriptor("signal.fx.pitch", "Pitch")
+    }
+    fn params(&mut self) -> Vec<PluginParamInfo> {
+        param_infos(PITCH_PARAMS)
+    }
+    fn param_value(&mut self, _id: u32) -> Option<f64> {
+        None
+    }
+    fn value_to_text(&mut self, id: u32, value: f64) -> Option<String> {
+        (id == 3).then(|| {
+            match value.round() as i64 {
+                1 => "WSOLA",
+                2 => "PSOLA",
+                3 => "PolyOctave",
+                _ => "Spectral",
+            }
+            .into()
+        })
+    }
+    fn text_to_value(&mut self, _id: u32, _text: &str) -> Option<f64> {
+        None
+    }
+    fn latency(&mut self) -> u32 {
+        0
+    }
+    fn prepare(&mut self, sample_rate: f64, block_size: u32) -> Result<(), PluginError> {
+        let cfg = AudioConfig {
+            sample_rate: sample_rate.max(1.0),
+            max_buffer_size: block_size.max(1) as usize,
+        };
+        self.chain_l.update(cfg);
+        self.chain_r.update(cfg);
+        self.chain_l.reset();
+        self.chain_r.reset();
+        let n = block_size.max(1) as usize;
+        self.wet_l = vec![0.0; n];
+        self.wet_r = vec![0.0; n];
+        self.discard = vec![0.0; n];
+        self.prepared = true;
+        Ok(())
+    }
+    fn is_prepared(&self) -> bool {
+        self.prepared
+    }
+    fn process_block(
+        &mut self,
+        in_l: &[f32],
+        in_r: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        events: &PluginEvents<'_>,
+    ) -> Result<(), PluginError> {
+        for &(id, value) in events.params {
+            self.set(id, value);
+        }
+        let n = out_l
+            .len()
+            .min(out_r.len())
+            .min(in_l.len())
+            .min(in_r.len())
+            .min(self.wet_l.len());
+        for i in 0..n {
+            self.wet_l[i] = f64::from(in_l[i]);
+            self.wet_r[i] = f64::from(in_r[i]);
+        }
+        // PitchChain is mono (it copies its result to the second buffer).
+        self.chain_l
+            .process(&mut self.wet_l[..n], &mut self.discard[..n]);
+        self.chain_r
+            .process(&mut self.wet_r[..n], &mut self.discard[..n]);
+        let mix = self.mix;
+        for i in 0..n {
+            let (dl, dr) = (f64::from(in_l[i]), f64::from(in_r[i]));
+            out_l[i] = (self.wet_l[i] - dl).mul_add(mix, dl) as f32;
+            out_r[i] = (self.wet_r[i] - dr).mul_add(mix, dr) as f32;
+        }
+        Ok(())
+    }
+    fn deactivate(&mut self) {
+        self.prepared = false;
+    }
+}
+
 // ── Passthrough (block types without DSP yet: Phaser, Rotary) ──────────────
 
 /// A transparent placeholder block for a type whose DSP isn't written yet. It
@@ -5325,7 +5562,10 @@ const GAIN_PARAMS: &[ParamSpec] = &[
 fn pan_law(pan: f64) -> [f64; 2] {
     let theta = (pan.clamp(-1.0, 1.0) + 1.0) * std::f64::consts::FRAC_PI_4;
     let centre = 0.5f64.powf(0.75);
-    [theta.cos().max(0.0).powf(1.5) / centre, theta.sin().max(0.0).powf(1.5) / centre]
+    [
+        theta.cos().max(0.0).powf(1.5) / centre,
+        theta.sin().max(0.0).powf(1.5) / centre,
+    ]
 }
 
 /// Native gain block — a clean dB trim (the "Boost" utility) with a
@@ -5876,6 +6116,47 @@ mod transient_tests {
 }
 
 #[cfg(test)]
+mod pitch_tests {
+    use super::*;
+
+    fn goertzel(x: &[f32], f: f64) -> f64 {
+        let w = std::f64::consts::TAU * f / 48_000.0;
+        let c = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in x {
+            let s0 = f64::from(v) + c * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - c * s1 * s2).sqrt() * 2.0 / x.len() as f64
+    }
+
+    /// The default Pitch block shifts an octave up cleanly on both
+    /// channels, keeps the dry on time and mixes at the set level.
+    #[test]
+    fn default_pitch_block_is_a_clean_octave_up() {
+        let mut p = NativePitch::new(48_000.0);
+        p.prepare(48_000.0, 256).unwrap();
+        p.set_named("mix", 1.0);
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48_000.0).sin()) as f32)
+            .collect();
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        let ev = PluginEvents::default();
+        for ((xi, lo), ro) in x.chunks(256).zip(l.chunks_mut(256)).zip(r.chunks_mut(256)) {
+            p.process_block(xi, xi, lo, ro, &ev).unwrap();
+        }
+        for y in [&l[24_000..], &r[24_000..]] {
+            let (oct, dry) = (goertzel(y, 440.0), goertzel(y, 220.0));
+            assert!((oct - 0.5).abs() < 0.05, "octave level {oct}");
+            assert!(dry < 1e-3, "no dry at mix 1: {dry}");
+        }
+        assert_eq!(p.latency(), 0);
+    }
+}
+
+#[cfg(test)]
 mod param_table_tests {
     use super::*;
 
@@ -5893,6 +6174,7 @@ mod param_table_tests {
             ("GAIN_PARAMS", GAIN_PARAMS),
             ("GATE_PARAMS", GATE_PARAMS),
             ("TRANSIENT_PARAMS", TRANSIENT_PARAMS),
+            ("PITCH_PARAMS", PITCH_PARAMS),
         ] {
             let mut ids: Vec<u32> = table.iter().map(|p| p.id).collect();
             ids.sort_unstable();
