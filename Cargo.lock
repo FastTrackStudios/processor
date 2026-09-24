@@ -561,7 +561,6 @@ dependencies = [
 [[package]]
 name = "audiocore-dsp"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/daw?tag=v0.0.6.3#db690d63aaae8c6dcf9d308754299a144c111b4e"
 
 [[package]]
 name = "audiocore-gui"
@@ -5860,9 +5859,9 @@ dependencies = [
 [[package]]
 name = "pitch-dsp"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/daw?tag=v0.0.6.3#db690d63aaae8c6dcf9d308754299a144c111b4e"
 dependencies = [
  "audiocore-dsp",
+ "realfft",
  "serde",
 ]
 

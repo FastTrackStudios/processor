@@ -1045,3 +1045,8 @@ opt-level = 3
 # COOP/COEP headers that unlock SharedArrayBuffer. Developing against the
 # local checkout per CLAUDE.md; the release path is: land in architect,
 # tag, bump the rev here, delete this block.
+
+# TEMPORARY (pitch work, do not commit): local daw checkout
+[patch."https://github.com/FastTrackStudios/daw"]
+pitch-dsp = { path = "../daw/features/fx/pitch/pitch-dsp" }
+audiocore-dsp = { path = "../daw/crates/audiocore/audiocore-dsp" }
