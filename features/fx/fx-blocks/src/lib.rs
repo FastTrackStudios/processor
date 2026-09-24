@@ -5272,6 +5272,39 @@ const PITCH_PARAMS: &[ParamSpec] = &[
         max: 1.0,
         default: 0.0,
     },
+    // Voice A's level within the wet (voice A is `semitones` + `cents`).
+    ParamSpec {
+        id: 5,
+        name: "a_level",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
+    // Voice B: a second interval (an octaver's sub under an octave up, or a
+    // harmony's third under its fifth). Off at level 0, and then costs
+    // nothing.
+    ParamSpec {
+        id: 6,
+        name: "b_semitones",
+        min: -24.0,
+        max: 24.0,
+        default: -12.0,
+    },
+    ParamSpec {
+        id: 7,
+        name: "b_level",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    // The dry side's level within `mix` (1 = the plain dry/wet blend).
+    ParamSpec {
+        id: 8,
+        name: "dry",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
 ];
 
 /// Native Pitch block — a stereo pitch shifter over pitch-dsp's
@@ -5288,18 +5321,34 @@ const PITCH_PARAMS: &[ParamSpec] = &[
 /// option, not the default. PolyOctave (zero latency, octaves only) stays
 /// for when feel matters more than purity.
 ///
+/// Two voices and a dry level — `out = (1 − mix) · dry · x + mix · (a · A +
+/// b · B)` — make it an octaver (A +12 and B −12 blended with the dry) or a
+/// fixed-interval harmony (A a third, B a fifth). Voice B runs only while
+/// its level is up.
+///
 /// Latency: the dry path is NOT delayed and the block reports 0 — in a live
 /// rig the player hears the dry note on time and the shifted voice trails
 /// it (as on a harmonizer pedal). At a different pitch the two do not comb.
 pub struct NativePitch {
     chain_l: pitch_dsp::chain::PitchChain,
     chain_r: pitch_dsp::chain::PitchChain,
+    /// Voice B's shifters — processed only while `b_level` > 0.
+    chain_bl: pitch_dsp::chain::PitchChain,
+    chain_br: pitch_dsp::chain::PitchChain,
     semitones: f64,
     cents: f64,
     mix: f64,
+    a_level: f64,
+    b_level: f64,
+    dry: f64,
+    /// Voice B was silent last block: reset its shifters before it speaks,
+    /// so it does not start on a stale frame.
+    b_idle: bool,
     prepared: bool,
     wet_l: Vec<f64>,
     wet_r: Vec<f64>,
+    b_l: Vec<f64>,
+    b_r: Vec<f64>,
     discard: Vec<f64>,
 }
 
@@ -5316,14 +5365,24 @@ impl NativePitch {
         let mut p = Self {
             chain_l: mk(),
             chain_r: mk(),
+            chain_bl: mk(),
+            chain_br: mk(),
             semitones: 12.0,
             cents: 0.0,
             mix: 0.5,
+            a_level: 1.0,
+            b_level: 0.0,
+            dry: 1.0,
+            b_idle: true,
             prepared: false,
             wet_l: Vec::new(),
             wet_r: Vec::new(),
+            b_l: Vec::new(),
+            b_r: Vec::new(),
             discard: Vec::new(),
         };
+        p.chain_bl.semitones = -12.0;
+        p.chain_br.semitones = -12.0;
         p.apply_shift();
         p
     }
@@ -5353,13 +5412,23 @@ impl NativePitch {
                     3 => Algorithm::PolyOctave,
                     _ => Algorithm::Spectral,
                 };
-                self.chain_l.algorithm = algo;
-                self.chain_r.algorithm = algo;
+                for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
+                    c.algorithm = algo;
+                }
             }
             4 => {
-                self.chain_l.live = v >= 0.5;
-                self.chain_r.live = v >= 0.5;
+                for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
+                    c.live = v >= 0.5;
+                }
             }
+            5 => self.a_level = v.clamp(0.0, 1.0),
+            6 => {
+                let st = v.clamp(-24.0, 24.0);
+                self.chain_bl.semitones = st;
+                self.chain_br.semitones = st;
+            }
+            7 => self.b_level = v.clamp(0.0, 1.0),
+            8 => self.dry = v.clamp(0.0, 1.0),
             _ => {}
         }
     }
@@ -5403,13 +5472,16 @@ impl PluginInstance for NativePitch {
             sample_rate: sample_rate.max(1.0),
             max_buffer_size: block_size.max(1) as usize,
         };
-        self.chain_l.update(cfg);
-        self.chain_r.update(cfg);
-        self.chain_l.reset();
-        self.chain_r.reset();
+        for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
+            c.update(cfg);
+            c.reset();
+        }
+        self.b_idle = true;
         let n = block_size.max(1) as usize;
         self.wet_l = vec![0.0; n];
         self.wet_r = vec![0.0; n];
+        self.b_l = vec![0.0; n];
+        self.b_r = vec![0.0; n];
         self.discard = vec![0.0; n];
         self.prepared = true;
         Ok(())
@@ -5438,16 +5510,36 @@ impl PluginInstance for NativePitch {
             self.wet_l[i] = f64::from(in_l[i]);
             self.wet_r[i] = f64::from(in_r[i]);
         }
+        // Voice B from the same input, before voice A overwrites it.
+        let b_on = self.b_level > 0.0;
+        if b_on {
+            if self.b_idle {
+                self.chain_bl.reset();
+                self.chain_br.reset();
+                self.b_idle = false;
+            }
+            self.b_l[..n].copy_from_slice(&self.wet_l[..n]);
+            self.b_r[..n].copy_from_slice(&self.wet_r[..n]);
+            self.chain_bl
+                .process(&mut self.b_l[..n], &mut self.discard[..n]);
+            self.chain_br
+                .process(&mut self.b_r[..n], &mut self.discard[..n]);
+        } else {
+            self.b_idle = true;
+        }
         // PitchChain is mono (it copies its result to the second buffer).
         self.chain_l
             .process(&mut self.wet_l[..n], &mut self.discard[..n]);
         self.chain_r
             .process(&mut self.wet_r[..n], &mut self.discard[..n]);
-        let mix = self.mix;
+        // out = (1 − mix) · dry · x + mix · (a · A + b · B) — `mix` keeps
+        // its dry↔wet meaning, `dry` trims the dry side of it.
+        let (mix, a, b, dry) = (self.mix, self.a_level, if b_on { self.b_level } else { 0.0 }, self.dry);
         for i in 0..n {
             let (dl, dr) = (f64::from(in_l[i]), f64::from(in_r[i]));
-            out_l[i] = (self.wet_l[i] - dl).mul_add(mix, dl) as f32;
-            out_r[i] = (self.wet_r[i] - dr).mul_add(mix, dr) as f32;
+            let (bl, br) = if b_on { (self.b_l[i], self.b_r[i]) } else { (0.0, 0.0) };
+            out_l[i] = (dl * dry).mul_add(1.0 - mix, mix * a.mul_add(self.wet_l[i], b * bl)) as f32;
+            out_r[i] = (dr * dry).mul_add(1.0 - mix, mix * a.mul_add(self.wet_r[i], b * br)) as f32;
         }
         Ok(())
     }
@@ -6153,6 +6245,36 @@ mod pitch_tests {
             assert!(dry < 1e-3, "no dry at mix 1: {dry}");
         }
         assert_eq!(p.latency(), 0);
+    }
+
+    /// An octaver: voice A an octave up, voice B an octave down, both at
+    /// their levels over the dry; voice B silent (and skipped) at level 0.
+    #[test]
+    fn two_voices_make_an_octaver() {
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48_000.0).sin()) as f32)
+            .collect();
+        let run = |b_level: f64| {
+            let mut p = NativePitch::new(48_000.0);
+            p.prepare(48_000.0, 256).unwrap();
+            p.set_named("mix", 0.5);
+            p.set_named("b_semitones", -12.0);
+            p.set_named("b_level", b_level);
+            let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+            let ev = PluginEvents::default();
+            for ((xi, lo), ro) in x.chunks(256).zip(l.chunks_mut(256)).zip(r.chunks_mut(256)) {
+                p.process_block(xi, xi, lo, ro, &ev).unwrap();
+            }
+            let y = &l[24_000..];
+            (goertzel(y, 220.0), goertzel(y, 440.0), goertzel(y, 110.0))
+        };
+        let (dry, up, down) = run(1.0);
+        assert!((dry - 0.25).abs() < 0.03, "dry {dry}");
+        assert!((up - 0.25).abs() < 0.03, "octave up {up}");
+        assert!((down - 0.25).abs() < 0.04, "octave down {down}");
+        let (_, _, silent) = run(0.0);
+        assert!(silent < 1e-3, "voice B off: {silent}");
     }
 }
 
