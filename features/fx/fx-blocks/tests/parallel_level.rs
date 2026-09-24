@@ -51,3 +51,24 @@ fn reverb_level_matches_the_mix_it_replaces() {
     by_level.set_named("level", 20.0 * 0.2f64.log10());
     assert_same(&render(&mut by_mix), &render(&mut by_level));
 }
+
+/// The gain block's pan: the centre is untouched, 70 % right keeps the
+/// right side at unity and turns the left down to 0.3.
+#[test]
+fn gain_pan_is_a_balance() {
+    use fx_blocks::NativeGain;
+    let run = |pan: f64| {
+        let mut g = NativeGain::new(SR);
+        g.set_named("pan", pan);
+        g.prepare(SR, BLOCK as u32).unwrap();
+        let x = vec![0.5f32; BLOCK];
+        let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+        g.process_block(&x, &x, &mut l, &mut r, &PluginEvents::EMPTY).unwrap();
+        (l[BLOCK - 1], r[BLOCK - 1])
+    };
+    let (l, r) = run(0.0);
+    assert!((l - 0.5).abs() < 1e-6 && (r - 0.5).abs() < 1e-6, "centre: unity");
+    let (l, r) = run(0.7);
+    assert!((r - 0.5).abs() < 1e-6, "the near side at unity: {r}");
+    assert!((l - 0.15).abs() < 1e-4, "the far side at 0.3: {l}");
+}

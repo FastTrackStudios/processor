@@ -5273,21 +5273,38 @@ fn descriptor(id: &str, name: &str) -> PluginDescriptor {
 
 // ── Gain (Volume / Boost utility) ──────────────────────────────────────────
 
-const GAIN_PARAMS: &[ParamSpec] = &[ParamSpec {
-    id: 0,
-    name: "gain_db",
-    min: -24.0,
-    max: 24.0,
-    default: 0.0,
-}];
+const GAIN_PARAMS: &[ParamSpec] = &[
+    ParamSpec {
+        id: 0,
+        name: "gain_db",
+        min: -24.0,
+        max: 24.0,
+        default: 0.0,
+    },
+    // Balance, −1 (left) … +1 (right): the far side is turned down, the
+    // near side stays at unity, so the centre is exactly the old block and
+    // a guitar panned 70 % right keeps its level on the side it went to.
+    ParamSpec {
+        id: 1,
+        name: "pan",
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+];
 
-/// Native gain block — a clean dB trim (the "Boost" utility). Gain changes
-/// glide over ~10 ms so footswitch boosts never click.
+/// Native gain block — a clean dB trim (the "Boost" utility) with a
+/// balance control. Gain and pan changes glide over ~10 ms so footswitch
+/// boosts never click.
 pub struct NativeGain {
     target: f64,
     current: f64,
     coeff: f64,
     prepared: bool,
+    pan: f64,
+    /// Per-side balance gains: target, and where the glide has got to.
+    side_target: [f64; 2],
+    side: [f64; 2],
 }
 
 impl NativeGain {
@@ -5298,12 +5315,20 @@ impl NativeGain {
             current: 1.0,
             coeff: 0.0,
             prepared: false,
+            pan: 0.0,
+            side_target: [1.0, 1.0],
+            side: [1.0, 1.0],
         }
     }
 
     fn set(&mut self, id: u32, v: f64) {
-        if id == 0 {
-            self.target = 10f64.powf(v.clamp(-24.0, 24.0) / 20.0);
+        match id {
+            0 => self.target = 10f64.powf(v.clamp(-24.0, 24.0) / 20.0),
+            1 => {
+                self.pan = v.clamp(-1.0, 1.0);
+                self.side_target = [(1.0 - self.pan).min(1.0), (1.0 + self.pan).min(1.0)];
+            }
+            _ => {}
         }
     }
 
@@ -5337,6 +5362,7 @@ impl PluginInstance for NativeGain {
         // One-pole toward the target with a ~10 ms time constant.
         self.coeff = (-1.0 / (0.010 * sample_rate.max(1.0))).exp();
         self.current = self.target;
+        self.side = self.side_target;
         self.prepared = true;
         Ok(())
     }
@@ -5355,13 +5381,18 @@ impl PluginInstance for NativeGain {
             self.set(id, value);
         }
         let (t, c) = (self.target, self.coeff);
+        let [tl, tr] = self.side_target;
         let mut g = self.current;
+        let [mut sl, mut sr] = self.side;
         for i in 0..out_l.len() {
             g = (g - t).mul_add(c, t);
-            out_l[i] = in_l.get(i).copied().unwrap_or(0.0) * g as f32;
-            out_r[i] = in_r.get(i).copied().unwrap_or(0.0) * g as f32;
+            sl = (sl - tl).mul_add(c, tl);
+            sr = (sr - tr).mul_add(c, tr);
+            out_l[i] = in_l.get(i).copied().unwrap_or(0.0) * (g * sl) as f32;
+            out_r[i] = in_r.get(i).copied().unwrap_or(0.0) * (g * sr) as f32;
         }
         self.current = g;
+        self.side = [sl, sr];
         Ok(())
     }
     fn deactivate(&mut self) {
