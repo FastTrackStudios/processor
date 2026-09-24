@@ -5769,6 +5769,133 @@ impl PluginInstance for NativeGain {
     }
 }
 
+// ── Boost pedal ────────────────────────────────────────────────────────────
+
+/// The boost pedal's one knob, as on the pedal: 0 = unity, 1 = +18 dB.
+const BOOST_MAX_DB: f64 = 18.0;
+
+const BOOST_PARAMS: &[ParamSpec] = &[ParamSpec {
+    id: 0,
+    name: "drive",
+    min: 0.0,
+    max: 1.0,
+    default: 0.5,
+}];
+
+/// Native boost pedal — the clean boost at the head of the drive board: a
+/// level push into the drives and amp after it (0 dB at drive 0, +9 dB at
+/// the default 0.5, +18 dB flat out), gliding over ~10 ms so a stomp or a
+/// macro sweep never clicks.
+pub struct NativeBoost {
+    target: f64,
+    current: f64,
+    coeff: f64,
+    prepared: bool,
+}
+
+impl NativeBoost {
+    #[must_use]
+    pub fn new(_sample_rate: f64) -> Self {
+        let g = Self::gain(0.5);
+        Self {
+            target: g,
+            current: g,
+            coeff: 0.0,
+            prepared: false,
+        }
+    }
+
+    fn gain(drive: f64) -> f64 {
+        10f64.powf(drive.clamp(0.0, 1.0) * BOOST_MAX_DB / 20.0)
+    }
+
+    fn set(&mut self, id: u32, v: f64) {
+        if id == 0 {
+            self.target = Self::gain(v);
+        }
+    }
+
+    pub fn set_named(&mut self, name: &str, value: f64) {
+        if let Some(id) = param_id(BOOST_PARAMS, name) {
+            self.set(id, value);
+        }
+    }
+}
+
+impl PluginInstance for NativeBoost {
+    fn descriptor(&self) -> PluginDescriptor {
+        descriptor("signal.fx.boost", "Boost")
+    }
+    fn params(&mut self) -> Vec<PluginParamInfo> {
+        param_infos(BOOST_PARAMS)
+    }
+    fn param_value(&mut self, _id: u32) -> Option<f64> {
+        None
+    }
+    fn value_to_text(&mut self, id: u32, value: f64) -> Option<String> {
+        (id == 0).then(|| format!("+{:.1} dB", value.clamp(0.0, 1.0) * BOOST_MAX_DB))
+    }
+    fn text_to_value(&mut self, _id: u32, _text: &str) -> Option<f64> {
+        None
+    }
+    fn latency(&mut self) -> u32 {
+        0
+    }
+    fn prepare(&mut self, sample_rate: f64, _block_size: u32) -> Result<(), PluginError> {
+        self.coeff = (-1.0 / (0.010 * sample_rate.max(1.0))).exp();
+        self.current = self.target;
+        self.prepared = true;
+        Ok(())
+    }
+    fn is_prepared(&self) -> bool {
+        self.prepared
+    }
+    fn process_block(
+        &mut self,
+        in_l: &[f32],
+        in_r: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        events: &PluginEvents<'_>,
+    ) -> Result<(), PluginError> {
+        for &(id, value) in events.params {
+            self.set(id, value);
+        }
+        let (t, c) = (self.target, self.coeff);
+        let mut g = self.current;
+        for i in 0..out_l.len() {
+            g = (g - t).mul_add(c, t);
+            out_l[i] = in_l.get(i).copied().unwrap_or(0.0) * g as f32;
+            out_r[i] = in_r.get(i).copied().unwrap_or(0.0) * g as f32;
+        }
+        self.current = g;
+        Ok(())
+    }
+    fn deactivate(&mut self) {
+        self.prepared = false;
+    }
+}
+
+#[cfg(test)]
+mod boost_tests {
+    use super::*;
+
+    /// Unity at 0, +9 dB at the default, +18 dB flat out.
+    #[test]
+    fn boost_pedal_pushes_its_level() {
+        for (drive, db) in [(0.0, 0.0), (0.5, 9.0), (1.0, 18.0)] {
+            let mut b = NativeBoost::new(48_000.0);
+            b.set_named("drive", drive);
+            b.prepare(48_000.0, 256).unwrap();
+            let x = vec![0.1f32; 256];
+            let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+            b.process_block(&x, &x, &mut l, &mut r, &PluginEvents::default()).unwrap();
+            let got = 20.0 * (f64::from(l[255]) / 0.1).log10();
+            assert!((got - db).abs() < 0.05, "drive {drive}: {got} dB, want {db}");
+        }
+    }
+}
+
 // ── Gate ────────────────────────────────────────────────────────────────────
 
 const GATE_PARAMS: &[ParamSpec] = &[
@@ -6320,6 +6447,7 @@ mod param_table_tests {
             ("MOD_PARAMS", MOD_PARAMS),
             ("TREM_PARAMS", TREM_PARAMS),
             ("GAIN_PARAMS", GAIN_PARAMS),
+            ("BOOST_PARAMS", BOOST_PARAMS),
             ("GATE_PARAMS", GATE_PARAMS),
             ("TRANSIENT_PARAMS", TRANSIENT_PARAMS),
             ("PITCH_PARAMS", PITCH_PARAMS),
