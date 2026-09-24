@@ -5281,9 +5281,10 @@ const GAIN_PARAMS: &[ParamSpec] = &[
         max: 24.0,
         default: 0.0,
     },
-    // Balance, −1 (left) … +1 (right): the far side is turned down, the
-    // near side stays at unity, so the centre is exactly the old block and
-    // a guitar panned 70 % right keeps its level on the side it went to.
+    // Pan, −1 (left) … +1 (right), on a −4.5 dB pan law normalised to the
+    // centre: a centred guitar is exactly the old block, and panned hard to
+    // one side it comes up +4.5 dB there (the far side silent) — so it
+    // sounds as loud off to the side as in the middle.
     ParamSpec {
         id: 1,
         name: "pan",
@@ -5292,6 +5293,15 @@ const GAIN_PARAMS: &[ParamSpec] = &[
         default: 0.0,
     },
 ];
+
+/// The −4.5 dB pan law, normalised so the centre is unity: each side is
+/// `trig^1.5` of the pan angle (the geometric mean of the constant-power
+/// and linear laws), divided by its centre value `(½)^¾`.
+fn pan_law(pan: f64) -> [f64; 2] {
+    let theta = (pan.clamp(-1.0, 1.0) + 1.0) * std::f64::consts::FRAC_PI_4;
+    let centre = 0.5f64.powf(0.75);
+    [theta.cos().max(0.0).powf(1.5) / centre, theta.sin().max(0.0).powf(1.5) / centre]
+}
 
 /// Native gain block — a clean dB trim (the "Boost" utility) with a
 /// balance control. Gain and pan changes glide over ~10 ms so footswitch
@@ -5326,7 +5336,7 @@ impl NativeGain {
             0 => self.target = 10f64.powf(v.clamp(-24.0, 24.0) / 20.0),
             1 => {
                 self.pan = v.clamp(-1.0, 1.0);
-                self.side_target = [(1.0 - self.pan).min(1.0), (1.0 + self.pan).min(1.0)];
+                self.side_target = pan_law(self.pan);
             }
             _ => {}
         }

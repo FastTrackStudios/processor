@@ -52,10 +52,10 @@ fn reverb_level_matches_the_mix_it_replaces() {
     assert_same(&render(&mut by_mix), &render(&mut by_level));
 }
 
-/// The gain block's pan: the centre is untouched, 70 % right keeps the
-/// right side at unity and turns the left down to 0.3.
+/// The gain block's pan: a −4.5 dB law normalised to the centre — the
+/// centre untouched, hard right +4.5 dB on the right and silent on the left.
 #[test]
-fn gain_pan_is_a_balance() {
+fn gain_pan_is_a_4_5_db_law() {
     use fx_blocks::NativeGain;
     let run = |pan: f64| {
         let mut g = NativeGain::new(SR);
@@ -67,8 +67,11 @@ fn gain_pan_is_a_balance() {
         (l[BLOCK - 1], r[BLOCK - 1])
     };
     let (l, r) = run(0.0);
-    assert!((l - 0.5).abs() < 1e-6 && (r - 0.5).abs() < 1e-6, "centre: unity");
-    let (l, r) = run(0.7);
-    assert!((r - 0.5).abs() < 1e-6, "the near side at unity: {r}");
-    assert!((l - 0.15).abs() < 1e-4, "the far side at 0.3: {l}");
+    assert!((l - 0.5).abs() < 1e-5 && (r - 0.5).abs() < 1e-5, "centre: unity");
+    let (l, r) = run(1.0);
+    let db = 20.0 * (r / 0.5).log10();
+    assert!((db - 4.5).abs() < 0.05, "hard right: +4.5 dB (4.52, the law exactly), got {db:+.2}");
+    assert!(l.abs() < 1e-6, "hard right: the left silent");
+    let (l, r) = run(-1.0);
+    assert!((20.0 * (l / 0.5).log10() - 4.5).abs() < 0.05 && r.abs() < 1e-6, "hard left mirrors it");
 }
