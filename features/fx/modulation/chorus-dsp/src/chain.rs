@@ -84,6 +84,21 @@ fn create_voices_stereo(engine: EngineType, count: usize) -> Vec<Box<dyn ChorusE
         .collect()
 }
 
+/// Each engine's wet level made up to unity (linear gain) — measured with
+/// `fx-blocks/examples/chorus_gain.rs` on pink noise; see its output for the
+/// residual per mix.
+const fn engine_makeup(engine: EngineType) -> f64 {
+    // 10^(−dB/20) of each engine's fully-wet level, less 0.3 dB: at a
+    // mid mix the dry and the (partly correlated) wet still add a little.
+    match engine {
+        EngineType::Cubic => 0.892, // +0.7 dB hot
+        EngineType::Bbd => 0.955,   // +0.1 dB
+        EngineType::Tape => 0.610,  // +4.0 dB hot
+        EngineType::Orbit => 0.861, // +1.0 dB hot
+        EngineType::Juno => 1.047,  // −0.7 dB
+    }
+}
+
 impl Default for ChorusChain {
     fn default() -> Self {
         Self::new()
@@ -111,7 +126,16 @@ impl Processor for ChorusChain {
 
     fn process(&mut self, left: &mut [f64], right: &mut [f64]) {
         let n = self.num_voices.clamp(1, MAX_VOICES);
-        let inv_n = 1.0 / n as f64;
+        // The voices are modulated apart, so they add in power: normalised
+        // by 1/√n they sum to one voice's level (an average, 1/n, lost ~3 dB
+        // per doubling of voices), and each engine's own gain is made up so
+        // the wet sits at the dry's level.
+        let wet_gain = engine_makeup(self.engine) / (n as f64).sqrt();
+        // Equal-power mix: a decorrelated wet and the dry at 50/50 keep the
+        // level (a linear crossfade dipped ~3 dB there — the drop a player
+        // heard switching the chorus on).
+        let theta = self.mix.clamp(0.0, 1.0) * std::f64::consts::FRAC_PI_2;
+        let (dry_gain, mix_gain) = (theta.cos(), theta.sin());
 
         for i in 0..left.len().min(right.len()) {
             let dry_l = left[i];
@@ -139,8 +163,8 @@ impl Processor for ChorusChain {
                 );
             }
 
-            wet_l *= inv_n;
-            wet_r *= inv_n;
+            wet_l *= wet_gain;
+            wet_r *= wet_gain;
 
             // Stereo width
             let mono_wet = (wet_l + wet_r) * 0.5;
@@ -152,8 +176,8 @@ impl Processor for ChorusChain {
                 left[i] = wet_l;
                 right[i] = wet_r;
             } else {
-                left[i] = dry_l.mul_add(1.0 - self.mix, wet_l * self.mix);
-                right[i] = dry_r.mul_add(1.0 - self.mix, wet_r * self.mix);
+                left[i] = dry_l.mul_add(dry_gain, wet_l * mix_gain);
+                right[i] = dry_r.mul_add(dry_gain, wet_r * mix_gain);
             }
         }
     }
@@ -162,6 +186,42 @@ impl Processor for ChorusChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Engaged at any mix, every engine plays at the level it is fed —
+    /// switching a chorus on must not drop (or jump) the guitar.
+    #[test]
+    fn every_engine_sits_at_unity_at_any_mix() {
+        let mut seed = 11u32;
+        let (mut b0, mut b1) = (0.0f64, 0.0f64);
+        let input: Vec<f64> = (0..(SR as usize) * 3)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let w = f64::from(seed >> 8) / f64::from(1u32 << 24) - 0.5;
+                b0 = 0.997 * b0 + 0.029 * w;
+                b1 = 0.95 * b1 + 0.048 * w;
+                (b0 + b1 + 0.02 * w) * 2.0
+            })
+            .collect();
+        let rms = |x: &[f64]| (x.iter().map(|s| s * s).sum::<f64>() / x.len() as f64).sqrt();
+        for engine in [EngineType::Cubic, EngineType::Bbd, EngineType::Tape, EngineType::Orbit, EngineType::Juno] {
+            for mix in [0.25, 0.5, 0.75, 1.0] {
+                let mut c = ChorusChain::new();
+                c.set_engine(engine);
+                c.mix = mix;
+                c.depth = 0.35;
+                c.rate_hz = 0.8;
+                c.update(config());
+                let (mut l, mut r) = (input.clone(), input.clone());
+                for (bl, br) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+                    c.process(bl, br);
+                }
+                let half = input.len() / 2;
+                let out: Vec<f64> = l[half..].iter().zip(&r[half..]).map(|(a, b)| (a + b) * 0.5).collect();
+                let db = 20.0 * (rms(&out) / rms(&input[half..])).log10();
+                assert!(db.abs() < 1.5, "{engine:?} at mix {mix}: {db:+.1} dB");
+            }
+        }
+    }
     use std::f64::consts::PI;
 
     const SR: f64 = 48000.0;
