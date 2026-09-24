@@ -134,8 +134,19 @@ impl Processor for ChorusChain {
         // Equal-power mix: a decorrelated wet and the dry at 50/50 keep the
         // level (a linear crossfade dipped ~3 dB there — the drop a player
         // heard switching the chorus on).
-        let theta = self.mix.clamp(0.0, 1.0) * std::f64::consts::FRAC_PI_2;
-        let (dry_gain, mix_gain) = (theta.cos(), theta.sin());
+        // A flanger's wet is the dry a few ms late — correlated, so it sums
+        // in amplitude and the linear crossfade is the level-neutral one
+        // (equal power put it ~2 dB up at a mid mix). The BBD's filtering
+        // decorrelates its wet enough that it sits with the chorus law
+        // (linear left it ~3 dB down) — both measured, see `chorus_gain`.
+        let mix = self.mix.clamp(0.0, 1.0);
+        let linear = self.effect_type == EffectType::Flanger && self.engine != EngineType::Bbd;
+        let (dry_gain, mix_gain) = if linear {
+            (1.0 - mix, mix)
+        } else {
+            let theta = mix * std::f64::consts::FRAC_PI_2;
+            (theta.cos(), theta.sin())
+        };
 
         for i in 0..left.len().min(right.len()) {
             let dry_l = left[i];
