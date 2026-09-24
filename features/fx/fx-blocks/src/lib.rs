@@ -5272,17 +5272,19 @@ const PITCH_PARAMS: &[ParamSpec] = &[
         max: 1.0,
         default: 0.0,
     },
-    // Voice A's level within the wet (voice A is `semitones` + `cents`).
+    // Voice A's level within the wet (voice A is `semitones` + `cents`) —
+    // by default the octave up.
     ParamSpec {
         id: 5,
         name: "a_level",
         min: 0.0,
         max: 1.0,
-        default: 1.0,
+        default: 0.7,
     },
-    // Voice B: a second interval (an octaver's sub under an octave up, or a
-    // harmony's third under its fifth). Off at level 0, and then costs
-    // nothing.
+    // Voice B: a second interval — by default the octave down, so the block
+    // starts as a POG-style octaver (sub and octave up blended over the
+    // dry); a harmony's third under its fifth otherwise. Off at level 0, and
+    // then costs nothing.
     ParamSpec {
         id: 6,
         name: "b_semitones",
@@ -5295,7 +5297,7 @@ const PITCH_PARAMS: &[ParamSpec] = &[
         name: "b_level",
         min: 0.0,
         max: 1.0,
-        default: 0.0,
+        default: 0.7,
     },
     // The dry side's level within `mix` (1 = the plain dry/wet blend).
     ParamSpec {
@@ -5370,8 +5372,8 @@ impl NativePitch {
             semitones: 12.0,
             cents: 0.0,
             mix: 0.5,
-            a_level: 1.0,
-            b_level: 0.0,
+            a_level: 0.7,
+            b_level: 0.7,
             dry: 1.0,
             b_idle: true,
             prepared: false,
@@ -6223,13 +6225,15 @@ mod pitch_tests {
         (s1 * s1 + s2 * s2 - c * s1 * s2).sqrt() * 2.0 / x.len() as f64
     }
 
-    /// The default Pitch block shifts an octave up cleanly on both
-    /// channels, keeps the dry on time and mixes at the set level.
+    /// Voice A alone shifts an octave up cleanly on both channels, keeps
+    /// the dry on time and mixes at the set level.
     #[test]
-    fn default_pitch_block_is_a_clean_octave_up() {
+    fn voice_a_is_a_clean_octave_up() {
         let mut p = NativePitch::new(48_000.0);
         p.prepare(48_000.0, 256).unwrap();
         p.set_named("mix", 1.0);
+        p.set_named("a_level", 1.0);
+        p.set_named("b_level", 0.0);
         let n = 48_000;
         let x: Vec<f32> = (0..n)
             .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48_000.0).sin()) as f32)
@@ -6259,6 +6263,7 @@ mod pitch_tests {
             let mut p = NativePitch::new(48_000.0);
             p.prepare(48_000.0, 256).unwrap();
             p.set_named("mix", 0.5);
+            p.set_named("a_level", 1.0);
             p.set_named("b_semitones", -12.0);
             p.set_named("b_level", b_level);
             let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
@@ -6275,6 +6280,27 @@ mod pitch_tests {
         assert!((down - 0.25).abs() < 0.04, "octave down {down}");
         let (_, _, silent) = run(0.0);
         assert!(silent < 1e-3, "voice B off: {silent}");
+    }
+
+    /// Out of the box the block is a POG-style octaver: the dry with the
+    /// octave down and the octave up blended in.
+    #[test]
+    fn default_is_a_pog_blend() {
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48_000.0).sin()) as f32)
+            .collect();
+        let mut p = NativePitch::new(48_000.0);
+        p.prepare(48_000.0, 256).unwrap();
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        let ev = PluginEvents::default();
+        for ((xi, lo), ro) in x.chunks(256).zip(l.chunks_mut(256)).zip(r.chunks_mut(256)) {
+            p.process_block(xi, xi, lo, ro, &ev).unwrap();
+        }
+        let y = &l[24_000..];
+        let (dry, up, down) = (goertzel(y, 220.0), goertzel(y, 440.0), goertzel(y, 110.0));
+        assert!(dry > 0.2, "dry {dry}");
+        assert!(up > 0.12 && down > 0.12, "octaves up {up} down {down}");
     }
 }
 
