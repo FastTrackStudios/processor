@@ -4899,13 +4899,41 @@ const MOD_PARAMS: &[ParamSpec] = &[
         max: 10.0,
         default: 1.0,
     },
-    // Engine (algorithm): 0 Cubic / 1 BBD / 2 Tape / 3 Orbit / 4 Juno.
+    // Engine (algorithm), `chorus::EngineType` order — persisted, append
+    // only: 0 Cubic / 1 BBD / 2 Tape / 3 Orbit / 4 Juno / 5 CE-2 /
+    // 6 Dimension / 7 Clone / 8 Tri-Chorus / 9 SCF / 10 Julia.
     ParamSpec {
         id: 3,
         name: "engine",
         min: 0.0,
-        max: 4.0,
+        max: 10.0,
         default: 0.0,
+    },
+    // The engine's own colour: the wet's tone on most (0.5 = the unit as
+    // built), the pre-delay on the SCF, the Lag on the Julia.
+    ParamSpec {
+        id: 4,
+        name: "color",
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
+    },
+    // Delay-line feedback, scaled per mode (a little in chorus, most of the
+    // way in flanger) and level-compensated.
+    ParamSpec {
+        id: 5,
+        name: "feedback",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    // 0 = the engine's own mono output, 1 = its full stereo spread.
+    ParamSpec {
+        id: 6,
+        name: "width",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
     },
 ];
 
@@ -4958,16 +4986,13 @@ impl NativeMod {
             0 => self.ch.mix = v,
             1 => self.ch.depth = v,
             2 => self.ch.rate_hz = v,
-            3 => {
-                use modulation::chorus::engine::EngineType;
-                self.ch.set_engine(match v.round().max(0.0) as u32 {
-                    1 => EngineType::Bbd,
-                    2 => EngineType::Tape,
-                    3 => EngineType::Orbit,
-                    4 => EngineType::Juno,
-                    _ => EngineType::Cubic,
-                });
-            }
+            // Allocation-free: the chain holds every engine and crossfades.
+            3 => self.ch.set_engine(modulation::chorus::engine::EngineType::from_index(
+                v.round().max(0.0) as usize,
+            )),
+            4 => self.ch.color = v,
+            5 => self.ch.feedback = v,
+            6 => self.ch.width = v,
             _ => {}
         }
     }

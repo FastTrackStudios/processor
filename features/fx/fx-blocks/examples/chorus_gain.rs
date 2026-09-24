@@ -25,7 +25,7 @@ fn main() {
         .collect();
     let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
     let kind = std::env::args().nth(1).unwrap_or_default();
-    for engine in 0..5 {
+    for engine in 0..11 {
         for mix in [0.25, 0.5, 0.75, 1.0] {
             let mut m = match kind.as_str() {
                 "flanger" => NativeMod::flanger(SR),

@@ -37,7 +37,7 @@ pub struct ModUiState {
 /// The four circuit knobs are *trims* around the active profile's voicing
 /// rather than absolute values: 0.5 means "a Juno, as a Juno is", and turning
 /// one is always a statement about this circuit. That is what lets one set of
-/// parameters serve fifteen modulators without a knob meaning something
+/// parameters serve every modulator without a knob meaning something
 /// different on each — see [`modulation_profiles::Controls`], where they land.
 ///
 /// `rate`, `depth` and `mix` are absolute, because they mean the same thing

@@ -224,6 +224,143 @@ pub static PROFILES: &[Profile] = &[
         voice: "One slow shallow voice and a lot of it. The sound of a Juno-60, which is a smaller effect than people remember.",
     },
     Profile {
+        id: "ce2",
+        name: "CE-2",
+        // One MN3007 on a rounded triangle with the wet cut steeply above
+        // ~6 kHz: the two-detuned-voices pitch of a triangle, and the warmth
+        // is the filter. Colour at noon is the pedal; the width puts a
+        // second tap on the inverted LFO on the right.
+        voicing: Voicing {
+            rate_hz: 1.2,
+            depth: 0.6,
+            mix: 0.5,
+            knobs: [
+                k(Character::Colour, 0.5), // the wet's tone
+                k(Character::Feedback, 0.0),
+                k(Character::Width, 0.6),
+                NO_KNOB,
+            ],
+            ..Voicing::base(Circuit::Delay {
+                engine: EngineType::Ce2,
+                effect: EffectType::Chorus,
+            })
+        },
+        voice: "The Boss chorus: one warm bucket brigade on a triangle. Sweet at noon, seasick at the top.",
+    },
+    Profile {
+        id: "dimension",
+        name: "Dimension",
+        // Two lines swung in opposite directions and cross-fed inverted: the
+        // pitch moves cancel, so there is width and no sweep. Depth walks
+        // the four buttons.
+        voicing: Voicing {
+            rate_hz: 0.4,
+            depth: 0.45,
+            mix: 0.5,
+            knobs: [
+                k(Character::Colour, 0.5),
+                k(Character::Feedback, 0.0),
+                k(Character::Width, 1.0),
+                NO_KNOB,
+            ],
+            ..Voicing::base(Circuit::Delay {
+                engine: EngineType::Dimension,
+                effect: EffectType::Chorus,
+            })
+        },
+        voice: "Space without a sweep. Two lines moving in opposite directions, so nothing seems to move at all.",
+    },
+    Profile {
+        id: "clone",
+        name: "Small Clone",
+        // One deep, dark bucket brigade with a rounder LFO than the Boss —
+        // the depth switch's "deep" is the top of the knob.
+        voicing: Voicing {
+            rate_hz: 1.1,
+            depth: 0.8,
+            mix: 0.5,
+            knobs: [
+                k(Character::Colour, 0.5),
+                k(Character::Feedback, 0.0),
+                k(Character::Width, 0.5),
+                NO_KNOB,
+            ],
+            ..Voicing::base(Circuit::Delay {
+                engine: EngineType::Clone,
+                effect: EffectType::Chorus,
+            })
+        },
+        voice: "Deep and dark, and it swims. The swirl on every grunge record, with the depth switch in.",
+    },
+    Profile {
+        id: "tri",
+        name: "Tri-Chorus",
+        // Three clean lines 120° apart, left / centre / right: the net pitch
+        // swing cancels, so the wet can sit high without warbling.
+        voicing: Voicing {
+            rate_hz: 0.7,
+            depth: 0.5,
+            mix: 0.6,
+            knobs: [
+                k(Character::Colour, 0.5),
+                k(Character::Feedback, 0.0),
+                k(Character::Width, 1.0),
+                NO_KNOB,
+            ],
+            ..Voicing::base(Circuit::Delay {
+                engine: EngineType::TriChorus,
+                effect: EffectType::Chorus,
+            })
+        },
+        voice: "The eighties rack: three voices around the room, lush and hi-fi, and never seasick.",
+    },
+    Profile {
+        id: "scf",
+        name: "SCF",
+        // Depth is pitch, not delay: the sweep shrinks as the speed rises,
+        // so fast settings shimmer instead of warbling. Colour is the
+        // pre-delay.
+        voicing: Voicing {
+            rate_hz: 0.9,
+            depth: 0.5,
+            mix: 0.5,
+            knobs: [
+                k(Character::Colour, 0.5), // pre-delay
+                k(Character::Feedback, 0.0),
+                k(Character::Width, 1.0),
+                NO_KNOB,
+            ],
+            ..Voicing::base(Circuit::Delay {
+                engine: EngineType::Scf,
+                effect: EffectType::Chorus,
+            })
+        },
+        voice: "Bright, clean and wide, and the depth holds its pitch at any speed. The studio shimmer.",
+    },
+    Profile {
+        id: "julia",
+        name: "Julia",
+        // An analogue chorus whose Lag sets the centre delay and, with it,
+        // how far the depth can detune. The mix is the D-C-V knob: dry,
+        // chorus at noon, vibrato at the top.
+        voicing: Voicing {
+            rate_hz: 1.0,
+            depth: 0.5,
+            mix: 0.5,
+            knobs: [
+                k(Character::Colour, 0.5), // lag
+                k(Character::Feedback, 0.0),
+                k(Character::Width, 0.6),
+                NO_KNOB,
+            ],
+            ..Voicing::base(Circuit::Delay {
+                engine: EngineType::Julia,
+                effect: EffectType::Chorus,
+            })
+        },
+        voice: "Lag and blend: tight and smooth with the lag down, nauseous with it up, vibrato with the mix all the way.",
+    },
+    Profile {
         id: "bbd",
         name: "Bucket Brigade",
         // A clocked analogue delay line: the clock rate sets both the delay
@@ -386,6 +523,29 @@ pub static PROFILES: &[Profile] = &[
             })
         },
         voice: "Pitch, with no dry signal to comb against it. Shallower than a chorus, because you hear all of it.",
+    },
+    Profile {
+        id: "vibrato_ce1",
+        name: "CE-1 Vibrato",
+        // The Chorus Ensemble's vibrato: the bucket brigade on a sine, faster
+        // and deeper, with the dry pulled.
+        voicing: Voicing {
+            rate_hz: 5.5,
+            depth: 0.45,
+            mix: 1.0,
+            wet_only: true,
+            knobs: [
+                k(Character::Colour, 0.5),
+                NO_KNOB,
+                NO_KNOB,
+                NO_KNOB,
+            ],
+            ..Voicing::base(Circuit::Delay {
+                engine: EngineType::Ce2,
+                effect: EffectType::Vibrato,
+            })
+        },
+        voice: "The Chorus Ensemble's other switch: a warm bucket-brigade warble with nothing dry under it.",
     },
     Profile {
         id: "vibrato_juno",
@@ -553,7 +713,19 @@ pub static CATEGORIES: &[Category] = &[
         id: "chorus",
         label: "Chorus",
         badge: "CHOR",
-        profiles: &["juno", "bbd", "tape", "orbit", "cubic"],
+        profiles: &[
+            "juno",
+            "ce2",
+            "dimension",
+            "clone",
+            "tri",
+            "scf",
+            "julia",
+            "bbd",
+            "tape",
+            "orbit",
+            "cubic",
+        ],
     },
     Category {
         id: "flanger",
@@ -565,7 +737,7 @@ pub static CATEGORIES: &[Category] = &[
         id: "vibrato",
         label: "Vibrato",
         badge: "VIB",
-        profiles: &["vibrato", "vibrato_juno"],
+        profiles: &["vibrato", "vibrato_ce1", "vibrato_juno"],
     },
     Category {
         id: "tremolo",
@@ -746,9 +918,8 @@ pub const WAH_SHAPES: [WahMode; 4] = [
 /// Only the profile's own chain is touched — the other two keep whatever they
 /// had, so switching back to a family finds it as you left it.
 ///
-/// **Not allocation-free**: [`ChorusChain::set_engine`] rebuilds its voice
-/// vectors, and it is called whenever the selected engine changes. Same
-/// contract as the reverb's `set_algorithm_variant`. Everything else here is
+/// Allocation-free: [`ChorusChain::set_engine`] only retargets a chain that
+/// already holds every engine (and crossfades to it). Everything else here is
 /// plain field writes.
 pub fn apply(
     profile: &Profile,
@@ -1057,13 +1228,7 @@ mod tests {
     /// the five engines had no way to be heard at all.
     #[test]
     fn every_chorus_engine_is_reachable() {
-        for engine in [
-            EngineType::Cubic,
-            EngineType::Bbd,
-            EngineType::Tape,
-            EngineType::Orbit,
-            EngineType::Juno,
-        ] {
+        for engine in EngineType::ALL {
             assert!(
                 PROFILES.iter().any(|p| matches!(
                     p.voicing.circuit,
@@ -1327,7 +1492,7 @@ mod tests {
         let first = rail_click_target(profile_index("trem_opto").unwrap(), chorus);
         assert_eq!(PROFILES[first].id, "juno");
         let second = rail_click_target(first, chorus);
-        assert_eq!(PROFILES[second].id, "bbd");
+        assert_eq!(PROFILES[second].id, CATEGORIES[chorus].profiles[1]);
     }
 
     // ── The mapping ──────────────────────────────────────────────────────
