@@ -46,6 +46,9 @@ pub struct Shimmer {
     out_hp_r: OnePoleHp,
     // Shimmer amount (how much pitch-shifted signal feeds back)
     amount: f64,
+    /// What is actually fed back: `amount`, capped so the loop stays under
+    /// unity gain (see `update_injection`).
+    injection: f64,
     decay: f64,
     // MX param overlay (voice intervals / amount / feedback mode).
     mx: ShimmerParams,
@@ -80,6 +83,7 @@ impl Shimmer {
             out_hp_l: OnePoleHp::new(24.0, sample_rate),
             out_hp_r: OnePoleHp::new(24.0, sample_rate),
             amount: 0.5,
+            injection: 0.5,
             decay: 0.8,
             mx: ShimmerParams::default(),
             legacy_speed: 2.0,
@@ -136,6 +140,25 @@ impl Shimmer {
             .mx
             .amount
             .map_or(self.legacy_amount, |a| a.clamp(0.0, 1.0));
+        self.update_injection();
+    }
+
+    /// Cap the fed-back amount so the shimmer loop cannot run away.
+    ///
+    /// The loop is: pitch voices → back into the tank → out of the tank
+    /// into the pitch voices. The tank returns up to `1/√(1 − g²)` of what
+    /// goes in (its energy gain at feedback `g`), and two voices can add
+    /// coherently (√2 once normalised — both on +12 is the case). So the
+    /// loop gain is about `amount · voices / √(1 − g²)`, and anything over 1
+    /// grows without end: two octave voices at amount 0.5 into a long tail
+    /// went to infinity in about six seconds. Capped at 0.8, the shimmer
+    /// still builds — the regeneration is the sound — but always decays.
+    fn update_injection(&mut self) {
+        const MAX_LOOP_GAIN: f64 = 0.8;
+        let g = self.decay.clamp(0.0, 0.999);
+        let tank = 1.0 / (1.0 - g * g).sqrt();
+        let voices = if self.mx.voice2 { std::f64::consts::SQRT_2 } else { 1.0 };
+        self.injection = self.amount.min(MAX_LOOP_GAIN / (tank * voices));
     }
 }
 
@@ -182,6 +205,7 @@ impl ReverbAlgorithm for Shimmer {
         self.decay = params.decay.mul_add(0.55, 0.4);
         self.fdn_l.set_decay(self.decay);
         self.fdn_r.set_decay(self.decay);
+        self.update_injection();
 
         // Damping
         let damp_coeff = params.damping * 0.5;
@@ -229,8 +253,8 @@ impl ReverbAlgorithm for Shimmer {
     #[inline]
     fn tick(&mut self, left: f64, right: f64) -> (f64, f64) {
         // Mix input with pitch-shifted feedback
-        let in_l = self.fb_l.mul_add(self.amount, left);
-        let in_r = self.fb_r.mul_add(self.amount, right);
+        let in_l = self.fb_l.mul_add(self.injection, left);
+        let in_r = self.fb_r.mul_add(self.injection, right);
 
         // Diffuse
         let diff_l = self.diffuser_l.tick(in_l);
@@ -253,8 +277,10 @@ impl ReverbAlgorithm for Shimmer {
         let mut shifted_l = self.shifter1_l.tick(src_l);
         let mut shifted_r = self.shifter1_r.tick(src_r);
         if self.mx.voice2 {
-            shifted_l += self.shifter2_l.tick(src_l);
-            shifted_r += self.shifter2_r.tick(src_r);
+            // Two voices share the level (an average in power), so adding
+            // the second does not double what goes round the loop.
+            shifted_l = (shifted_l + self.shifter2_l.tick(src_l)) * std::f64::consts::FRAC_1_SQRT_2;
+            shifted_r = (shifted_r + self.shifter2_r.tick(src_r)) * std::f64::consts::FRAC_1_SQRT_2;
         }
 
         // Block DC, damp, and store for next iteration

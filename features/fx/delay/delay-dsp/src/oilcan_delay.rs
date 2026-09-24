@@ -228,7 +228,15 @@ impl OilCanDelay {
         };
 
         // Regen: light constant saturation → splatter allpass → tilt.
-        let mut fb = output * self.feedback;
+        //
+        // The disc has two loops, and they add: this regen, and the
+        // residue the partial re-charge leaves (`1 − WRITE_ALPHA` of what
+        // was written one rotation ago). With Repeats taken as the regen
+        // gain alone, the two summed past unity from about 0.6 up and the
+        // tank grew until it clipped. Repeats spans the regen the residue
+        // leaves room for, so the top of the knob is the longest sustain
+        // that still dies away.
+        let mut fb = output * self.feedback * (Self::WRITE_ALPHA - 0.02);
         fb = sin_clip(fb * 1.2) / 1.2;
         fb = self.splatter_tick(fb);
         fb = self.decay_tilt_eq.tick(fb, ch);
