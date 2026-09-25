@@ -465,6 +465,50 @@ mod tests {
         }
     }
 
+    /// A guitar panned hard left keeps its chorus on the left: every engine,
+    /// chorus and vibrato, at full width and none. (One line fed the sum of
+    /// both sides put the chorus of a panned guitar in both.)
+    #[test]
+    fn a_panned_input_stays_panned() {
+        let input = pink(1.0, 7);
+        for engine in EngineType::ALL {
+            for effect in [EffectType::Chorus, EffectType::Vibrato] {
+                for width in [0.0, 1.0] {
+                    let mut c = chain(engine);
+                    c.effect_type = effect;
+                    c.mix = 1.0;
+                    c.width = width;
+                    let (mut l, mut r) = (input.clone(), vec![0.0; input.len()]);
+                    for (bl, br) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+                        c.process(bl, br);
+                    }
+                    let (lo, ro) = (rms(&l[4800..]), rms(&r[4800..]));
+                    assert!(lo > 0.01, "{engine:?} {effect:?} w{width}: the left plays ({lo})");
+                    assert!(
+                        ro < lo * 0.01,
+                        "{engine:?} {effect:?} w{width}: the right should stay silent — {ro:.5} vs {lo:.5}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A centred input plays both sides alike as before: the per-side lines
+    /// of a classic engine hold the same signal, and the width's centre is
+    /// the plain mid.
+    #[test]
+    fn a_centred_input_fills_both_sides() {
+        let input = pink(1.0, 9);
+        for engine in EngineType::ALL {
+            let mut c = chain(engine);
+            c.mix = 1.0;
+            let (l, r) = run(&mut c, &input);
+            let (lo, ro) = (rms(&l[4800..]), rms(&r[4800..]));
+            assert!(lo > 0.01 && ro > 0.01, "{engine:?}: {lo} {ro}");
+            assert!((20.0 * (lo / ro).log10()).abs() < 3.0, "{engine:?}: sides {lo} vs {ro}");
+        }
+    }
+
     #[test]
     fn silence_in_silence_out() {
         for engine in EngineType::ALL {

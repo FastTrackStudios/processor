@@ -306,8 +306,14 @@ pub struct Classic {
     kind: EngineType,
     spec: Spec,
     sr: f64,
+    /// One line per side, read at the same (shared) tap delays: a centred
+    /// input fills both alike — the unit exactly as it was — and a panned one
+    /// stays where it was panned, where one line fed the sum would put its
+    /// chorus in both sides.
     line: ModLine,
+    line_r: ModLine,
     pre: [SvfLp; 2],
+    pre_r: [SvfLp; 2],
     post_l: [SvfLp; 2],
     post_r: [SvfLp; 2],
     hp_l: f64,
@@ -316,9 +322,12 @@ pub struct Classic {
     phase: f64,
     drift_phase: f64,
     fb_state: f64,
-    // Dimension's inverted cross-feed: amount and the two high-passes' state.
+    fb_state_r: f64,
+    // Dimension's inverted cross-feed: amount and the two high-passes' state
+    // (per side's line).
     cross: f64,
     cross_hp: [f64; 2],
+    cross_hp_r: [f64; 2],
     cross_k: f64,
     ctl: usize,
     // Each tap's delay (samples) and its per-sample ramp to the end of the
@@ -344,7 +353,9 @@ impl Classic {
             spec: spec(kind),
             sr: 48_000.0,
             line: ModLine::new(48_000 / 20),
+            line_r: ModLine::new(48_000 / 20),
             pre: [SvfLp::default(); 2],
+            pre_r: [SvfLp::default(); 2],
             post_l: [SvfLp::default(); 2],
             post_r: [SvfLp::default(); 2],
             hp_l: 0.0,
@@ -353,8 +364,10 @@ impl Classic {
             phase: 0.0,
             drift_phase: 0.0,
             fb_state: 0.0,
+            fb_state_r: 0.0,
             cross: 0.0,
             cross_hp: [0.0; 2],
+            cross_hp_r: [0.0; 2],
             cross_k: 0.0,
             ctl: 0,
             delay: [0.0; 3],
@@ -523,7 +536,7 @@ impl Classic {
             sp.tone[1]
         };
         if sp.pre_ratio > 0.0 {
-            for p in &mut self.pre {
+            for p in self.pre.iter_mut().chain(self.pre_r.iter_mut()) {
                 p.set(tone * sp.pre_ratio, 0.6, sr);
             }
         }
@@ -607,6 +620,7 @@ impl StereoEngine for Classic {
         // Longest read: SCF's 25 ms pre-delay + 12 ms swing, Tri-Chorus's
         // 9 ms × 1.25 × 1.12 + swing — 45 ms covers all.
         self.line.ensure((sample_rate * 0.045) as usize);
+        self.line_r.ensure((sample_rate * 0.045) as usize);
         self.hp_k = 1.0 - (-2.0 * PI * self.spec.low_cut / sample_rate).exp();
         // The cross-feed's high-pass, ~250 Hz.
         self.cross_k = 1.0 - (-2.0 * PI * 250.0 / sample_rate).exp();
@@ -616,9 +630,11 @@ impl StereoEngine for Classic {
 
     fn reset(&mut self) {
         self.line.clear();
+        self.line_r.clear();
         for f in self
             .pre
             .iter_mut()
+            .chain(self.pre_r.iter_mut())
             .chain(self.post_l.iter_mut())
             .chain(self.post_r.iter_mut())
         {
@@ -629,7 +645,9 @@ impl StereoEngine for Classic {
         self.phase = 0.0;
         self.drift_phase = 0.0;
         self.fb_state = 0.0;
+        self.fb_state_r = 0.0;
         self.cross_hp = [0.0; 2];
+        self.cross_hp_r = [0.0; 2];
         self.primed = false;
         self.ctl = 0;
     }
@@ -641,40 +659,52 @@ impl StereoEngine for Classic {
         self.ctl = (self.ctl + 1) % CTL;
         let sp = self.spec;
 
-        // Into the line: mono, through the anti-alias filter and the
-        // buckets' soft ceiling, with the feedback.
-        let fb = soft_sat(self.fb_state * self.fb_gain, 0.4);
-        let mut into = 0.5f64.mul_add(in_l + in_r, fb);
-        if sp.pre_ratio > 0.0 {
-            let once = self.pre[0].tick(into);
-            into = self.pre[1].tick(once);
-        }
-        if sp.sat > 0.0 {
-            into = soft_sat(into, sp.sat);
-        }
-        self.line.write(into);
+        // Into the lines — one a side, each through the anti-alias filter
+        // and the buckets' soft ceiling, with its own feedback. The unit took
+        // one input; each side here is that unit fed that side, so a centred
+        // guitar (both sides alike) is the unit exactly and a panned one
+        // keeps its pan.
+        let into = |x: f64, fb_state: f64, pre: &mut [SvfLp; 2]| {
+            let fb = soft_sat(fb_state * self.fb_gain, 0.4);
+            let mut v = x + fb;
+            if sp.pre_ratio > 0.0 {
+                let once = pre[0].tick(v);
+                v = pre[1].tick(once);
+            }
+            if sp.sat > 0.0 {
+                v = soft_sat(v, sp.sat);
+            }
+            v
+        };
+        let (fl, fr) = (self.fb_state, self.fb_state_r);
+        let il = into(in_l, fl, &mut self.pre);
+        let ir = into(in_r, fr, &mut self.pre_r);
+        self.line.write(il);
+        self.line_r.write(ir);
 
-        // Taps.
-        let mut t = [0.0; 3];
-        for ((out, delay), step) in t
-            .iter_mut()
-            .zip(self.delay.iter_mut())
-            .zip(self.delay_step.iter())
-            .take(sp.taps)
-        {
-            *delay += step;
-            *out = self.line.read(*delay);
+        // Taps, at the same delays on both lines.
+        let (mut tl, mut tr) = ([0.0; 3], [0.0; 3]);
+        for k in 0..sp.taps.min(3) {
+            self.delay[k] += self.delay_step[k];
+            tl[k] = self.line.read(self.delay[k]);
+            tr[k] = self.line_r.read(self.delay[k]);
         }
         self.last_delay_ms = self.delay[0] * 1000.0 / self.sr;
-        self.fb_state = t[0];
+        self.fb_state = tl[0];
+        self.fb_state_r = tr[0];
 
-        let mut wl = self.gl[0].mul_add(t[0], self.gl[1].mul_add(t[1], self.gl[2] * t[2]));
-        let mut wr = self.gr[0].mul_add(t[0], self.gr[1].mul_add(t[1], self.gr[2] * t[2]));
+        let mut wl = self.gl[0].mul_add(tl[0], self.gl[1].mul_add(tl[1], self.gl[2] * tl[2]));
+        let mut wr = self.gr[0].mul_add(tr[0], self.gr[1].mul_add(tr[1], self.gr[2] * tr[2]));
         if self.cross > 0.0 {
-            // Each side less the other's highs.
-            self.cross_hp[0] = (t[0] - self.cross_hp[0]).mul_add(self.cross_k, self.cross_hp[0]);
-            self.cross_hp[1] = (t[1] - self.cross_hp[1]).mul_add(self.cross_k, self.cross_hp[1]);
-            let (h0, h1) = (t[0] - self.cross_hp[0], t[1] - self.cross_hp[1]);
+            // Each side less the other's highs — the other tap of its own
+            // side's line.
+            let hp = |t: &[f64; 3], st: &mut [f64; 2], k: f64| {
+                st[0] = (t[0] - st[0]).mul_add(k, st[0]);
+                st[1] = (t[1] - st[1]).mul_add(k, st[1]);
+                (t[0] - st[0], t[1] - st[1])
+            };
+            let (_, h1) = hp(&tl, &mut self.cross_hp, self.cross_k);
+            let (h0, _) = hp(&tr, &mut self.cross_hp_r, self.cross_k);
             // The two lines are close copies (the swing is small), so the
             // inverted feed partly cancels; 1/(1−k/2) puts the channels back
             // about as far above the dry as the mono sum sits below it

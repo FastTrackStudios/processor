@@ -759,6 +759,12 @@ pub struct VoiceBank {
     fb_comp: f64,
     ctl: usize,
     primed: bool,
+    /// Where the input sits between the sides: smoothed power per side and
+    /// its coefficient (~50 ms). What the wet's centre is — a guitar panned
+    /// left keeps its chorus left however narrow the width, where the
+    /// plain mid of the wet would pull it into both sides.
+    bal: (f64, f64),
+    bal_k: f64,
 }
 
 impl VoiceBank {
@@ -778,10 +784,22 @@ impl VoiceBank {
             fb_comp: 1.0,
             ctl: 0,
             primed: false,
+            bal: (0.0, 0.0),
+            bal_k: 1.0 - (-1.0 / (0.05 * 48_000.0f64)).exp(),
         }
     }
 
     const CTL: usize = 16;
+
+    /// The input's share per side (each 0..=1, `(0.5, 0.5)` centred — and
+    /// exactly that when both sides carry the same signal).
+    fn balance(&mut self, in_l: f64, in_r: f64) -> (f64, f64) {
+        self.bal.0 = (in_l * in_l - self.bal.0).mul_add(self.bal_k, self.bal.0);
+        self.bal.1 = (in_r * in_r - self.bal.1).mul_add(self.bal_k, self.bal.1);
+        let (l, r) = (self.bal.0.max(0.0).sqrt(), self.bal.1.max(0.0).sqrt());
+        let sum = l + r;
+        if sum <= 1.0e-12 { (0.5, 0.5) } else { (l / sum, r / sum) }
+    }
 }
 
 impl StereoEngine for VoiceBank {
@@ -791,6 +809,7 @@ impl StereoEngine for VoiceBank {
         }
         // 20 ms voice fades.
         self.ramp = 1.0 / (0.02 * sample_rate).max(1.0);
+        self.bal_k = 1.0 - (-1.0 / (0.05 * sample_rate).max(1.0)).exp();
     }
 
     fn reset(&mut self) {
@@ -808,6 +827,7 @@ impl StereoEngine for VoiceBank {
         // phases once they meet in a mono rig or a room. One voice, on the
         // mono input, to both sides.
         let vibrato = f.effect == EffectType::Vibrato;
+        let (bl, br) = self.balance(in_l, in_r);
         let n = if vibrato {
             1
         } else {
@@ -861,7 +881,10 @@ impl StereoEngine for VoiceBank {
             power += g * g;
         }
         if vibrato {
-            wr = wl;
+            // One voice on the sum, placed where the input is.
+            let w = wl;
+            wl = w * 2.0 * bl;
+            wr = w * 2.0 * br;
         }
         // The voices are modulated apart, so they add in power. Feedback's
         // gain is taken back out: a comb fed back at g lifts the lows it
@@ -870,10 +893,14 @@ impl StereoEngine for VoiceBank {
         // pink noise and a guitar.
         let norm = self.fb_comp / power.max(1.0e-6).sqrt();
         let (wl, wr) = (wl * norm, wr * norm);
-        // Width: the side of the wet, scaled.
-        let mid = (wl + wr) * 0.5;
+        // Width: the wet's spread about the input's own place, scaled. The
+        // wet together, shared out as the input is shared between the sides
+        // (half each for a centred input: the plain mid), is what zero width
+        // narrows to — so it narrows the chorus, never the pan.
+        let sum = wl + wr;
+        let (cl, cr) = (sum * bl, sum * br);
         let w = f.width.clamp(0.0, 1.0);
-        ((wl - mid).mul_add(w, mid), (wr - mid).mul_add(w, mid))
+        ((wl - cl).mul_add(w, cl), (wr - cr).mul_add(w, cr))
     }
 
     fn delay_ms(&self) -> f64 {
