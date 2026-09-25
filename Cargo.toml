@@ -91,7 +91,10 @@ dock-proto = { git = "https://github.com/FastTrackStudios/daw", tag = "v0.0.6.3"
 # baseview-03 branch + the FTS delta: nice-plug-dioxus, embedded editors,
 # rich track-info, param rescan). The ONE sanctioned exception to
 # path-deps-only — it left the tree so it can track upstream.
-nice-plug = { git = "https://github.com/FastTrackStudios/nice-plug.git", branch = "fts-baseview-03" }
+# Without its VST3 export by default: the plugins ask for it
+# (apps/plugins/*); the UI crates they share do not, so an app that links
+# those (Session on iOS, where the wrapper does not build) can.
+nice-plug = { git = "https://github.com/FastTrackStudios/nice-plug.git", branch = "fts-baseview-03", default-features = false, features = ["editor", "tracing-subscriber"] }
 nice-plug-dioxus = { git = "https://github.com/FastTrackStudios/nice-plug.git", branch = "fts-baseview-03" }
 nice-plug-xtask = { git = "https://github.com/FastTrackStudios/nice-plug.git", branch = "fts-baseview-03" }
 utils = { git = "https://github.com/FastTrackStudios/daw", tag = "v0.0.6.3" }
