@@ -17,7 +17,7 @@ workspace = true
 # Plugin framework. `nice_plug` must be a DIRECT dep: `#[derive(Params)]` and
 # `nice_export_clap!`/`nice_export_vst3!` expand to absolute `::nice_plug::…`
 # paths, so the crate has to be nameable here. `vst3` is on by default.
-nice-plug.workspace = true
+nice-plug = { workspace = true, features = ["vst3"] }
 
 # The DSP facade (re-exports reverb-dsp). Never depend on reverb-dsp directly.
 reverb.workspace = true

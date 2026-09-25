@@ -13,7 +13,7 @@ crate-type = ["cdylib", "lib"]
 workspace = true
 
 [dependencies]
-nice-plug.workspace = true
+nice-plug = { workspace = true, features = ["vst3"] }
 nice-plug-dioxus.workspace = true
 dioxus = { workspace = true }
 meter-dsp = { workspace = true }

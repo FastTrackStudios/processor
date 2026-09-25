@@ -20,5 +20,5 @@ eq-profiles = { workspace = true }
 # `native` pulls nice-plug-dioxus/Blitz.
 eq-ui = { workspace = true, features = ["native"] }
 audiocore-dsp = { workspace = true }
-nice-plug = { workspace = true }
+nice-plug = { workspace = true, features = ["vst3"] }
 spectrum-analyzer = { workspace = true }
