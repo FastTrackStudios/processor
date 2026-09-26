@@ -1,20 +1,32 @@
 //! FTS Chorus — multi-engine chorus/flanger/vibrato.
 //!
-//! Five distinct chorus engines covering clean to experimental:
-//! - **Cubic**: Clean Catmull-Rom interpolation (default, transparent)
-//! - **BBD**: Bucket-brigade device emulation (vintage analog)
-//! - **Tape**: Wow/flutter/saturation (warm tape character)
-//! - **Orbit**: Dual-tap elliptical orbital modulation (experimental, spatial)
-//! - **Juno**: Triangle LFO + allpass interpolation (classic Roland Juno-60)
+//! Eleven engines (the persisted `engine` index in brackets):
+//! - **Cubic** [0]: clean Catmull-Rom interpolation (transparent)
+//! - **BBD** [1]: bucket brigade whose bandwidth tracks its clock
+//! - **Tape** [2]: wow/flutter/saturation
+//! - **Orbit** [3]: dual-tap elliptical orbital modulation (spatial)
+//! - **Juno** [4]: triangle LFO + allpass interpolation (Roland Juno-60)
+//! - **CE-2** [5]: Boss CE-2 — MN3007, rounded triangle, the warm wet
+//! - **Dimension** [6]: Roland SDD-320 — antiphase pair, inverted cross-feed
+//! - **Clone** [7]: EHX Small Clone — deep, dark, the swirl
+//! - **Tri-Chorus** [8]: three-phase rack chorus, left/centre/right
+//! - **SCF** [9]: TC SCF-style pitch-mod chorus — depth is cents
+//! - **Julia** [10]: Walrus Julia — Lag, and the dry/chorus/vibrato mix
 //!
 //! Each engine can operate in Chorus, Flanger, or Vibrato mode.
 //!
 //! Credits:
 //! - Cubic interpolation: standard Catmull-Rom (fts-dsp)
-//! - BBD topology: Choroboros (`EsotericShadow`), clock-driven S&H chain
 //! - Tape modulation: `ChowDSP` `AnalogTapeModel` (wow/flutter), qdelay (tiagolr)
 //! - Orbit modulation: Choroboros (`EsotericShadow`), elliptical 2D LFO
 //! - Juno: TAL-NoiseMaker / `YKChorus` (`SpotlightKid`), allpass delay + DC block
+//! - BBD decomposition (delay between clock-related filters, soft ceiling):
+//!   Raffel & Smith, "Practical modeling of bucket-brigade device circuits",
+//!   DAFx-10; Holters & Parker, "A combined model for a bucket brigade
+//!   device and its input and output filters", DAFx-18
+//! - Interpolation and chorus/flanger/vibrato delay ranges: Dattorro,
+//!   "Effect Design Part 2: Delay-line modulation and chorus", JAES 1997
+//! - Unit numbers: see the notes in [`classic`]
 
 // Realtime guard. This crate runs on an audio callback, so the calls in
 // clippy.toml's disallowed-methods list (locks, env, sleep) are real bugs here
@@ -57,6 +69,8 @@
 )]
 
 pub mod chain;
+pub mod classic;
+pub mod dsp;
 pub mod engine;
 
 /// Display helpers — what the modulation actually does, sampled from the
@@ -73,22 +87,7 @@ pub mod engine;
 /// So the shape is taken from a real voice: build one, run it, and read the
 /// delay it actually chose each tick.
 pub mod analysis {
-    use crate::engine::{
-        BbdVoice, ChorusEngine, CubicVoice, EffectType, EngineType, JunoVoice, OrbitVoice,
-        TapeVoice,
-    };
-
-    /// Build one voice of `engine` at `phase_offset`, exactly as
-    /// [`crate::chain::ChorusChain`] does.
-    fn voice(engine: EngineType, phase_offset: f64) -> Box<dyn ChorusEngine> {
-        match engine {
-            EngineType::Cubic => Box::new(CubicVoice::new(phase_offset)),
-            EngineType::Bbd => Box::new(BbdVoice::new(phase_offset)),
-            EngineType::Tape => Box::new(TapeVoice::new(phase_offset)),
-            EngineType::Orbit => Box::new(OrbitVoice::new(phase_offset)),
-            EngineType::Juno => Box::new(JunoVoice::new(phase_offset)),
-        }
-    }
+    use crate::engine::{EffectType, EngineType, Frame};
 
     /// The sample rate the shape is sampled at.
     ///
@@ -99,6 +98,9 @@ pub mod analysis {
     /// pretend rate of a few hundred Hz leaves it with a four-sample buffer
     /// and a delay it cannot read. 4 kHz is comfortably above every engine's
     /// longest delay and cheap enough to run per frame.
+    ///
+    /// The engines control-rate some targets every 16 samples (4 ms here);
+    /// they ramp in between, so the picture is the same line.
     pub const SHAPE_RATE: f64 = 4_000.0;
 
     /// Longest run the shape will do, whatever the LFO rate. At the slowest
@@ -126,18 +128,27 @@ pub mod analysis {
         depth: f64,
         color: f64,
         feedback: f64,
-        phase_offset: f64,
+        _phase_offset: f64,
         out: &mut [f64],
     ) {
         let n = out.len().max(2);
         let rate = rate_hz.clamp(1.0e-3, SHAPE_RATE * 0.25);
         let ticks = ((SHAPE_RATE / rate) as usize).clamp(n, MAX_TICKS);
-        let mut v = voice(engine, phase_offset);
+        let mut v = crate::chain::make_engine(engine);
         v.update(SHAPE_RATE);
         v.reset();
+        let f = Frame {
+            rate_hz: rate,
+            depth,
+            feedback,
+            color,
+            width: 1.0,
+            effect,
+            voices: 1,
+        };
         let mut cursor = 0usize;
         for i in 0..ticks {
-            v.tick(0.0, rate, depth, feedback, color, effect);
+            v.tick(0.0, 0.0, &f);
             // Subsample: take the point whenever the output index advances.
             let want = i * n / ticks;
             if want == cursor && cursor < n {

@@ -2,12 +2,13 @@
 //!
 //! Delay line with pitch shifter in the feedback path. Each repeat
 //! is shifted by `pitch_ratio`, creating cascading shimmer effects.
-//! The pitched path runs through pitch-dsp's `WsolaShifter`
-//! (waveform-aligned splices) — measured ~50x less inharmonic energy
-//! than the dual-grain granular approach on tonal material, which is
-//! exactly what a recirculating shimmer stack needs. The tap is read
-//! `latency()` samples early so pitched and unpitched paths stay
-//! time-aligned.
+//! The pitched path runs through pitch-dsp's `SpectralShifter` (a
+//! phase-locked phase vocoder): no splices at all, so nothing for the
+//! recirculating stack to compound — on a steady tone at +12 it leaves
+//! −74 dB of non-harmonic energy where the WSOLA shifter it replaced left
+//! −29 dB, and it is polyphonic (WSOLA's single splice point fails on
+//! chords). The tap is read `latency()` samples early so pitched and
+//! unpitched paths stay time-aligned.
 
 use crate::tilt::DecayTilt;
 use audiocore_dsp::biquad::{Biquad, FilterType};
@@ -15,7 +16,7 @@ use audiocore_dsp::dc_blocker::DcBlocker;
 use audiocore_dsp::delay_line::DelayLine;
 use audiocore_dsp::smoothing::ParamSmoother;
 use dsp_core::num;
-use pitch_dsp::wsola::WsolaShifter;
+use pitch_dsp::spectral::SpectralShifter;
 
 /// Shimmer delay with pitch shifting in the feedback path.
 pub struct ShimmerDelay {
@@ -41,11 +42,16 @@ pub struct ShimmerDelay {
     feedback_sample: f64,
     sample_rate: f64,
     smoother: ParamSmoother,
-    /// WSOLA pitch shifter (pitch-dsp) for the pitched feedback path.
-    shifter: WsolaShifter,
+    /// Phase-vocoder pitch shifter (pitch-dsp) for the pitched path.
+    shifter: SpectralShifter,
     /// Shifter latency in samples (constant, speed-independent).
     shifter_latency: f64,
-    /// Grain size in ms for pitch shifter (10–100). Larger = smoother.
+    /// Shifter frame (48 kHz samples) and rate in effect.
+    shifter_frame: usize,
+    shifter_rate: f64,
+    /// Shifter analysis frame in ms (10–170; rounded to a power-of-two
+    /// frame, 1024–8192 samples @ 48 kHz). Larger = smoother, more latency
+    /// (compensated, but capped at the delay time).
     pub grain_ms: f64,
 }
 
@@ -60,7 +66,7 @@ impl ShimmerDelay {
 
     #[must_use]
     pub fn new() -> Self {
-        let mut shifter = WsolaShifter::new();
+        let mut shifter = SpectralShifter::new();
         shifter.mix = 1.0;
         Self {
             time_ms: 250.0,
@@ -78,8 +84,10 @@ impl ShimmerDelay {
             sample_rate: 48000.0,
             smoother: ParamSmoother::new(0.0),
             shifter,
-            shifter_latency: 1024.0,
-            grain_ms: 30.0,
+            shifter_latency: 0.0,
+            shifter_frame: 0,
+            shifter_rate: 0.0,
+            grain_ms: 90.0,
         }
     }
 
@@ -102,14 +110,19 @@ impl ShimmerDelay {
         // Decay EQ: tilt filter in feedback path
         self.decay_tilt_eq.configure(self.decay_tilt, sample_rate);
 
-        // WSOLA grain: derived from grain_ms but bounded — the splice
-        // correlation search cost grows with grain size. Reconfigure only
-        // on real change (update resets the shifter pipeline).
-        let base_grain = num::f64_to_index(self.grain_ms * 0.001 * 48000.0).clamp(256, 2048);
-        if base_grain != self.shifter.base_grain_size
-            || (sample_rate - self.sample_rate).abs() > 1e-9
-        {
-            self.shifter.base_grain_size = base_grain;
+        // Shifter frame from grain_ms, capped at the delay time so the
+        // early tap can compensate its latency. Reconfigure only on real
+        // change (update clears the shifter).
+        let want = num::f64_to_index(self.grain_ms * 48.0);
+        let fit = num::f64_to_index(self.time_ms * 48.0);
+        let mut frame = 1024usize;
+        while frame < 8192 && frame.saturating_mul(2) <= want.min(fit).max(1024) {
+            frame = frame.saturating_mul(2);
+        }
+        if frame != self.shifter_frame || (sample_rate - self.shifter_rate).abs() > 1e-9 {
+            self.shifter_frame = frame;
+            self.shifter_rate = sample_rate;
+            self.shifter.fft_size = frame;
             self.shifter.update(sample_rate);
             self.shifter_latency = num::count_to_f64(self.shifter.latency());
         }
@@ -129,9 +142,9 @@ impl ShimmerDelay {
         // === Normal (unpitched) read ===
         let normal_output = self.delay.read_cubic(smooth_delay.clamp(1.0, max_read));
 
-        // === Pitched read: tap `latency()` early (WSOLA latency is
-        // constant and speed-independent), so both paths land at the
-        // delay time.
+        // === Pitched read: tap `latency()` early (the shifter's latency is
+        // its frame — constant and speed-independent), so both paths land
+        // at the delay time.
         let tap_delay = (smooth_delay - self.shifter_latency).clamp(1.0, max_read);
         let tap = self.delay.read_cubic(tap_delay);
         self.shifter.speed = self.pitch_ratio;

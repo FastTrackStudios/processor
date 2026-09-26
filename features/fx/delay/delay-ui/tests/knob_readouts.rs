@@ -60,8 +60,7 @@ async fn the_face_prints_a_value_beside_every_knob_it_draws() -> dioxus_test::Re
     fx.tester.relayout();
 
     for param in DIGITAL_PARAMS {
-        let text = readout(&fx, param)
-            .unwrap_or_else(|| panic!("no readout element for {param}"));
+        let text = readout(&fx, param).unwrap_or_else(|| panic!("no readout element for {param}"));
         assert!(
             text.chars().any(|c| c.is_ascii_digit()),
             "the {param} readout should print a number, got {text:?}"

@@ -16,14 +16,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dioxus_elements::input_data::MouseButton;
-use nice_plug_dioxus::prelude::*;
+// The component is portable: dioxus, and the geometry the graph is drawn
+// in. The plugin's custom-widget host is native only (below).
+use dioxus::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use nice_plug_dioxus::widget::CustomWidgetAttr;
 
 use super::eq_graph_interaction::{
-    GraphMapper, bands_in_rect, drag_gain_for_shape, filter_type_for_position, nearest_band,
-    wheel_band,
-    CreateMode, DotAction, DragMode, Mods, WheelTarget, create_mode, dot_action, drag_mode,
-    dyn_range_step, fine_scale, gain_step, wheel_target,
+    CreateMode, DotAction, DragMode, GraphMapper, Mods, WheelTarget, bands_in_rect, create_mode,
+    dot_action, drag_gain_for_shape, drag_mode, dyn_range_step, filter_type_for_position,
+    fine_scale, gain_step, nearest_band, wheel_band, wheel_target,
 };
 pub use super::eq_graph_model::{
     BAND_COLORS, EqBand, EqBandShape, EqGraphRenderState, GraphConfig, InteractionState, MAX_BANDS,
@@ -38,8 +40,11 @@ pub use super::eq_graph_response::{calculate_band_response, calculate_combined_r
 pub use spectrum_analyzer::dsp::AnalyzerSnapshot;
 
 /// Get current timestamp in milliseconds.
+///
+/// `web_time`, not `std::time`: on wasm32 the std clock has no source and
+/// `now()` panics — which took the whole graph down with it.
 pub(crate) fn now_ms() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
@@ -179,8 +184,7 @@ pub fn EqGraph(
     /// lassoed, which is what these carry up.
     #[props(default)]
     selected_bands_out: Option<Signal<Vec<usize>>>,
-    #[props(default)]
-    hovered_band_out: Option<Signal<Option<usize>>>,
+    #[props(default)] hovered_band_out: Option<Signal<Option<usize>>>,
     /// The band currently under the hand, if one is being dragged.
     #[props(default)]
     dragging_band_out: Option<Signal<Option<usize>>>,
@@ -269,6 +273,10 @@ pub fn EqGraph(
     // Internal state
     let mut dragging_band = use_signal(|| None::<usize>);
     let mut hovered_band = use_signal(|| None::<usize>);
+    // The pointer is over the graph. The band card follows it: shown while
+    // the pointer is here (or a drag is live), gone when it leaves — a
+    // focused band used to keep its card up indefinitely.
+    let mut pointer_inside = use_signal(|| false);
     // Focused band shows the info popup (only one at a time)
     let mut focused_band: Signal<Option<usize>> = use_signal(|| None);
     // Helper: set focused_band and sync to external signal
@@ -484,9 +492,18 @@ pub fn EqGraph(
     // SceneOverlay / wgpu-`<canvas>` side-channels. The widget holds an `Arc` to
     // `render_state`, so it always paints the latest bands/curve; blitz repaints
     // it on the frame tick driven below.
+    // The surface the graph paints on: Blitz's custom widget natively, a
+    // canvas (vello on WebGPU) in a browser. The widget is the same either
+    // way, glow shader and all.
+    #[cfg(not(target_arch = "wasm32"))]
     let graph_widget = {
         let state = render_state.clone();
         use_memo(move || CustomWidgetAttr::new(EqGraphWidget::new(state.clone())))
+    };
+    #[cfg(target_arch = "wasm32")]
+    let graph_panel = {
+        let state = render_state.clone();
+        use_hook(|| fts_audio_ui::scene_canvas::Panel::new(EqGraphWidget::new(state)))
     };
 
     // Drive continuous repaints. Blitz only re-runs the canvas paint source
@@ -504,6 +521,7 @@ pub fn EqGraph(
     // theory but in practice the task waker doesn't propagate up to blitz's
     // event-loop waker reliably here — schedule_update bypasses that.
     let frame_tick: Signal<u64> = use_signal(|| 0);
+    #[cfg(not(target_arch = "wasm32"))]
     use_hook(|| {
         let updater = dioxus_core::schedule_update();
         std::thread::spawn(move || {
@@ -515,6 +533,10 @@ pub fn EqGraph(
             }
         });
     });
+    // A browser has no thread to spawn — and no need for one: the canvas
+    // runs its own clock and redraws itself without the document changing.
+    // (A thread here is not a slow path in wasm32, it is a panic, and it
+    // took the whole graph down with it.)
     // Subscribe so the component re-renders when the tick fires; we no
     // longer write the value into a `data-tick` attribute (which made
     // blitz re-layout every frame and confused content_box reporting).
@@ -609,18 +631,15 @@ pub fn EqGraph(
         // Feed the painter the dynamics envelope alongside the curve, so a
         // dynamic band shows how far it may travel rather than only where it
         // currently sits.
-        *render_state.band_dynamics.write() = band_dynamics.as_ref().map_or_else(
-            Vec::new,
-            |v| {
-                v.iter()
-                    .map(|d| crate::eq_graph_model::BandDyn {
-                        range_db: d.range_db(),
-                        live_db: d.live_db,
-                        spectral: d.spectral.normalized() > 0.5,
-                    })
-                    .collect()
-            },
-        );
+        *render_state.band_dynamics.write() = band_dynamics.as_ref().map_or_else(Vec::new, |v| {
+            v.iter()
+                .map(|d| crate::eq_graph_model::BandDyn {
+                    range_db: d.range_db(),
+                    live_db: d.live_db,
+                    spectral: d.spectral.normalized() > 0.5,
+                })
+                .collect()
+        });
         let mut cfg = render_state.config.write();
         cfg.db_range = db_range;
         cfg.min_freq = min_freq;
@@ -762,10 +781,15 @@ pub fn EqGraph(
                 // was actually released outside the window, onmousemove detects
                 // the missing held button and ends the drag then.
                 set_hovered(None);
+                pointer_inside.set(false);
             },
+            onmouseenter: move |_| pointer_inside.set(true),
 
             // Mouse move: drag, hover hit-test, focus detection
             onmousemove: move |evt: MouseEvent| {
+                if !*pointer_inside.peek() {
+                    pointer_inside.set(true);
+                }
                 if disabled { return; }
                 {
                     let m = evt.modifiers();
@@ -1330,14 +1354,43 @@ pub fn EqGraph(
             // standalone. Stretched to fill the positioned-absolute parent
             // (`inset:0`); pointer-events off so the SVG interaction layer above
             // still receives drags.
-            object {
-                "data": graph_widget,
-                // pointer-events:none so the container div's DOM handlers receive
-                // interaction (blitz's element_coordinates() now reports correct
-                // element-relative coords via our dioxus-native-dom fix).
-                style: "position:absolute; top:0; left:0; right:0; bottom:0; \
-                        width:100%; height:100%; \
-                        display:block; pointer-events:none;",
+            if cfg!(not(target_arch = "wasm32")) {
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        rsx! {
+                            object {
+                                "data": graph_widget,
+                                // pointer-events:none so the container div's DOM handlers receive
+                                // interaction (blitz's element_coordinates() now reports correct
+                                // element-relative coords via our dioxus-native-dom fix).
+                                style: "position:absolute; top:0; left:0; right:0; bottom:0; \
+                                        width:100%; height:100%; \
+                                        display:block; pointer-events:none;",
+                            }
+                        }
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        rsx! {}
+                    }
+                }
+            }
+            // The browser's surface for the same widget: a canvas, with the
+            // same DOM handlers above it (the canvas takes no pointer).
+            {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    rsx! {
+                        div { style: "position:absolute; inset:0; pointer-events:none;",
+                            fts_audio_ui::scene_canvas::SceneCanvas { panel: graph_panel }
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    rsx! {}
+                }
             }
 
             // Display range selector — always reachable from the graph
@@ -1775,7 +1828,12 @@ pub fn EqGraph(
                 let dragging = *dragging_band.read();
                 let focused  = *focused_band.read();
                 let hovered  = *hovered_band.read();
-                let overlay_idx = dragging.or(focused).or(hovered);
+                // Only while the pointer is over the graph (or dragging).
+                let overlay_idx = if dragging.is_some() || *pointer_inside.read() {
+                    dragging.or(focused).or(hovered)
+                } else {
+                    None
+                };
                 if let Some(band_idx) = overlay_idx {
                     let band_opt = bands.read().get(band_idx).cloned();
                     if let Some(band) = band_opt {

@@ -19,9 +19,9 @@ use fts_audio_ui::prelude::*;
 use nice_plug::editor::ResizeHint;
 use nice_plug::editor::dpi::LogicalSize;
 
-use crate::eq_graph_interaction::{KeyAction, Mods, key_action};
 use crate::dynamics::{BandDynamicsPanel, BandHandles, DynState, ModKnob};
 use crate::eq_graph::{EqBand, EqBandShape, EqGraph, OverlayChoice};
+use crate::eq_graph_interaction::{KeyAction, Mods, key_action};
 
 /// Editor size the plugin shell requests from the host on open.
 ///
@@ -442,7 +442,10 @@ fn AppShell() -> Element {
                 if let Some((idx, gain, q, shape)) = sweep_band.take() {
                     let bp = &params.bands[idx];
                     for (ptr, want) in [
-                        (bp.filter_type.as_ptr(), bp.filter_type.preview_normalized(shape)),
+                        (
+                            bp.filter_type.as_ptr(),
+                            bp.filter_type.preview_normalized(shape),
+                        ),
                         (bp.gain_db.as_ptr(), bp.gain_db.preview_normalized(gain)),
                         (bp.q.as_ptr(), bp.q.preview_normalized(q)),
                     ] {
@@ -461,114 +464,119 @@ fn AppShell() -> Element {
         let params = key_params.clone();
         let ctx = key_ctx.clone();
 
-                    let m = evt.modifiers();
-                    let mods = Mods::new(m.alt(), m.shift(), m.ctrl() || m.meta());
-                    let action = key_action(&evt.key().to_string(), mods);
-                    if action == KeyAction::Pass {
-                        return;
-                    }
-                    // The band in your hand first — if you are dragging one,
-                    // that is unambiguously the one you mean. Then the
-                    // selection, then whatever the pointer is merely over:
-                    // you should not have to lasso a band to act on it.
-                    let mut targets: Vec<usize> =
-                        dragging_band.read().iter().copied().collect();
-                    if targets.is_empty() {
-                        targets = selected_bands.read().clone();
-                    }
-                    if targets.is_empty() {
-                        targets.extend(hovered_band.read().iter().copied());
-                    }
-                    if targets.is_empty() {
-                        targets.extend(focused_band.read().iter().copied());
-                    }
+        let m = evt.modifiers();
+        let mods = Mods::new(m.alt(), m.shift(), m.ctrl() || m.meta());
+        let action = key_action(&evt.key().to_string(), mods);
+        if action == KeyAction::Pass {
+            return;
+        }
+        // The band in your hand first — if you are dragging one,
+        // that is unambiguously the one you mean. Then the
+        // selection, then whatever the pointer is merely over:
+        // you should not have to lasso a band to act on it.
+        let mut targets: Vec<usize> = dragging_band.read().iter().copied().collect();
+        if targets.is_empty() {
+            targets = selected_bands.read().clone();
+        }
+        if targets.is_empty() {
+            targets.extend(hovered_band.read().iter().copied());
+        }
+        if targets.is_empty() {
+            targets.extend(focused_band.read().iter().copied());
+        }
 
-                    match action {
-                        KeyAction::DeleteSelected => {
-                            for idx in targets.iter().filter(|i| **i < NUM_BANDS) {
-                                let bp = &params.bands[*idx];
-                                ctx.begin_set_raw(bp.enabled.as_ptr());
-                                ctx.set_normalized_raw(bp.enabled.as_ptr(), 0.0);
-                                ctx.end_set_raw(bp.enabled.as_ptr());
-                            }
-                            selected_bands.set(Vec::new());
-                        }
-                        KeyAction::Place(mode) => {
-                            let place = match mode {
-                                crate::eq_graph_model::StereoMode::Left => 1,
-                                crate::eq_graph_model::StereoMode::Right => 2,
-                                crate::eq_graph_model::StereoMode::Mid => 3,
-                                crate::eq_graph_model::StereoMode::Side => 4,
-                                crate::eq_graph_model::StereoMode::Stereo => 0,
-                            };
-                            for idx in targets.iter().filter(|i| **i < NUM_BANDS) {
-                                let bp = &params.bands[*idx];
-                                ctx.begin_set_raw(bp.placement.as_ptr());
-                                ctx.set_normalized_raw(
-                                    bp.placement.as_ptr(),
-                                    bp.placement.preview_normalized(place),
-                                );
-                                ctx.end_set_raw(bp.placement.as_ptr());
-                            }
-                        }
-                        KeyAction::Focus => {
-                            // Held, not latched: the key-up below clears it.
-                            // Only one band can be focused at a time — the
-                            // engine listens to one region — so the first
-                            // target wins.
-                            for (i, bp) in params.bands.iter().enumerate().take(NUM_BANDS) {
-                                let want = f32::from(u8::from(targets.first() == Some(&i)));
-                                if (bp.focus.value() - want).abs() > 0.01 {
-                                    ctx.begin_set_raw(bp.focus.as_ptr());
-                                    ctx.set_normalized_raw(bp.focus.as_ptr(), want);
-                                    ctx.end_set_raw(bp.focus.as_ptr());
-                                }
-                            }
-                        }
-                        KeyAction::Delta => {
-                            let now = params.delta.value();
-                            let want = if now > 0.5 { 0.0 } else { 1.0 };
-                            ctx.begin_set_raw(params.delta.as_ptr());
-                            ctx.set_normalized_raw(params.delta.as_ptr(), want);
-                            ctx.end_set_raw(params.delta.as_ptr());
-                        }
-                        KeyAction::Sweep { cut } => {
-                            // Takes the band you are on, not a new one: boost
-                            // it hard and narrow, sweep for what is ringing,
-                            // let go. The frequency you found stays; the
-                            // shape it had comes back.
-                            if sweep_band.peek().is_some() {
-                                return;
-                            }
-                            let Some(&idx) = targets.first().filter(|i| **i < NUM_BANDS) else {
-                                return;
-                            };
-                            let bp = &params.bands[idx];
-                            sweep_band.set(Some((
-                                idx,
-                                bp.gain_db.value(),
-                                bp.q.value(),
-                                bp.filter_type.value(),
-                            )));
-                            sweep_target.clone().set(Some(idx));
-                            let gain = if cut { -15.0 } else { 15.0 };
-                            for (ptr, want) in [
-                                (bp.filter_type.as_ptr(), bp.filter_type.preview_normalized(0)),
-                                (bp.gain_db.as_ptr(), bp.gain_db.preview_normalized(gain)),
-                                // Q 18 as the editor shows it. The parameter
-                                // carries √2 times that, and setting 8 here
-                                // gave a displayed 5.7 — wide enough to hear
-                                // half an octave at once, which is no use for
-                                // finding one ringing note.
-                                (bp.q.as_ptr(), bp.q.preview_normalized(18.0 * std::f32::consts::SQRT_2)),
-                            ] {
-                                ctx.begin_set_raw(ptr);
-                                ctx.set_normalized_raw(ptr, want);
-                                ctx.end_set_raw(ptr);
-                            }
-                        }
-                        KeyAction::Pass => {}
+        match action {
+            KeyAction::DeleteSelected => {
+                for idx in targets.iter().filter(|i| **i < NUM_BANDS) {
+                    let bp = &params.bands[*idx];
+                    ctx.begin_set_raw(bp.enabled.as_ptr());
+                    ctx.set_normalized_raw(bp.enabled.as_ptr(), 0.0);
+                    ctx.end_set_raw(bp.enabled.as_ptr());
+                }
+                selected_bands.set(Vec::new());
+            }
+            KeyAction::Place(mode) => {
+                let place = match mode {
+                    crate::eq_graph_model::StereoMode::Left => 1,
+                    crate::eq_graph_model::StereoMode::Right => 2,
+                    crate::eq_graph_model::StereoMode::Mid => 3,
+                    crate::eq_graph_model::StereoMode::Side => 4,
+                    crate::eq_graph_model::StereoMode::Stereo => 0,
+                };
+                for idx in targets.iter().filter(|i| **i < NUM_BANDS) {
+                    let bp = &params.bands[*idx];
+                    ctx.begin_set_raw(bp.placement.as_ptr());
+                    ctx.set_normalized_raw(
+                        bp.placement.as_ptr(),
+                        bp.placement.preview_normalized(place),
+                    );
+                    ctx.end_set_raw(bp.placement.as_ptr());
+                }
+            }
+            KeyAction::Focus => {
+                // Held, not latched: the key-up below clears it.
+                // Only one band can be focused at a time — the
+                // engine listens to one region — so the first
+                // target wins.
+                for (i, bp) in params.bands.iter().enumerate().take(NUM_BANDS) {
+                    let want = f32::from(u8::from(targets.first() == Some(&i)));
+                    if (bp.focus.value() - want).abs() > 0.01 {
+                        ctx.begin_set_raw(bp.focus.as_ptr());
+                        ctx.set_normalized_raw(bp.focus.as_ptr(), want);
+                        ctx.end_set_raw(bp.focus.as_ptr());
                     }
+                }
+            }
+            KeyAction::Delta => {
+                let now = params.delta.value();
+                let want = if now > 0.5 { 0.0 } else { 1.0 };
+                ctx.begin_set_raw(params.delta.as_ptr());
+                ctx.set_normalized_raw(params.delta.as_ptr(), want);
+                ctx.end_set_raw(params.delta.as_ptr());
+            }
+            KeyAction::Sweep { cut } => {
+                // Takes the band you are on, not a new one: boost
+                // it hard and narrow, sweep for what is ringing,
+                // let go. The frequency you found stays; the
+                // shape it had comes back.
+                if sweep_band.peek().is_some() {
+                    return;
+                }
+                let Some(&idx) = targets.first().filter(|i| **i < NUM_BANDS) else {
+                    return;
+                };
+                let bp = &params.bands[idx];
+                sweep_band.set(Some((
+                    idx,
+                    bp.gain_db.value(),
+                    bp.q.value(),
+                    bp.filter_type.value(),
+                )));
+                sweep_target.clone().set(Some(idx));
+                let gain = if cut { -15.0 } else { 15.0 };
+                for (ptr, want) in [
+                    (
+                        bp.filter_type.as_ptr(),
+                        bp.filter_type.preview_normalized(0),
+                    ),
+                    (bp.gain_db.as_ptr(), bp.gain_db.preview_normalized(gain)),
+                    // Q 18 as the editor shows it. The parameter
+                    // carries √2 times that, and setting 8 here
+                    // gave a displayed 5.7 — wide enough to hear
+                    // half an octave at once, which is no use for
+                    // finding one ringing note.
+                    (
+                        bp.q.as_ptr(),
+                        bp.q.preview_normalized(18.0 * std::f32::consts::SQRT_2),
+                    ),
+                ] {
+                    ctx.begin_set_raw(ptr);
+                    ctx.set_normalized_raw(ptr, want);
+                    ctx.end_set_raw(ptr);
+                }
+            }
+            KeyAction::Pass => {}
+        }
         evt.prevent_default();
         evt.stop_propagation();
     });
@@ -1235,7 +1243,7 @@ fn AppShell() -> Element {
                                                         }
                                                         ModKnob { label: "Q".to_string(), value: format!("{q:.2}"), handle: param_handle(bp.q.as_ptr(), ctx.clone()) }
                                                     }
-                                                    
+
                                                     BandDynamicsPanel {
                                                         state: band_dyn_state.clone(),
                                                         threshold: param_handle(bp.dyn_threshold_db.as_ptr(), ctx.clone()),

@@ -254,8 +254,7 @@ static DAKA_TIERS: &[Tier] = &[
     .shadowed(0.06)
     .outlined("rgba(0,0,0,0.7)", 0.7),
     // The step up to the body, read as a shadowed wall rather than an edge.
-    Tier::new(0.74, Paint::Flat("#08080a"), Turns::Cap)
-        .outlined("rgba(255,255,255,0.11)", 0.6),
+    Tier::new(0.74, Paint::Flat("#08080a"), Turns::Cap).outlined("rgba(255,255,255,0.11)", 0.6),
     Tier::new(
         0.70,
         Paint::Surface {

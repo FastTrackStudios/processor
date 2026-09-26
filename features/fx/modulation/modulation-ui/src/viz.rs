@@ -22,9 +22,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyrender::{PaintScene, RenderContext, Scene};
-use fts_audio_ui::shader::{ShaderSurface, Uniforms};
+#[cfg(not(target_arch = "wasm32"))]
 use blitz_dom::node::{ComputedStyles, Widget};
 use dioxus::prelude::*;
+use fts_audio_ui::shader::{ShaderSurface, Uniforms};
 
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, ColorStop, Fill, Gradient};
@@ -124,7 +125,7 @@ pub const SHADER: &str = include_str!("viz.wgsl");
 /// there is not.
 pub struct ModWidget {
     view: Shared<ModView>,
-    born: std::time::Instant,
+    born: web_time::Instant,
     /// Built once, from whatever `can_create_surfaces` hands over. `None` on a
     /// renderer with no device to give, which is not an error: the vector
     /// painter below draws the same engines.
@@ -136,23 +137,25 @@ impl ModWidget {
     pub fn new(view: Shared<ModView>) -> Self {
         Self {
             view,
-            born: std::time::Instant::now(),
+            born: web_time::Instant::now(),
             gpu: None,
         }
     }
 }
 
-impl Widget for ModWidget {
-    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+impl ModWidget {
+    /// Take a GPU device and build the shader surface — the
+    /// host-agnostic half of `Widget::can_create_surfaces`.
+    pub fn create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
         self.gpu = render_ctx
             .renderer_specific_context()
             .and_then(|ctx| ShaderSurface::new(ctx, SHADER));
     }
 
-    fn paint(
+    /// Record a frame — the host-agnostic half of `Widget::paint`.
+    pub fn paint_frame(
         &mut self,
         _render_ctx: &mut dyn RenderContext,
-        _styles: &ComputedStyles,
         width: u32,
         height: u32,
         _scale: f64,
@@ -193,6 +196,37 @@ impl Widget for ModWidget {
 
         paint_mod(&mut scene, &view, w, h);
         scene
+    }
+}
+
+/// Blitz's custom widget, natively.
+#[cfg(not(target_arch = "wasm32"))]
+impl Widget for ModWidget {
+    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+        self.create_surfaces(render_ctx);
+    }
+
+    fn paint(
+        &mut self,
+        render_ctx: &mut dyn RenderContext,
+        _styles: &ComputedStyles,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Scene {
+        self.paint_frame(render_ctx, width, height, scale)
+    }
+}
+
+/// The browser's canvas — vello on WebGPU, so the shader runs there too.
+#[cfg(target_arch = "wasm32")]
+impl fts_audio_ui::scene_canvas::CanvasPanel for ModWidget {
+    fn can_create_surfaces(&mut self, ctx: &mut dyn RenderContext) {
+        self.create_surfaces(ctx);
+    }
+
+    fn paint(&mut self, ctx: &mut dyn RenderContext, width: u32, height: u32, scale: f64) -> Scene {
+        self.paint_frame(ctx, width, height, scale)
     }
 }
 
@@ -313,7 +347,12 @@ fn flanger(scene: &mut Scene, base: Color, bright: Color, w: f64, h: f64, phase:
             Affine::IDENTITY,
             fade(if lit { bright } else { base }, 0.22 + 0.62 * comb),
             None,
-            &Rect::new(x - w / f64::from(teeth) * 0.35, h - height, x + w / f64::from(teeth) * 0.35, h),
+            &Rect::new(
+                x - w / f64::from(teeth) * 0.35,
+                h - height,
+                x + w / f64::from(teeth) * 0.35,
+                h,
+            ),
         );
     }
 }
@@ -342,7 +381,13 @@ fn phaser(scene: &mut Scene, base: Color, bright: Color, w: f64, h: f64, phase: 
             path.line_to(p);
         }
     }
-    scene.stroke(&Stroke::new(1.8), Affine::IDENTITY, fade(bright, 0.9), None, &path);
+    scene.stroke(
+        &Stroke::new(1.8),
+        Affine::IDENTITY,
+        fade(bright, 0.9),
+        None,
+        &path,
+    );
     // The notch positions, marked — so the travel is countable.
     for s in 0..stages {
         let centre = (0.12 + 0.20 * f64::from(s) + sweep * 0.30).fract();
@@ -367,8 +412,8 @@ fn tremolo(scene: &mut Scene, base: Color, bright: Color, w: f64, h: f64, phase:
     for px in 0..=160 {
         let x = f64::from(px) / 160.0;
         // The LFO, scrolling right to left so the panel reads as time passing.
-        let lfo = (((x - phase) * std::f64::consts::TAU).sin() * 0.5 + 0.5)
-            .mul_add(depth, 1.0 - depth);
+        let lfo =
+            (((x - phase) * std::f64::consts::TAU).sin() * 0.5 + 0.5).mul_add(depth, 1.0 - depth);
         let carrier = ((x * 34.0) * std::f64::consts::TAU).sin();
         let amp = lfo * carrier * h * 0.40;
         let p_top = (x * w, mid - amp.abs());
@@ -382,25 +427,37 @@ fn tremolo(scene: &mut Scene, base: Color, bright: Color, w: f64, h: f64, phase:
         }
     }
     for path in [&top, &bottom] {
-        scene.stroke(&Stroke::new(1.4), Affine::IDENTITY, fade(bright, 0.85), None, path);
+        scene.stroke(
+            &Stroke::new(1.4),
+            Affine::IDENTITY,
+            fade(bright, 0.85),
+            None,
+            path,
+        );
     }
     // The envelope itself, behind — the thing actually being modulated.
     let mut env = BezPath::new();
     env.move_to((0.0, mid));
     for px in 0..=160 {
         let x = f64::from(px) / 160.0;
-        let lfo = (((x - phase) * std::f64::consts::TAU).sin() * 0.5 + 0.5)
-            .mul_add(depth, 1.0 - depth);
+        let lfo =
+            (((x - phase) * std::f64::consts::TAU).sin() * 0.5 + 0.5).mul_add(depth, 1.0 - depth);
         env.line_to((x * w, mid - lfo * h * 0.40));
     }
     for px in (0..=160).rev() {
         let x = f64::from(px) / 160.0;
-        let lfo = (((x - phase) * std::f64::consts::TAU).sin() * 0.5 + 0.5)
-            .mul_add(depth, 1.0 - depth);
+        let lfo =
+            (((x - phase) * std::f64::consts::TAU).sin() * 0.5 + 0.5).mul_add(depth, 1.0 - depth);
         env.line_to((x * w, mid + lfo * h * 0.40));
     }
     env.close_path();
-    scene.fill(Fill::NonZero, Affine::IDENTITY, fade(base, 0.16), None, &env);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        fade(base, 0.16),
+        None,
+        &env,
+    );
 }
 
 /// A waveform stretching and compressing.
@@ -422,7 +479,13 @@ fn vibrato(scene: &mut Scene, base: Color, bright: Color, w: f64, h: f64, phase:
             path.line_to(p);
         }
     }
-    scene.stroke(&Stroke::new(1.6), Affine::IDENTITY, fade(bright, 0.9), None, &path);
+    scene.stroke(
+        &Stroke::new(1.6),
+        Affine::IDENTITY,
+        fade(bright, 0.9),
+        None,
+        &path,
+    );
 
     // Gridlines that bend with it, so the stretch is visible against something
     // straight-ish rather than having to be inferred from the wave alone.
@@ -459,7 +522,13 @@ fn rotary(scene: &mut Scene, base: Color, bright: Color, w: f64, h: f64, phase: 
             ring.line_to(p);
         }
     }
-    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, fade(base, 0.35), None, &ring);
+    scene.stroke(
+        &Stroke::new(1.0),
+        Affine::IDENTITY,
+        fade(base, 0.35),
+        None,
+        &ring,
+    );
 
     // The trail: the last half turn, fading.
     let head = phase * std::f64::consts::TAU;
@@ -497,6 +566,7 @@ fn rotary(scene: &mut Scene, base: Color, bright: Color, w: f64, h: f64, phase: 
 /// in the DOM — the movement is inside a widget's scene. So the clock has to
 /// come from outside: a thread that pokes the runtime. `schedule_update` is
 /// documented as safe to call from off the runtime, which is what this is.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn use_repaint_clock() {
     use_hook(|| {
         let updater = dioxus_core::schedule_update();
@@ -508,6 +578,13 @@ pub fn use_repaint_clock() {
         });
     });
 }
+
+/// In a browser there is no thread to spawn — and no need for one: the
+/// picture is painted by `fts_audio_ui::scene_canvas`, which runs its own
+/// clock and redraws the canvas without the document changing at all. (A
+/// thread here is not a slow path in wasm32, it is a panic.)
+#[cfg(target_arch = "wasm32")]
+pub fn use_repaint_clock() {}
 
 /// One modulation panel, painted.
 #[component]
@@ -521,7 +598,9 @@ pub fn ModViz(
 ) -> Element {
     use_repaint_clock();
     let view: Shared<ModView> = use_hook(|| Rc::new(RefCell::new(ModView::default())));
-    let attr = use_hook(|| dioxus_native_dom::CustomWidgetAttr::new(ModWidget::new(Rc::clone(&view))));
+    #[cfg(not(target_arch = "wasm32"))]
+    let attr =
+        use_hook(|| dioxus_native_dom::CustomWidgetAttr::new(ModWidget::new(Rc::clone(&view))));
 
     *view.borrow_mut() = ModView {
         engine,
@@ -533,11 +612,30 @@ pub fn ModViz(
         time: 0.0,
     };
 
-    rsx! {
+    // The surface: a scene composited by Blitz natively, the same scene
+    // replayed onto a `<canvas>` (vello_hybrid, WebGL2) in the browser —
+    // one painter either way, so the picture cannot differ.
+    #[cfg(not(target_arch = "wasm32"))]
+    return rsx! {
         object {
             "data": attr,
             style: "position:absolute; top:0; left:0; right:0; bottom:0; \
                     width:100%; height:100%; display:block; pointer-events:none;",
+        }
+    };
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The same widget, on a canvas: vello on WebGPU gives it a real
+        // device, so it builds its shader surface and paints the lit
+        // picture — not the vector fallback.
+        let panel =
+            use_hook(|| fts_audio_ui::scene_canvas::Panel::new(ModWidget::new(Rc::clone(&view))));
+        rsx! {
+            fts_audio_ui::scene_canvas::SceneCanvas {
+                panel,
+                class: "absolute inset-0 w-full h-full",
+            }
         }
     }
 }
@@ -580,7 +678,11 @@ mod tests {
         }
         let mut joined = Engine::COLOURING.to_vec();
         joined.extend(Engine::MOVING);
-        assert_eq!(joined, Engine::ALL.to_vec(), "ALL is the two slots in order");
+        assert_eq!(
+            joined,
+            Engine::ALL.to_vec(),
+            "ALL is the two slots in order"
+        );
     }
 
     /// Every engine paints, at every size a panel takes, at every point in its
@@ -666,5 +768,4 @@ mod tests {
             );
         }
     }
-
 }

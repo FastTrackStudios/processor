@@ -8,8 +8,8 @@
 //! rack would read as one of them being wrong about the tempo.
 
 use anyrender::{PaintScene, Scene};
-use peniko::Color;
 use peniko::kurbo::{Affine, Line, Point, Stroke};
+use peniko::Color;
 
 /// A grid denser than this has stopped being a ruler and become a texture.
 const MAX_BEAT_LINES: usize = 64;

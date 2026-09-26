@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyrender::{PaintScene, RenderContext, Scene};
+#[cfg(not(target_arch = "wasm32"))]
 use blitz_dom::node::{ComputedStyles, Widget};
 use dioxus::prelude::*;
 use fts_audio_ui::paint::lane;
@@ -140,6 +141,16 @@ impl MetricsHandle {
 
     fn set(&self, m: CompMetrics) {
         self.0.set(m);
+    }
+
+    /// Publish a box measured by a host that paints this picture itself —
+    /// the browser's canvas surface, which has no `Widget::paint` to do it.
+    pub fn publish(&self, width: f32, height: f32, scale: f32) {
+        self.set(CompMetrics {
+            width,
+            height,
+            scale,
+        });
     }
 }
 
@@ -265,7 +276,7 @@ pub struct CompWidget {
     /// painter below draws the same picture.
     gpu: Option<ShaderSurface>,
     uniforms: CompUniforms,
-    born: std::time::Instant,
+    born: web_time::Instant,
 }
 
 impl CompWidget {
@@ -276,13 +287,16 @@ impl CompWidget {
             metrics,
             gpu: None,
             uniforms: CompUniforms::default(),
-            born: std::time::Instant::now(),
+            born: web_time::Instant::now(),
         }
     }
 }
 
-impl Widget for CompWidget {
-    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+impl CompWidget {
+    /// Take a GPU device and build the shader surface — the host-agnostic
+    /// half of `Widget::can_create_surfaces`, so a browser canvas can make
+    /// the same call (`fts_audio_ui::scene_canvas`).
+    pub fn create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
         self.gpu = render_ctx.renderer_specific_context().and_then(|ctx| {
             ShaderSurface::with_uniform_size(
                 ctx,
@@ -292,10 +306,10 @@ impl Widget for CompWidget {
         });
     }
 
-    fn paint(
+    /// Record a frame — the host-agnostic half of `Widget::paint`.
+    pub fn paint_frame(
         &mut self,
         render_ctx: &mut dyn RenderContext,
-        _styles: &ComputedStyles,
         width: u32,
         height: u32,
         scale: f64,
@@ -334,6 +348,37 @@ impl Widget for CompWidget {
 
         paint_comp(&mut scene, &view, w, h);
         scene
+    }
+}
+
+/// Blitz's custom widget, natively.
+#[cfg(not(target_arch = "wasm32"))]
+impl Widget for CompWidget {
+    fn can_create_surfaces(&mut self, render_ctx: &mut dyn RenderContext) {
+        self.create_surfaces(render_ctx);
+    }
+
+    fn paint(
+        &mut self,
+        render_ctx: &mut dyn RenderContext,
+        _styles: &ComputedStyles,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Scene {
+        self.paint_frame(render_ctx, width, height, scale)
+    }
+}
+
+/// The browser's canvas — vello on WebGPU, so the shader runs there too.
+#[cfg(target_arch = "wasm32")]
+impl fts_audio_ui::scene_canvas::CanvasPanel for CompWidget {
+    fn can_create_surfaces(&mut self, ctx: &mut dyn RenderContext) {
+        self.create_surfaces(ctx);
+    }
+
+    fn paint(&mut self, ctx: &mut dyn RenderContext, width: u32, height: u32, scale: f64) -> Scene {
+        self.paint_frame(ctx, width, height, scale)
     }
 }
 
@@ -466,6 +511,7 @@ pub fn paint_comp(scene: &mut Scene, view: &CompView, w: f64, h: f64) {
 /// in the DOM — the movement is inside a widget's scene. So the clock has to
 /// come from outside: a thread that pokes the runtime. `schedule_update` is
 /// documented as safe to call from off the runtime, which is what this is.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn use_repaint_clock() {
     use_hook(|| {
         let updater = dioxus_core::schedule_update();
@@ -477,6 +523,13 @@ pub fn use_repaint_clock() {
         });
     });
 }
+
+/// In a browser there is no thread to spawn — and no need for one: the
+/// picture is painted by `fts_audio_ui::scene_canvas`, which runs its own
+/// clock and redraws the canvas without the document changing at all. (A
+/// thread here is not a slow path in wasm32, it is a panic.)
+#[cfg(target_arch = "wasm32")]
+pub fn use_repaint_clock() {}
 
 /// The compressor's picture, as props. No context, no parameter tree.
 ///
@@ -506,6 +559,7 @@ pub fn CompViz(
 ) -> Element {
     use_repaint_clock();
     let view: Shared<CompView> = use_hook(|| Rc::new(RefCell::new(CompView::default())));
+    #[cfg(not(target_arch = "wasm32"))]
     let attr = use_hook({
         let metrics = metrics.clone();
         let view = Rc::clone(&view);
@@ -528,11 +582,35 @@ pub fn CompViz(
         time: 0.0,
     };
 
-    rsx! {
+    // The surface: a scene composited by Blitz natively, the same scene
+    // replayed onto a `<canvas>` (vello_hybrid, WebGL2) in the browser —
+    // one painter either way, so the picture cannot differ.
+    #[cfg(not(target_arch = "wasm32"))]
+    return rsx! {
         object {
             "data": attr,
             style: "position:absolute; top:0; left:0; right:0; bottom:0; \
                     width:100%; height:100%; display:block; pointer-events:none;",
+        }
+    };
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The same widget, on a canvas: vello on WebGPU gives it a real
+        // device, so it builds its shader surface and paints the lit
+        // picture — not the vector fallback. It publishes its own box as it
+        // paints, so the pointer maths is the same in both hosts.
+        let panel = use_hook(|| {
+            fts_audio_ui::scene_canvas::Panel::new(CompWidget::new(
+                Rc::clone(&view),
+                metrics.clone(),
+            ))
+        });
+        rsx! {
+            fts_audio_ui::scene_canvas::SceneCanvas {
+                panel,
+                class: "absolute inset-0 w-full h-full",
+            }
         }
     }
 }
@@ -631,7 +709,10 @@ mod tests {
     fn the_shader_compiles_and_validates() {
         let source = fts_audio_ui::shader::compose(SHADER);
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
-            panic!("the comp shader does not parse: {}", e.emit_to_string(&source))
+            panic!(
+                "the comp shader does not parse: {}",
+                e.emit_to_string(&source)
+            )
         });
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

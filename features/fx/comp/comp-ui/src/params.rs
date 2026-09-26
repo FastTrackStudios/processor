@@ -730,10 +730,7 @@ impl CompStageParams {
             attack_sync: musical_time::params::sync_param("Attack Sync", false),
             // A 1/32 — at 120 BPM, 62 ms. The short end is where an attack
             // lives, and the range only reaches 300 ms anyway.
-            attack_div: musical_time::params::division_param(
-                "Attack Div",
-                ATTACK_DEFAULT_DIV,
-            ),
+            attack_div: musical_time::params::division_param("Attack Div", ATTACK_DEFAULT_DIV),
             release_ms: FloatParam::new(
                 "Release",
                 100.0,
@@ -748,10 +745,7 @@ impl CompStageParams {
             release_sync: musical_time::params::sync_param("Release Sync", false),
             // An eighth — at 120 BPM, 250 ms, near the 100 ms free default
             // and squarely where a release that breathes with the track sits.
-            release_div: musical_time::params::division_param(
-                "Release Div",
-                RELEASE_DEFAULT_DIV,
-            ),
+            release_div: musical_time::params::division_param("Release Div", RELEASE_DEFAULT_DIV),
             knee_db: FloatParam::new(
                 "Knee",
                 6.0,

@@ -53,7 +53,10 @@ fn free_running_is_the_dialled_number_whatever_the_tempo() {
 fn a_synced_pre_delay_follows_the_tempo() {
     let p = ReverbParams::default();
     set_bool(&p.predelay_sync, true);
-    set_int(&p.predelay_div, div(NoteValue::Sixteenth, Flavour::Straight));
+    set_int(
+        &p.predelay_div,
+        div(NoteValue::Sixteenth, Flavour::Straight),
+    );
 
     // A sixteenth at 120 BPM is 125 ms.
     assert!((p.predelay_ms(Some(120.0)) - 125.0).abs() < EPS_MS);

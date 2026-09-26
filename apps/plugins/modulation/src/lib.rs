@@ -1,7 +1,7 @@
 //! FTS Modulation — CLAP/VST3 multi-mode modulation plugin.
 //!
 //! Five circuits on a rail — Chorus, Flanger, Vibrato, Tremolo, Wah — and
-//! fifteen profiles inside them. What each one *is* lives in
+//! the profiles inside them. What each one *is* lives in
 //! [`modulation_profiles`]: which of the three chains it runs, which engine,
 //! and where its own controls rest. Nothing about a circuit lives in this
 //! file.
@@ -303,7 +303,7 @@ mod tests {
         }
     }
 
-    /// …and specifically that all five chorus engines are selected by
+    /// …and specifically that every chorus engine is selected by
     /// something, in the shell rather than only in the table.
     #[test]
     fn the_shell_can_select_every_chorus_engine() {
@@ -316,13 +316,7 @@ mod tests {
                 reached.push(plugin.chorus.engine);
             }
         }
-        for engine in [
-            EngineType::Cubic,
-            EngineType::Bbd,
-            EngineType::Tape,
-            EngineType::Orbit,
-            EngineType::Juno,
-        ] {
+        for engine in EngineType::ALL {
             assert!(
                 reached.contains(&engine),
                 "{engine:?} unreachable from the shell"
@@ -330,7 +324,7 @@ mod tests {
         }
     }
 
-    /// Silence in, silence out, on all fifteen. A modulator that idles into
+    /// Silence in, silence out, on every profile. A modulator that idles into
     /// something is unusable however good it sounds when played.
     #[test]
     fn no_profile_makes_a_sound_out_of_nothing() {

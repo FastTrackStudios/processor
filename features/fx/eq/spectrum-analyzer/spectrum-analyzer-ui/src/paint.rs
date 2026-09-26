@@ -1,13 +1,18 @@
-//! Vello painters for the analyzer, composited into the EQ graph's scene.
+//! Painters for the analyzer, composited into the EQ graph's scene.
 //!
 //! These are intentionally decoupled from eq-ui's `CoordMapper`: the caller
 //! passes mapping closures (`freq_to_x`, `db_to_y`) so the same painter works
-//! for any coordinate system. The `Scene` / `PaintScene` types come from the
-//! shared `nice-plug-dioxus` stack, so they are identical to eq-ui's.
+//! for any coordinate system.
+//!
+//! They record into an [`anyrender::Scene`] — a command list, not pixels —
+//! so a picture painted here reaches whatever is drawing: vello behind a
+//! plugin editor, Blitz on the desktop, WebGL2 on a browser's canvas. Taking
+//! the types from `anyrender` itself rather than through `nice-plug` is what
+//! makes that true: a painter must not need a plugin host to exist.
 
-use nice_plug_dioxus::prelude::vello::kurbo::{Affine, BezPath, Stroke};
-use nice_plug_dioxus::prelude::vello::peniko::{Color, Fill};
-use nice_plug_dioxus::widget::{PaintScene as _, Scene};
+use anyrender::{PaintScene as _, Scene};
+use kurbo::{Affine, BezPath, Stroke};
+use peniko::{Color, Fill};
 
 /// Build a polyline path over `(freq_hz, db)` points, skipping bins outside the
 /// visible frequency range. Returns `None` if fewer than two points are visible.
@@ -122,7 +127,7 @@ pub fn paint_collisions<FX>(
 ) where
     FX: Fn(f64) -> f64,
 {
-    use nice_plug_dioxus::prelude::vello::kurbo::Rect;
+    use kurbo::Rect;
     for i in 0..freq_hz.len().min(strength.len()) {
         let s = strength[i];
         if s <= 0.0 {

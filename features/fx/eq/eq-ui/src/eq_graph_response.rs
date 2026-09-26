@@ -556,6 +556,9 @@ mod q_range_tests {
         let widest = shown_at(0.0);
         let narrowest = shown_at(1.0);
         assert!((widest - 0.025).abs() < 0.001, "widest Q shows as {widest}");
-        assert!((narrowest - 40.0).abs() < 0.01, "narrowest Q shows as {narrowest}");
+        assert!(
+            (narrowest - 40.0).abs() < 0.01,
+            "narrowest Q shows as {narrowest}"
+        );
     }
 }

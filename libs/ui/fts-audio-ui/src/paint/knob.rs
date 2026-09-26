@@ -157,7 +157,11 @@ pub fn paint(s: &mut Scene, look: &KnobLook) {
     if let Some((lo, hi)) = look.mod_range {
         let lo_a = angle_for_value(lo.clamp(0.0, 1.0));
         let hi_a = angle_for_value(hi.clamp(0.0, 1.0));
-        let (a, b) = if lo_a <= hi_a { (lo_a, hi_a) } else { (hi_a, lo_a) };
+        let (a, b) = if lo_a <= hi_a {
+            (lo_a, hi_a)
+        } else {
+            (hi_a, lo_a)
+        };
         let path = arc_path(cx, cy, r - 2.0, a, b);
         s.stroke(
             &Stroke::new(2.5).with_caps(kurbo::Cap::Round),

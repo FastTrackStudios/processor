@@ -5,10 +5,12 @@
 //! energy at 880 Hz over the last second):
 //!   - local `GrainReader` (pre-pitch-dsp):        ratio 0.0051
 //!   - pitch-dsp `GranularShifter` (dual grains):  ratio 0.0261 (rejected)
-//!   - pitch-dsp `WsolaShifter` (current):         ratio 0.0001
+//!   - pitch-dsp `WsolaShifter`:                   ratio 0.0001
+//!   - pitch-dsp `SpectralShifter` (current, phase-locked phase vocoder):
+//!                                                 ratio 1e-13
 //!
-//! The bound below holds the WSOLA-level quality; a regression back to
-//! grain-level artifacts fails loudly.
+//! The bound below holds phase-vocoder-level quality; a regression back to
+//! splice (WSOLA, 1e-4) or grain (5e-3) artifacts fails loudly.
 
 // TEMPORARY: DSP rewrite pending — see the note in this crate's src/lib.rs.
 // A test/example target is its own crate, so the crate-root allow there does
@@ -63,13 +65,14 @@ fn shimmer_octave_is_clean() {
     let probes = [610.0, 700.0, 760.0, 990.0, 1100.0, 1180.0, 1500.0, 2100.0];
     let inharm: f64 = probes.iter().map(|&f| goertzel(tail, f)).sum::<f64>() / probes.len() as f64;
     let ratio = inharm / target;
+    eprintln!("shimmer +12 inharmonic ratio {ratio:.3e}");
 
     assert!(
         target > 100.0,
         "880 Hz content should dominate strongly (near-pure tone): {target:.3e}"
     );
     assert!(
-        ratio < 0.002,
-        "inharmonic artifact ratio regressed: {ratio:.5} (WSOLA baseline 0.0001, old grain 0.0051)"
+        ratio < 1e-8,
+        "inharmonic artifact ratio regressed: {ratio:.3e} (phase vocoder 1e-13, WSOLA 1e-4, old grain 5e-3)"
     );
 }

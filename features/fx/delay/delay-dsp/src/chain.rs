@@ -60,10 +60,15 @@ pub enum TapDivision {
     SilverRatio,
     /// Ignore tempo; use the engine's `time_ms` directly.
     Free,
+    /// Three eighths — the long ambient repeat.
+    DottedQuarter,
+    Half,
+    /// Three in the space of two quarters.
+    QuarterTriplet,
 }
 
 impl TapDivision {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 11;
 
     #[must_use]
     pub const fn from_index(i: usize) -> Self {
@@ -75,6 +80,9 @@ impl TapDivision {
             4 => Self::Sixteenth,
             5 => Self::GoldenRatio,
             6 => Self::SilverRatio,
+            8 => Self::DottedQuarter,
+            9 => Self::Half,
+            10 => Self::QuarterTriplet,
             _ => Self::Free,
         }
     }
@@ -90,6 +98,9 @@ impl TapDivision {
             Self::GoldenRatio => 5,
             Self::SilverRatio => 6,
             Self::Free => 7,
+            Self::DottedQuarter => 8,
+            Self::Half => 9,
+            Self::QuarterTriplet => 10,
         }
     }
 
@@ -104,6 +115,9 @@ impl TapDivision {
             Self::GoldenRatio => "GR",
             Self::SilverRatio => "SR",
             Self::Free => "Free",
+            Self::DottedQuarter => "1/4.",
+            Self::Half => "1/2",
+            Self::QuarterTriplet => "1/4T",
         }
     }
 
@@ -120,6 +134,9 @@ impl TapDivision {
             Self::GoldenRatio => Some(quarter / 1.618_033_988_749_895),
             Self::SilverRatio => Some(quarter / 2.414_213_562_373_095),
             Self::Free => None,
+            Self::DottedQuarter => Some(quarter * 1.5),
+            Self::Half => Some(quarter * 2.0),
+            Self::QuarterTriplet => Some(quarter * 2.0 / 3.0),
         }
     }
 }
@@ -211,6 +228,11 @@ pub struct DelayChain {
     pub repeat_dynamics: bool,
     /// Post-delay wet high-pass in Hz (0 = off, `TimeLine` range 20–900).
     pub high_pass_hz: f64,
+    /// Post-delay wet low-pass in Hz (0 = off). With the engine's in-loop
+    /// `hicut_freq` at the same frequency, every repeat is darker than the
+    /// last from the first one on — the write path of a tape or analog
+    /// echo, where the loop filter alone leaves the first repeat full-range.
+    pub high_cut_hz: f64,
     /// Left line output pan (-1.0 hard left … 1.0 hard right).
     /// Default -1.0 preserves the classic hard-L routing.
     pub pan_l: f64,
@@ -272,6 +294,8 @@ pub struct DelayChain {
     /// Post-delay wet high-pass.
     hp_l: Biquad,
     hp_r: Biquad,
+    lp_l: Biquad,
+    lp_r: Biquad,
     pan_l_smoother: ParamSmoother,
     pan_r_smoother: ParamSmoother,
 }
@@ -319,6 +343,7 @@ impl DelayChain {
             freeze: false,
             repeat_dynamics: false,
             high_pass_hz: 0.0,
+            high_cut_hz: 0.0,
             pan_l: -1.0,
             pan_r: 1.0,
             duck_gate: false,
@@ -358,6 +383,8 @@ impl DelayChain {
             repeat_dyn_env: EnvelopeFollower::new(0.0),
             hp_l: Biquad::new(),
             hp_r: Biquad::new(),
+            lp_l: Biquad::new(),
+            lp_r: Biquad::new(),
             pan_l_smoother: ParamSmoother::new(-1.0),
             pan_r_smoother: ParamSmoother::new(1.0),
         }
@@ -405,6 +432,8 @@ impl Processor for DelayChain {
         self.repeat_dyn_env.reset(0.0);
         self.hp_l.reset();
         self.hp_r.reset();
+        self.lp_l.reset();
+        self.lp_r.reset();
         self.pan_l_smoother.reset(self.pan_l);
         self.pan_r_smoother.reset(self.pan_r);
     }
@@ -463,6 +492,13 @@ impl Processor for DelayChain {
                 .set(FilterType::Highpass, hz, 0.707, config.sample_rate);
             self.hp_r
                 .set(FilterType::Highpass, hz, 0.707, config.sample_rate);
+        }
+        if self.high_cut_hz > 0.0 {
+            let hz = self.high_cut_hz.clamp(500.0, 20_000.0);
+            self.lp_l
+                .set(FilterType::Lowpass, hz, 0.707, config.sample_rate);
+            self.lp_r
+                .set(FilterType::Lowpass, hz, 0.707, config.sample_rate);
         }
 
         // Freeze ramp ~30 ms (click-free engage, mirrors reverb freeze).
@@ -783,6 +819,10 @@ impl Processor for DelayChain {
                 wet_l = self.hp_l.tick(wet_l, 0);
                 wet_r = self.hp_r.tick(wet_r, 1);
             }
+            if self.high_cut_hz > 0.0 {
+                wet_l = self.lp_l.tick(wet_l, 0);
+                wet_r = self.lp_r.tick(wet_r, 1);
+            }
 
             // --- LR offset: delay the R channel ---
             // Skipped for stereo-field styles: their L/R relationship IS
@@ -1090,6 +1130,12 @@ mod tests {
         assert!((TapDivision::Eighth.to_ms(120.0).unwrap() - 250.0).abs() < 1e-9);
         assert!((TapDivision::Triplet.to_ms(120.0).unwrap() - 500.0 / 3.0).abs() < 1e-9);
         assert!((TapDivision::Sixteenth.to_ms(120.0).unwrap() - 125.0).abs() < 1e-9);
+        assert!((TapDivision::DottedQuarter.to_ms(120.0).unwrap() - 750.0).abs() < 1e-9);
+        assert!((TapDivision::Half.to_ms(120.0).unwrap() - 1000.0).abs() < 1e-9);
+        assert!((TapDivision::QuarterTriplet.to_ms(120.0).unwrap() - 1000.0 / 3.0).abs() < 1e-9);
+        for i in 0..TapDivision::COUNT {
+            assert_eq!(TapDivision::from_index(i).to_index(), i);
+        }
         // Golden/Silver: quarter divided by φ / δ.
         assert!((TapDivision::GoldenRatio.to_ms(120.0).unwrap() - 309.016_994).abs() < 1e-3);
         assert!((TapDivision::SilverRatio.to_ms(120.0).unwrap() - 207.106_781).abs() < 1e-3);
@@ -1098,6 +1144,45 @@ mod tests {
         for i in 0..TapDivision::COUNT {
             assert_eq!(TapDivision::from_index(i).to_index(), i);
         }
+    }
+
+    /// A synced Tape delay lands on the tempo: the default head (head 3,
+    /// at 2.85× head 1) is the echo, not a head 2.85× too late.
+    #[test]
+    fn tape_tempo_sync_lands_on_the_division() {
+        let mut c = make_chain();
+        c.set_style(DelayStyle::Tape);
+        c.tempo_bpm = Some(120.0);
+        c.tap_div_l = TapDivision::DottedEighth; // 375 ms
+        c.tap_div_r = TapDivision::DottedEighth;
+        c.mix = 1.0;
+        c.update(config());
+        // Let the motor reach speed first — the transport spins up from its
+        // default time, and an echo written during the ramp reads early.
+        let mut pre_l = vec![0.0; 96000];
+        let mut pre_r = pre_l.clone();
+        c.process(&mut pre_l, &mut pre_r);
+
+        let n = 48000; // 1 s: a 2.85× late echo (1069 ms) would miss it
+        let mut l: Vec<f64> = (0..n).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
+        let mut r = l.clone();
+        c.process(&mut l, &mut r);
+
+        let expected = num::f64_to_index(375.0 * SR / 1000.0);
+        let peak = l
+            .iter()
+            .enumerate()
+            .skip(1000)
+            .max_by(|(_, a), (_, b)| a.abs().partial_cmp(&b.abs()).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+        // Tape wow and the transport's spin-up move it a little.
+        assert!(
+            (i64::try_from(peak).unwrap_or(i64::MAX) - i64::try_from(expected).unwrap_or(i64::MAX))
+                .unsigned_abs()
+                < 960,
+            "tape repeat at {peak}, expected near {expected}"
+        );
     }
 
     #[test]

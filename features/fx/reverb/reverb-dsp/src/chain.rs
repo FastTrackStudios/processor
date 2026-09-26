@@ -845,6 +845,15 @@ impl ReverbChain {
         let mut p = self.params;
         if self.infinite_engaged() {
             p.decay = 1.0;
+        } else if let Some(t) = crate::calibration::table(self.algorithm_type, self.variant)
+            .filter(|_| !crate::calibration::raw())
+        {
+            // `decay` is a time on every engine: 0..1 across the engine's
+            // measured span, log-spaced like the calibrated ones. Engines
+            // with their own feedback law get the setting that measured to
+            // that time.
+            let (lo, hi) = t.range();
+            p.decay = t.engine_decay(crate::algorithm::decay_to_t60(p.decay, lo, hi));
         }
         // Engines without a per-frequency feedback path collapse the Decay
         // Rate EQ onto the legacy low/high multiplier pair. Engines that DO
@@ -1008,6 +1017,25 @@ impl ReverbChain {
         } else {
             1.0
         };
+    }
+
+    /// Re-design the wet output's low cut and high cut from
+    /// `output_hp_freq` / `output_lp_freq` — the live path. `update` does it
+    /// too, but also re-sizes the pre-delay line (an allocation); this only
+    /// sets two filters' coefficients, so it is safe on the audio thread.
+    pub fn refresh_output_filters(&mut self) {
+        self.output_hp.set(
+            FilterType::Highpass,
+            self.output_hp_freq.max(20.0),
+            0.707,
+            self.sample_rate,
+        );
+        self.output_lp.set(
+            FilterType::Lowpass,
+            self.output_lp_freq.min(20000.0),
+            0.707,
+            self.sample_rate,
+        );
     }
 
     pub fn update_params(&mut self) {

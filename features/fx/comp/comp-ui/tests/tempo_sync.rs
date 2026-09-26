@@ -151,7 +151,10 @@ fn the_attack_clamps_at_its_floor() {
 fn each_stage_syncs_on_its_own() {
     let p = CompParams::default();
     set_bool(&p.stage1.release_sync, true);
-    set_int(&p.stage1.release_div, div(NoteValue::Quarter, Flavour::Straight));
+    set_int(
+        &p.stage1.release_div,
+        div(NoteValue::Quarter, Flavour::Straight),
+    );
     set_float(&p.stage2.release_ms, 250.0);
 
     assert!((p.stage1.release_ms_at(Some(120.0)) - 500.0).abs() < EPS_MS);

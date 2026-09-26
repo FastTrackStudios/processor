@@ -1,7 +1,8 @@
 //! Popup and context-menu controls for the EQ graph.
 
 use architect_ui::prelude::{Button, ButtonSize, ButtonVariant};
-use nice_plug_dioxus::prelude::*;
+// Portable: the popup is DOM, and dioxus is all it needs.
+use dioxus::prelude::*;
 
 use super::eq_graph_model::{EqBand, EqBandShape, MAX_BANDS, StereoMode, slope_db};
 use crate::dynamics::PanelKnob;
@@ -390,10 +391,9 @@ pub fn BandPopup(
     // Where the panel is pinned while it is being used. Set from the panel's
     // own pointer handlers — never during render — and consulted here.
     let mut pinned_x = use_signal(|| None::<f64>);
-    let in_use = drag.read().active
-        || crate::eq_graph::now_ms() - *popup_activity.read() < PANEL_HOLD_MS;
+    let in_use =
+        drag.read().active || crate::eq_graph::now_ms() - *popup_activity.read() < PANEL_HOLD_MS;
     let popup_x = held_panel_x(live_x, *pinned_x.read(), in_use);
-
 
     rsx! {
         div {
@@ -844,7 +844,11 @@ fn menu_shell(x: f64, y: f64, w: f64) -> String {
 }
 
 fn menu_row(hovered: bool, danger: bool) -> String {
-    let colour = if danger { "rgba(255,110,110,0.95)" } else { MENU_TEXT };
+    let colour = if danger {
+        "rgba(255,110,110,0.95)"
+    } else {
+        MENU_TEXT
+    };
     let bg = if hovered { MENU_HOVER } else { "transparent" };
     format!(
         "display:flex; align-items:center; gap:6px; padding:4px 10px; height:20px; \
@@ -905,7 +909,9 @@ pub fn BandContextMenu(
     let cur_shape = band.shape;
     let cur_slope = band.slope.unwrap_or(2.0);
     let cur_place = band.stereo_mode;
-    let mode = dyn_state.as_ref().map_or(crate::dynamics::DynMode::Static, |d| d.mode());
+    let mode = dyn_state
+        .as_ref()
+        .map_or(crate::dynamics::DynMode::Static, |d| d.mode());
 
     // Flyouts open to the right unless that would leave the graph, in which
     // case they hinge to the left of the menu instead.
@@ -1327,7 +1333,14 @@ const LABEL_H: f64 = 14.0;
 /// Deliberately inert — `pointer-events:none` — so it can sit over the curve
 /// while a drag is in flight without ever swallowing the drag.
 #[component]
-pub fn BandReadoutChip(band_idx: usize, bx: f64, by: f64, graph_w: f64, graph_h: f64, bands: Signal<Vec<EqBand>>) -> Element {
+pub fn BandReadoutChip(
+    band_idx: usize,
+    bx: f64,
+    by: f64,
+    graph_w: f64,
+    graph_h: f64,
+    bands: Signal<Vec<EqBand>>,
+) -> Element {
     let Some(band) = bands.read().get(band_idx).cloned() else {
         return rsx! {};
     };

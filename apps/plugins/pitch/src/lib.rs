@@ -2,7 +2,10 @@
 //!
 //! Classic stereo pitch shift (semitones + fine cents) over the
 //! `pitch-dsp` engines (PSOLA with the fixed period-recentering,
-//! WSOLA, granular). Double-tracking/unison lives in its own plugin —
+//! WSOLA, granular, and the phase-locked phase vocoder "Spectral" —
+//! polyphonic and warble-free, 42.7 ms latency, reported to the host; the
+//! default). The dry path is delayed by the same latency so a partial mix
+//! stays aligned. Double-tracking/unison lives in its own plugin —
 //! FTS Unison — which drives the same engines through
 //! `pitch_dsp::unison::UnisonEngine`.
 
@@ -23,7 +26,8 @@ pub struct PitchParams {
     /// Fine shift in cents.
     #[id = "cents"]
     pub cents: FloatParam,
-    /// Shifting algorithm: 0 PSOLA (voice), 1 WSOLA (poly), 2 Granular.
+    /// Shifting algorithm (default 3): 0 PSOLA (voice), 1 WSOLA (poly), 2 Granular,
+    /// 3 Spectral (phase vocoder — cleanest, polyphonic, 42.7 ms).
     #[id = "algo"]
     pub algo: IntParam,
     /// Wet mix (shifted vs dry).
@@ -48,11 +52,12 @@ impl Default for PitchParams {
             )
             .with_unit(" ct")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
-            algo: IntParam::new("Engine", 0, IntRange::Linear { min: 0, max: 2 })
+            algo: IntParam::new("Engine", 3, IntRange::Linear { min: 0, max: 3 })
                 .with_value_to_string(Arc::new(|v| {
                     match v {
                         1 => "WSOLA",
                         2 => "Granular",
+                        3 => "Spectral",
                         _ => "PSOLA",
                     }
                     .to_string()
@@ -74,11 +79,18 @@ impl Default for PitchParams {
     }
 }
 
+/// Dry delay ring (frames, power of two).
+const DRY_RING: usize = 16_384;
+
 pub struct FtsPitch {
     params: Arc<PitchParams>,
     chain: PitchChain,
     scratch_l: Vec<f64>,
     scratch_r: Vec<f64>,
+    /// Dry delay (both channels interleaved per frame), so the dry lines up
+    /// with the shifted path whose latency the host compensates.
+    dry_ring: Vec<[f64; 2]>,
+    dry_pos: usize,
     sample_rate: f64,
 }
 
@@ -86,7 +98,7 @@ impl Default for FtsPitch {
     fn default() -> Self {
         let mk = || {
             let mut c = PitchChain::new();
-            c.algorithm = Algorithm::Psola;
+            c.algorithm = Algorithm::Spectral;
             c.semitones = 0.0;
             c.mix = 1.0;
             c
@@ -96,6 +108,8 @@ impl Default for FtsPitch {
             chain: mk(),
             scratch_l: Vec::new(),
             scratch_r: Vec::new(),
+            dry_ring: Vec::new(),
+            dry_pos: 0,
             sample_rate: 48_000.0,
         }
     }
@@ -138,11 +152,15 @@ impl Plugin for FtsPitch {
         let cap = buffer_config.max_buffer_size as usize;
         self.scratch_l = vec![0.0; cap];
         self.scratch_r = vec![0.0; cap];
+        // Longest engine latency: a 2048-frame phase vocoder at 192 kHz.
+        self.dry_ring = vec![[0.0; 2]; DRY_RING];
+        self.dry_pos = 0;
         true
     }
 
     fn reset(&mut self) {
         self.chain.reset();
+        self.dry_ring.fill([0.0; 2]);
     }
 
     fn process(
@@ -158,6 +176,7 @@ impl Plugin for FtsPitch {
         self.chain.algorithm = match self.params.algo.value() {
             1 => Algorithm::Wsola,
             2 => Algorithm::Granular,
+            3 => Algorithm::Spectral,
             _ => Algorithm::Psola,
         };
         self.chain.semitones = (f64::from(self.params.semitones.value())
@@ -176,16 +195,18 @@ impl Plugin for FtsPitch {
         }
         self.chain
             .process(&mut self.scratch_l[..n], &mut self.scratch_r[..n]);
+        let latency = self.chain.latency().min(DRY_RING - 1);
         for (i, mut frame) in buffer.iter_samples().enumerate() {
             let mut it = frame.iter_mut();
-            if let Some(s) = it.next() {
-                let dry = f64::from(*s);
-                *s = ((self.scratch_l[i] - dry).mul_add(mix, dry) * out_gain) as f32;
-            }
-            if let Some(s) = it.next() {
-                let dry = f64::from(*s);
-                *s = ((self.scratch_r[i] - dry).mul_add(mix, dry) * out_gain) as f32;
-            }
+            let (Some(sl), Some(sr)) = (it.next(), it.next()) else {
+                continue;
+            };
+            // Write this frame's dry, read the one `latency` frames back.
+            self.dry_ring[self.dry_pos] = [f64::from(*sl), f64::from(*sr)];
+            let [dl, dr] = self.dry_ring[(self.dry_pos + DRY_RING - latency) & (DRY_RING - 1)];
+            self.dry_pos = (self.dry_pos + 1) & (DRY_RING - 1);
+            *sl = ((self.scratch_l[i] - dl).mul_add(mix, dl) * out_gain) as f32;
+            *sr = ((self.scratch_r[i] - dr).mul_add(mix, dr) * out_gain) as f32;
         }
         context.set_latency_samples(self.chain.latency() as u32);
         ProcessStatus::Normal
@@ -194,7 +215,8 @@ impl Plugin for FtsPitch {
 
 impl ClapPlugin for FtsPitch {
     const CLAP_ID: &'static str = "com.fasttrackstudio.pitch";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("Pitch shifter (PSOLA/WSOLA/granular)");
+    const CLAP_DESCRIPTION: Option<&'static str> =
+        Some("Pitch shifter (PSOLA/WSOLA/granular/spectral)");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[

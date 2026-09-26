@@ -1859,6 +1859,15 @@ impl PluginInstance for NativeTune {
 /// instance is running owns the meters (multiband/per-instance telemetry comes with real
 /// per-block channels).
 pub mod comp_meter {
+    //! Compressor telemetry for the compressor panels: a rolling input-peak
+    //! and gain-reduction ring, and the current GR, **per meter channel**.
+    //!
+    //! A compressor block publishes to the channel its build-time `meter`
+    //! value names (0 = none). One shared ring meant every compressor in a
+    //! chain wrote the same trace — two active compressors interleaved into
+    //! nonsense, and with the panel's compressor bypassed the output limiter
+    //! drew the chain's final output in its place. The rig gives each of its
+    //! compressor blocks its own channel, and each panel reads its own.
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     /// Ring length — 960 slots at ~240 Hz ≈ a 4-second window (matches the
@@ -1868,40 +1877,84 @@ pub mod comp_meter {
     pub const WAVE_INTERVAL: usize = 200;
     /// GR normalization for the ring (dB full scale).
     pub const GR_FS_DB: f32 = 30.0;
+    /// Meter channels, 0 unused ("no meter"): enough for a chain's pre and
+    /// post compressors and its limiter, with room.
+    pub const CHANNELS: usize = 8;
+    /// The channel a compressor publishes to when nothing says otherwise.
+    pub const DEFAULT_CHANNEL: usize = 1;
 
-    static WAVE_IN: [AtomicU32; WAVE_LEN] = [const { AtomicU32::new(0) }; WAVE_LEN];
-    static WAVE_GR: [AtomicU32; WAVE_LEN] = [const { AtomicU32::new(0) }; WAVE_LEN];
-    static POS: AtomicUsize = AtomicUsize::new(0);
-    static GR_DB: AtomicU32 = AtomicU32::new(0);
-
-    pub(crate) fn push(input_peak: f32, gr_norm: f32) {
-        let pos = POS.load(Ordering::Relaxed) % WAVE_LEN;
-        WAVE_IN[pos].store(input_peak.to_bits(), Ordering::Relaxed);
-        WAVE_GR[pos].store(gr_norm.to_bits(), Ordering::Relaxed);
-        POS.store(pos + 1, Ordering::Relaxed);
+    struct Channel {
+        wave_in: [AtomicU32; WAVE_LEN],
+        wave_gr: [AtomicU32; WAVE_LEN],
+        pos: AtomicUsize,
+        gr_db: AtomicU32,
     }
 
-    pub(crate) fn set_gr_db(gr: f32) {
-        GR_DB.store(gr.to_bits(), Ordering::Relaxed);
+    static METERS: [Channel; CHANNELS] = [const {
+        Channel {
+            wave_in: [const { AtomicU32::new(0) }; WAVE_LEN],
+            wave_gr: [const { AtomicU32::new(0) }; WAVE_LEN],
+            pos: AtomicUsize::new(0),
+            gr_db: AtomicU32::new(0),
+        }
+    }; CHANNELS];
+
+    fn channel(ch: usize) -> Option<&'static Channel> {
+        (ch > 0).then(|| METERS.get(ch)).flatten()
     }
 
-    /// Current gain reduction (dB, positive = reducing) — straight from the
-    /// DSP's detector.
+    pub(crate) fn push(ch: usize, input_peak: f32, gr_norm: f32) {
+        let Some(m) = channel(ch) else { return };
+        let pos = m.pos.load(Ordering::Relaxed) % WAVE_LEN;
+        m.wave_in[pos].store(input_peak.to_bits(), Ordering::Relaxed);
+        m.wave_gr[pos].store(gr_norm.to_bits(), Ordering::Relaxed);
+        m.pos.store(pos + 1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_gr_db(ch: usize, gr: f32) {
+        if let Some(m) = channel(ch) {
+            m.gr_db.store(gr.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Clear a channel — its compressor was bypassed or removed, and a trace
+    /// frozen at its last value would claim it is still working.
+    pub fn clear(ch: usize) {
+        let Some(m) = channel(ch) else { return };
+        for (a, b) in m.wave_in.iter().zip(&m.wave_gr) {
+            a.store(0, Ordering::Relaxed);
+            b.store(0, Ordering::Relaxed);
+        }
+        m.gr_db.store(0, Ordering::Relaxed);
+    }
+
+    /// Current gain reduction on channel `ch` (dB, positive = reducing).
+    #[must_use]
+    pub fn gr_db_of(ch: usize) -> f32 {
+        channel(ch).map_or(0.0, |m| f32::from_bits(m.gr_db.load(Ordering::Relaxed)))
+    }
+
+    /// [`gr_db_of`] the default channel.
+    #[must_use]
     pub fn gr_db() -> f32 {
-        f32::from_bits(GR_DB.load(Ordering::Relaxed))
+        gr_db_of(DEFAULT_CHANNEL)
     }
 
-    /// Snapshot the ring in time order (oldest → newest), downsampled by
-    /// `stride`. Returns `(input_peaks 0..1, gr 0..1)`.
+    /// Snapshot channel `ch`'s ring in time order (oldest → newest),
+    /// downsampled by `stride`. Returns `(input_peaks 0..1, gr 0..1)`.
     ///
     /// Downsample groups are anchored to **absolute ring slots** (not the
     /// write position): a display column always summarises the same
     /// samples until they scroll out, so the trace crawls smoothly instead
     /// of shimmering as the head moves through a group.
-    pub fn wave_snapshot(stride: usize) -> (Vec<f32>, Vec<f32>) {
+    #[must_use]
+    pub fn wave_snapshot_of(ch: usize, stride: usize) -> (Vec<f32>, Vec<f32>) {
+        let Some(m) = channel(ch) else {
+            return (Vec::new(), Vec::new());
+        };
         let stride = stride.max(1);
         let n_groups = WAVE_LEN / stride;
-        let pos = POS.load(Ordering::Relaxed) % WAVE_LEN;
+        let pos = m.pos.load(Ordering::Relaxed) % WAVE_LEN;
         // First complete group after the write head (the head's own group
         // mixes oldest and newest data — skip it).
         let g0 = (pos / stride + 1) % n_groups;
@@ -1912,13 +1965,19 @@ pub mod comp_meter {
             let (mut pi, mut pg) = (0.0f32, 0.0f32);
             for j in 0..stride {
                 let idx = g * stride + j;
-                pi = pi.max(f32::from_bits(WAVE_IN[idx].load(Ordering::Relaxed)));
-                pg = pg.max(f32::from_bits(WAVE_GR[idx].load(Ordering::Relaxed)));
+                pi = pi.max(f32::from_bits(m.wave_in[idx].load(Ordering::Relaxed)));
+                pg = pg.max(f32::from_bits(m.wave_gr[idx].load(Ordering::Relaxed)));
             }
             input.push(pi);
             gr.push(pg);
         }
         (input, gr)
+    }
+
+    /// [`wave_snapshot_of`] the default channel.
+    #[must_use]
+    pub fn wave_snapshot(stride: usize) -> (Vec<f32>, Vec<f32>) {
+        wave_snapshot_of(DEFAULT_CHANNEL, stride)
     }
 }
 
@@ -1927,22 +1986,30 @@ pub mod comp_meter {
 /// The gate keys off it so gating stays tight regardless of what the tone (amp/EQ/drive)
 /// does to the signal it actually gates.
 pub mod sidechain {
-    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    //! The clean-DI key a post-amp gate listens to: the rig's input probe
+    //! publishes each block's DI peak, the gate reads it.
+    //!
+    //! **Per thread**, not per process. A chain renders on one thread — the
+    //! probe at its head and the gate further down run in the same callback
+    //! — so a thread-local is exactly "this chain's key". A process-wide
+    //! value let any other chain rendering at the same time (an offline
+    //! levelling render beside the live rig, or several side by side) key
+    //! this chain's gate with its own guitar.
 
-    static PEAK: AtomicU32 = AtomicU32::new(0);
-    static ENABLED: AtomicBool = AtomicBool::new(false);
+    use core::cell::Cell;
 
-    /// Publish the current DI block peak (linear). Enables the sidechain.
-    pub fn set_peak(peak: f32) {
-        PEAK.store(peak.to_bits(), Ordering::Relaxed);
-        ENABLED.store(true, Ordering::Relaxed);
+    std::thread_local! {
+        static PEAK: Cell<Option<f32>> = const { Cell::new(None) };
     }
 
-    /// The DI peak, if a probe is publishing.
+    /// Publish the current DI block peak (linear) for this thread's chain.
+    pub fn set_peak(peak: f32) {
+        PEAK.with(|p| p.set(Some(peak)));
+    }
+
+    /// The DI peak, if a probe on this thread is publishing.
     pub fn peak() -> Option<f32> {
-        ENABLED
-            .load(Ordering::Relaxed)
-            .then(|| f32::from_bits(PEAK.load(Ordering::Relaxed)))
+        PEAK.with(Cell::get)
     }
 }
 
@@ -2003,6 +2070,26 @@ const COMP_PARAMS: &[ParamSpec] = &[
         max: 4.0,
         default: 0.0,
     },
+    // Output level after the blend (dB). On a comp in front of an amp it is
+    // how hard the amp is driven, so it is part of the preset.
+    ParamSpec {
+        id: 8,
+        name: "makeup",
+        min: -24.0,
+        max: 24.0,
+        default: 0.0,
+    },
+    // Wet share of a parallel blend with the dry input (0 = dry, 1 = fully
+    // compressed) — the pedal "blend" knob that keeps the pick attack under a
+    // heavy squash. The compressor has no lookahead, so the two paths are
+    // time-aligned and blend without combing.
+    ParamSpec {
+        id: 9,
+        name: "mix",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
 ];
 
 /// Native Compressor block — wraps [`comp::ProC3Compressor`] (ProC3-style).
@@ -2010,6 +2097,13 @@ const COMP_PARAMS: &[ParamSpec] = &[
 pub struct NativeComp {
     comp: comp::ProC3Compressor,
     prepared: bool,
+    /// Linear output gain (`makeup`, dB).
+    makeup: f64,
+    /// Parallel blend, 0 = dry … 1 = compressed (`mix`).
+    mix: f64,
+    /// The [`comp_meter`] channel this compressor draws on (0 = none) — its
+    /// own panel's trace. Set by the build-time `meter` value.
+    meter: usize,
     // Waveform decimation state (comp_meter ring).
     wave_counter: usize,
     wave_peak: f32,
@@ -2027,6 +2121,9 @@ impl NativeComp {
         Self {
             comp,
             prepared: false,
+            makeup: 1.0,
+            mix: 1.0,
+            meter: comp_meter::DEFAULT_CHANNEL,
             wave_counter: 0,
             wave_peak: 0.0,
             wave_gr_peak: 0.0,
@@ -2043,12 +2140,20 @@ impl NativeComp {
             5 => self.comp.set_range_db(v),
             6 => self.comp.set_fold(v),
             7 => self.comp.set_style(v as i32),
+            8 => self.makeup = 10f64.powf(v.clamp(-24.0, 24.0) / 20.0),
+            9 => self.mix = v.clamp(0.0, 1.0),
             _ => {}
         }
     }
 
-    /// Apply a build-time parameter by name (`threshold`/`ratio`/`attack`/`release`).
+    /// Apply a build-time parameter by name (any `COMP_PARAMS` name, or `meter`).
     pub fn set_named(&mut self, name: &str, value: f64) {
+        // Build-time only, and deliberately not a `COMP_PARAMS` entry: it is
+        // wiring, not a knob a host should automate.
+        if name == "meter" {
+            self.meter = (value.round().max(0.0) as usize).min(comp_meter::CHANNELS - 1);
+            return;
+        }
         if let Some(id) = param_id(COMP_PARAMS, name) {
             self.set(id, value);
         }
@@ -2095,18 +2200,28 @@ impl PluginInstance for NativeComp {
             self.set(id, value);
         }
         let n = out_l.len().min(out_r.len()).min(in_l.len()).min(in_r.len());
+        // Blend first, then the output level — a pedal's Level knob.
+        let (wet, dry) = (self.mix * self.makeup, (1.0 - self.mix) * self.makeup);
         for i in 0..n {
-            out_l[i] = self.comp.process(f64::from(in_l[i]), 0) as f32;
-            out_r[i] = self.comp.process(f64::from(in_r[i]), 1) as f32;
+            let (l, r) = (f64::from(in_l[i]), f64::from(in_r[i]));
+            out_l[i] = (self.comp.process(l, 0) * wet + l * dry) as f32;
+            out_r[i] = (self.comp.process(r, 1) * wet + r * dry) as f32;
             // Telemetry: rolling input peak + GR ring (see `comp_meter`).
+            if self.meter == 0 {
+                continue;
+            }
             let in_peak = in_l[i].abs().max(in_r[i].abs());
             self.wave_peak = self.wave_peak.max(in_peak);
             self.wave_counter += 1;
             if self.wave_counter >= comp_meter::WAVE_INTERVAL {
                 let gr = self.comp.gain_reduction_db() as f32;
                 self.wave_gr_peak = gr / comp_meter::GR_FS_DB;
-                comp_meter::push(self.wave_peak.min(1.0), self.wave_gr_peak.clamp(0.0, 1.0));
-                comp_meter::set_gr_db(gr);
+                comp_meter::push(
+                    self.meter,
+                    self.wave_peak.min(1.0),
+                    self.wave_gr_peak.clamp(0.0, 1.0),
+                );
+                comp_meter::set_gr_db(self.meter, gr);
                 self.wave_counter = 0;
                 self.wave_peak = 0.0;
             }
@@ -3103,6 +3218,67 @@ const REVERB_PARAMS: &[ParamSpec] = &[
         max: 36.0,
         default: 0.0,
     },
+    // The dry guitar's level through the block (1 = all of it); `mix` is how
+    // much reverb is added in parallel. See the delay's `dry`.
+    ParamSpec {
+        id: 93,
+        name: "dry",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
+    // The reverb's level against the dry, in dB — a gain on the wet, on top
+    // of `mix`. A host running the reverb fully parallel pins `mix` at 1
+    // and dials this instead.
+    ParamSpec {
+        id: 94,
+        name: "level",
+        min: -60.0,
+        max: 12.0,
+        default: 0.0,
+    },
+    // The wet's band: a low cut to keep the tail out of the guitar's low
+    // end (150–500 Hz on guitar) and a high cut to take the fizz off it
+    // (4–8 kHz). 20 Hz / 20 kHz = open.
+    ParamSpec {
+        id: 95,
+        name: "low_cut",
+        min: 20.0,
+        max: 2000.0,
+        default: 20.0,
+    },
+    ParamSpec {
+        id: 96,
+        name: "high_cut",
+        min: 1000.0,
+        max: 20000.0,
+        default: 20000.0,
+    },
+    // Ducking: the wet drops by `duck` (0 = none, 1 = silent) while the
+    // guitar plays over `duck_threshold` (dB), and swells back over
+    // `duck_release` (ms) when it stops — a big reverb that clears for the
+    // notes and blooms in the gaps.
+    ParamSpec {
+        id: 97,
+        name: "duck",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamSpec {
+        id: 98,
+        name: "duck_threshold",
+        min: -60.0,
+        max: 0.0,
+        default: -20.0,
+    },
+    ParamSpec {
+        id: 99,
+        name: "duck_release",
+        min: 20.0,
+        max: 2000.0,
+        default: 120.0,
+    },
 ];
 
 /// Native Reverb block — wraps [`reverb::DualReverb`] (two full chains +
@@ -3111,9 +3287,66 @@ const REVERB_PARAMS: &[ParamSpec] = &[
 ///
 /// Defaults to a subtle Hall (low mix) so it sits under the tone rather than
 /// washing it out.
+/// A time effect in parallel with the dry signal: the dry passes at `dry`
+/// (default all of it) and the effect's wet output is added at `wet` (the
+/// block's `mix`). The engines crossfade (`dry·(1−mix) + wet·mix`), which
+/// turned the guitar down by the mix whenever a delay or reverb was engaged
+/// — so a patch got several dB louder when its effects were bypassed. With
+/// a single chain the engine runs fully wet and the sum is made here; both
+/// are zero-latency, so the paths line up.
+#[derive(Clone, Copy)]
+struct ParallelMix {
+    /// The wet gain: `mix · level`.
+    wet: f64,
+    mix: f64,
+    /// `level` as a linear gain.
+    level: f64,
+    dry: f64,
+    wet_s: f64,
+    dry_s: f64,
+}
+
+impl ParallelMix {
+    const fn new(mix: f64) -> Self {
+        Self {
+            wet: mix,
+            mix,
+            level: 1.0,
+            dry: 1.0,
+            wet_s: mix,
+            dry_s: 1.0,
+        }
+    }
+
+    fn set_mix(&mut self, v: f64) {
+        self.mix = v.clamp(0.0, 1.0);
+        self.wet = self.mix * self.level;
+    }
+
+    fn set_level_db(&mut self, db: f64) {
+        self.level = 10f64.powf(db.clamp(-60.0, 12.0) / 20.0);
+        self.wet = self.mix * self.level;
+    }
+
+    /// `out = dry·in + wet·out`, per sample, with ~5 ms smoothing on both
+    /// gains (the engine's own mix smoother is pinned at 1 here).
+    fn apply(&mut self, in_l: &[f32], in_r: &[f32], out_l: &mut [f32], out_r: &mut [f32]) {
+        const K: f64 = 0.004;
+        let n = out_l.len().min(out_r.len()).min(in_l.len()).min(in_r.len());
+        for i in 0..n {
+            self.wet_s += (self.wet - self.wet_s) * K;
+            self.dry_s += (self.dry - self.dry_s) * K;
+            out_l[i] = (f64::from(in_l[i]) * self.dry_s + f64::from(out_l[i]) * self.wet_s) as f32;
+            out_r[i] = (f64::from(in_r[i]) * self.dry_s + f64::from(out_r[i]) * self.wet_s) as f32;
+        }
+    }
+}
+
 pub struct NativeReverb {
     rev: reverb::DualReverb,
     prepared: bool,
+    /// Chain A in parallel with the dry (see [`ParallelMix`]).
+    par: ParallelMix,
     scratch_l: Vec<f64>,
     scratch_r: Vec<f64>,
     /// Impulse re-prepare workers (native only), one per chain: re-bake
@@ -3132,7 +3365,8 @@ impl NativeReverb {
     pub fn new(_sample_rate: f64) -> Self {
         let mut rev = reverb::DualReverb::new();
         rev.a.set_algorithm(reverb::AlgorithmType::Hall);
-        rev.a.mix = 0.08;
+        // Fully wet: single routing sums the dry itself (`ParallelMix`).
+        rev.a.mix = 1.0;
         rev.a.params.decay = 0.45;
         rev.a.params.size = 0.5;
         rev.a.update_params();
@@ -3145,6 +3379,7 @@ impl NativeReverb {
         Self {
             rev,
             prepared: false,
+            par: ParallelMix::new(0.08),
             #[cfg(not(target_arch = "wasm32"))]
             reshaper_a: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -3155,6 +3390,42 @@ impl NativeReverb {
     }
 
     fn set(&mut self, id: u32, v: f64) {
+        // Chain A's mix and the dry are the parallel sum's (see
+        // `ParallelMix`); the engine's own mix is derived in `sync_mix`.
+        match id {
+            0 => {
+                self.par.set_mix(v);
+                self.sync_mix();
+                return;
+            }
+            94 => {
+                self.par.set_level_db(v);
+                self.sync_mix();
+                return;
+            }
+            93 => {
+                self.par.dry = v.clamp(0.0, 1.0);
+                return;
+            }
+            _ => {}
+        }
+        self.set_engine(id, v);
+        if id == 3 {
+            self.sync_mix();
+        }
+    }
+
+    /// With one chain the engine runs fully wet and the dry is summed in
+    /// `process_block`; a dual routing keeps the engine's own crossfade.
+    fn sync_mix(&mut self) {
+        self.rev.a.mix = if matches!(self.rev.routing, reverb::DualRouting::Single) {
+            1.0
+        } else {
+            self.par.wet.min(1.0)
+        };
+    }
+
+    fn set_engine(&mut self, id: u32, v: f64) {
         // Ids < 100: chain A + the dual block. Ids 100+: the same
         // chain-scoped param on chain B (`r2_*` names, id − 100).
         match id {
@@ -3182,6 +3453,20 @@ impl NativeReverb {
         match id {
             0 => c.mix = v.clamp(0.0, 1.0),
             92 => c.wet_gain_db = v.clamp(-36.0, 36.0),
+            95 => {
+                c.output_hp_freq = v.clamp(20.0, 2000.0);
+                c.refresh_output_filters();
+            }
+            96 => {
+                c.output_lp_freq = v.clamp(1000.0, 20000.0);
+                c.refresh_output_filters();
+            }
+            97 => c.duck_amount = v.clamp(0.0, 1.0),
+            98 => c.duck_threshold = 10f64.powf(v.clamp(-60.0, 0.0) / 20.0),
+            99 => {
+                c.duck_release_ms = v.clamp(20.0, 2000.0);
+                c.update_params();
+            }
             1 => {
                 c.params.decay = v;
                 c.update_params();
@@ -3572,6 +3857,9 @@ impl PluginInstance for NativeReverb {
             out_r,
             |l, r| rev.process(l, r),
         );
+        if matches!(self.rev.routing, reverb::DualRouting::Single) {
+            self.par.apply(in_l, in_r, out_l, out_r);
+        }
         Ok(())
     }
     fn deactivate(&mut self) {
@@ -3638,7 +3926,7 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         id: 7,
         name: "tap_div",
         min: 0.0,
-        max: 7.0,
+        max: 10.0,
         default: 7.0,
     },
     ParamSpec {
@@ -3856,14 +4144,14 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         id: 35,
         name: "tap_div_l",
         min: 0.0,
-        max: 7.0,
+        max: 10.0,
         default: 7.0,
     },
     ParamSpec {
         id: 36,
         name: "tap_div_r",
         min: 0.0,
-        max: 7.0,
+        max: 10.0,
         default: 7.0,
     },
     ParamSpec {
@@ -4052,6 +4340,34 @@ const DELAY_PARAMS: &[ParamSpec] = &[
         max: 1.0,
         default: 0.5,
     },
+    // The dry guitar's level through the block (1 = all of it). The delay
+    // runs in parallel with it — `mix` is how much delay is added — so
+    // engaging the block never turns the guitar down; this is how to.
+    ParamSpec {
+        id: 61,
+        name: "dry",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
+    // The delay's level against the dry, in dB — a gain on the wet, on top
+    // of `mix`. See the reverb's `level`.
+    ParamSpec {
+        id: 62,
+        name: "level",
+        min: -60.0,
+        max: 12.0,
+        default: 0.0,
+    },
+    // A low-pass inside the feedback loop: each repeat darker than the
+    // last, as an analog or tape echo (3–6 kHz on guitar). 20 kHz = open.
+    ParamSpec {
+        id: 63,
+        name: "high_cut",
+        min: 500.0,
+        max: 20000.0,
+        default: 8000.0,
+    },
 ];
 
 /// Native Delay block — wraps [`delay::DualDelay`] (two full chains +
@@ -4062,6 +4378,8 @@ const DELAY_PARAMS: &[ParamSpec] = &[
 pub struct NativeDelay {
     dly: delay::DualDelay,
     prepared: bool,
+    /// Delay A in parallel with the dry (see [`ParallelMix`]).
+    par: ParallelMix,
     sample_rate: f64,
     block_size: usize,
     scratch_l: Vec<f64>,
@@ -4080,6 +4398,8 @@ impl NativeDelay {
             chain.delay_l.feedback = 0.30;
             chain.delay_r.feedback = 0.30;
         }
+        // Fully wet: single routing sums the dry itself (`ParallelMix`).
+        dly.a.mix = 1.0;
         // B seeds slightly shorter so engaging a dual routing is
         // immediately audible before any params are set.
         dly.b.delay_l.time_ms = 300.0;
@@ -4089,12 +4409,49 @@ impl NativeDelay {
             block_size: 512,
             dly,
             prepared: false,
+            par: ParallelMix::new(0.08),
             scratch_l: Vec::new(),
             scratch_r: Vec::new(),
         }
     }
 
     fn set(&mut self, id: u32, v: f64) {
+        // Delay A's mix and the dry are the parallel sum's (see
+        // `ParallelMix`); the engine's own mix is derived in `sync_mix`.
+        match id {
+            0 => {
+                self.par.set_mix(v);
+                self.sync_mix();
+                return;
+            }
+            62 => {
+                self.par.set_level_db(v);
+                self.sync_mix();
+                return;
+            }
+            61 => {
+                self.par.dry = v.clamp(0.0, 1.0);
+                return;
+            }
+            _ => {}
+        }
+        self.set_engine(id, v);
+        if id == 17 {
+            self.sync_mix();
+        }
+    }
+
+    /// With one delay the engine runs fully wet and the dry is summed in
+    /// `process_block`; a dual routing keeps the engine's own crossfade.
+    fn sync_mix(&mut self) {
+        self.dly.a.mix = if matches!(self.dly.routing, delay::DualRouting::Single) {
+            1.0
+        } else {
+            self.par.wet.min(1.0)
+        };
+    }
+
+    fn set_engine(&mut self, id: u32, v: f64) {
         // Ids 0-16 address delay A; 17+ are the dual-routing block.
         let a = &mut self.dly.a;
         match id {
@@ -4117,6 +4474,18 @@ impl NativeDelay {
                 a.tap_div_r = div;
             }
             8 => a.high_pass_hz = v,
+            63 => {
+                // In the loop and on the wet out: repeat n passes the
+                // filter n times, the first included.
+                let hz = if v >= 19_999.0 {
+                    0.0
+                } else {
+                    v.clamp(500.0, 20_000.0)
+                };
+                a.delay_l.hicut_freq = hz;
+                a.delay_r.hicut_freq = hz;
+                a.high_cut_hz = hz;
+            }
             9 => a.repeat_dynamics = v > 0.5,
             35 => a.tap_div_l = delay::TapDivision::from_index(v.round().max(0.0) as usize),
             36 => a.tap_div_r = delay::TapDivision::from_index(v.round().max(0.0) as usize),
@@ -4501,6 +4870,9 @@ impl PluginInstance for NativeDelay {
             out_r,
             |l, r| dly.process(l, r),
         );
+        if matches!(self.dly.routing, delay::DualRouting::Single) {
+            self.par.apply(in_l, in_r, out_l, out_r);
+        }
         Ok(())
     }
     fn deactivate(&mut self) {
@@ -4535,13 +4907,41 @@ const MOD_PARAMS: &[ParamSpec] = &[
         max: 10.0,
         default: 1.0,
     },
-    // Engine (algorithm): 0 Cubic / 1 BBD / 2 Tape / 3 Orbit / 4 Juno.
+    // Engine (algorithm), `chorus::EngineType` order — persisted, append
+    // only: 0 Cubic / 1 BBD / 2 Tape / 3 Orbit / 4 Juno / 5 CE-2 /
+    // 6 Dimension / 7 Clone / 8 Tri-Chorus / 9 SCF / 10 Julia.
     ParamSpec {
         id: 3,
         name: "engine",
         min: 0.0,
-        max: 4.0,
+        max: 10.0,
         default: 0.0,
+    },
+    // The engine's own colour: the wet's tone on most (0.5 = the unit as
+    // built), the pre-delay on the SCF, the Lag on the Julia.
+    ParamSpec {
+        id: 4,
+        name: "color",
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
+    },
+    // Delay-line feedback, scaled per mode (a little in chorus, most of the
+    // way in flanger) and level-compensated.
+    ParamSpec {
+        id: 5,
+        name: "feedback",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    // 0 = the engine's own mono output, 1 = its full stereo spread.
+    ParamSpec {
+        id: 6,
+        name: "width",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
     },
 ];
 
@@ -4594,16 +4994,15 @@ impl NativeMod {
             0 => self.ch.mix = v,
             1 => self.ch.depth = v,
             2 => self.ch.rate_hz = v,
-            3 => {
-                use modulation::chorus::engine::EngineType;
-                self.ch.set_engine(match v.round().max(0.0) as u32 {
-                    1 => EngineType::Bbd,
-                    2 => EngineType::Tape,
-                    3 => EngineType::Orbit,
-                    4 => EngineType::Juno,
-                    _ => EngineType::Cubic,
-                });
-            }
+            // Allocation-free: the chain holds every engine and crossfades.
+            3 => self
+                .ch
+                .set_engine(modulation::chorus::engine::EngineType::from_index(
+                    v.round().max(0.0) as usize,
+                )),
+            4 => self.ch.color = v,
+            5 => self.ch.feedback = v,
+            6 => self.ch.width = v,
             _ => {}
         }
     }
@@ -4830,6 +5229,327 @@ impl PluginInstance for NativeTrem {
     }
 }
 
+// ── Pitch ────────────────────────────────────────────────────────────────────
+
+const PITCH_PARAMS: &[ParamSpec] = &[
+    // Shift in semitones.
+    ParamSpec {
+        id: 0,
+        name: "semitones",
+        min: -24.0,
+        max: 24.0,
+        default: 12.0,
+    },
+    // Fine shift in cents.
+    ParamSpec {
+        id: 1,
+        name: "cents",
+        min: -100.0,
+        max: 100.0,
+        default: 0.0,
+    },
+    // Shifted signal vs dry (the dry is never delayed — see `NativePitch`).
+    ParamSpec {
+        id: 2,
+        name: "mix",
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
+    },
+    // 0 Spectral (phase vocoder), 1 WSOLA, 2 PSOLA, 3 PolyOctave.
+    ParamSpec {
+        id: 3,
+        name: "engine",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+    },
+    // 1 = short frames (Spectral 1024 = 21 ms, WSOLA 256, PSOLA 512).
+    ParamSpec {
+        id: 4,
+        name: "live",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    // Voice A's level within the wet (voice A is `semitones` + `cents`) —
+    // by default the octave up.
+    ParamSpec {
+        id: 5,
+        name: "a_level",
+        min: 0.0,
+        max: 1.0,
+        default: 0.7,
+    },
+    // Voice B: a second interval — by default the octave down, so the block
+    // starts as a POG-style octaver (sub and octave up blended over the
+    // dry); a harmony's third under its fifth otherwise. Off at level 0, and
+    // then costs nothing.
+    ParamSpec {
+        id: 6,
+        name: "b_semitones",
+        min: -24.0,
+        max: 24.0,
+        default: -12.0,
+    },
+    ParamSpec {
+        id: 7,
+        name: "b_level",
+        min: 0.0,
+        max: 1.0,
+        default: 0.7,
+    },
+    // The dry side's level within `mix` (1 = the plain dry/wet blend).
+    ParamSpec {
+        id: 8,
+        name: "dry",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+    },
+];
+
+/// Native Pitch block — a stereo pitch shifter over pitch-dsp's
+/// [`PitchChain`](pitch_dsp::chain::PitchChain), one per channel.
+///
+/// Engine 0 (default) is the phase-locked phase vocoder (`Spectral`): the
+/// only engine that is clean on chords and sustained notes alike —
+/// pitch-dsp `examples/pitch_quality` at +12 on its default 2048-sample
+/// frames (42.7 ms): 0.1 cents median, 0.2 % gross pitch errors, no grain
+/// AM, non-harmonic energy −68 dB, against WSOLA's 3.3 % / −29 dB (and
+/// 29 % gross at −12) and PSOLA's 44 % / −0.1 dB; ~240 ns/sample per
+/// channel. `live` halves the frame (21 ms) but the low strings then fall
+/// under the frequency resolution: 24 % gross errors at +12 — kept as an
+/// option, not the default. PolyOctave (zero latency, octaves only) stays
+/// for when feel matters more than purity.
+///
+/// Two voices and a dry level — `out = (1 − mix) · dry · x + mix · (a · A +
+/// b · B)` — make it an octaver (A +12 and B −12 blended with the dry) or a
+/// fixed-interval harmony (A a third, B a fifth). Voice B runs only while
+/// its level is up.
+///
+/// Latency: the dry path is NOT delayed and the block reports 0 — in a live
+/// rig the player hears the dry note on time and the shifted voice trails
+/// it (as on a harmonizer pedal). At a different pitch the two do not comb.
+pub struct NativePitch {
+    chain_l: pitch_dsp::chain::PitchChain,
+    chain_r: pitch_dsp::chain::PitchChain,
+    /// Voice B's shifters — processed only while `b_level` > 0.
+    chain_bl: pitch_dsp::chain::PitchChain,
+    chain_br: pitch_dsp::chain::PitchChain,
+    semitones: f64,
+    cents: f64,
+    mix: f64,
+    a_level: f64,
+    b_level: f64,
+    dry: f64,
+    /// Voice B was silent last block: reset its shifters before it speaks,
+    /// so it does not start on a stale frame.
+    b_idle: bool,
+    prepared: bool,
+    wet_l: Vec<f64>,
+    wet_r: Vec<f64>,
+    b_l: Vec<f64>,
+    b_r: Vec<f64>,
+    discard: Vec<f64>,
+}
+
+impl NativePitch {
+    #[must_use]
+    pub fn new(_sample_rate: f64) -> Self {
+        let mk = || {
+            let mut c = pitch_dsp::chain::PitchChain::new();
+            c.algorithm = pitch_dsp::chain::Algorithm::Spectral;
+            c.live = false;
+            c.mix = 1.0;
+            c
+        };
+        let mut p = Self {
+            chain_l: mk(),
+            chain_r: mk(),
+            chain_bl: mk(),
+            chain_br: mk(),
+            semitones: 12.0,
+            cents: 0.0,
+            mix: 0.5,
+            a_level: 0.7,
+            b_level: 0.7,
+            dry: 1.0,
+            b_idle: true,
+            prepared: false,
+            wet_l: Vec::new(),
+            wet_r: Vec::new(),
+            b_l: Vec::new(),
+            b_r: Vec::new(),
+            discard: Vec::new(),
+        };
+        p.chain_bl.semitones = -12.0;
+        p.chain_br.semitones = -12.0;
+        p.apply_shift();
+        p
+    }
+
+    fn apply_shift(&mut self) {
+        let st = (self.semitones + self.cents / 100.0).clamp(-24.0, 24.0);
+        self.chain_l.semitones = st;
+        self.chain_r.semitones = st;
+    }
+
+    fn set(&mut self, id: u32, v: f64) {
+        use pitch_dsp::chain::Algorithm;
+        match id {
+            0 => {
+                self.semitones = v.clamp(-24.0, 24.0);
+                self.apply_shift();
+            }
+            1 => {
+                self.cents = v.clamp(-100.0, 100.0);
+                self.apply_shift();
+            }
+            2 => self.mix = v.clamp(0.0, 1.0),
+            3 => {
+                let algo = match v.round().max(0.0) as u32 {
+                    1 => Algorithm::Wsola,
+                    2 => Algorithm::Psola,
+                    3 => Algorithm::PolyOctave,
+                    _ => Algorithm::Spectral,
+                };
+                for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
+                    c.algorithm = algo;
+                }
+            }
+            4 => {
+                for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
+                    c.live = v >= 0.5;
+                }
+            }
+            5 => self.a_level = v.clamp(0.0, 1.0),
+            6 => {
+                let st = v.clamp(-24.0, 24.0);
+                self.chain_bl.semitones = st;
+                self.chain_br.semitones = st;
+            }
+            7 => self.b_level = v.clamp(0.0, 1.0),
+            8 => self.dry = v.clamp(0.0, 1.0),
+            _ => {}
+        }
+    }
+
+    pub fn set_named(&mut self, name: &str, value: f64) {
+        if let Some(id) = param_id(PITCH_PARAMS, name) {
+            self.set(id, value);
+        }
+    }
+}
+
+impl PluginInstance for NativePitch {
+    fn descriptor(&self) -> PluginDescriptor {
+        descriptor("signal.fx.pitch", "Pitch")
+    }
+    fn params(&mut self) -> Vec<PluginParamInfo> {
+        param_infos(PITCH_PARAMS)
+    }
+    fn param_value(&mut self, _id: u32) -> Option<f64> {
+        None
+    }
+    fn value_to_text(&mut self, id: u32, value: f64) -> Option<String> {
+        (id == 3).then(|| {
+            match value.round() as i64 {
+                1 => "WSOLA",
+                2 => "PSOLA",
+                3 => "PolyOctave",
+                _ => "Spectral",
+            }
+            .into()
+        })
+    }
+    fn text_to_value(&mut self, _id: u32, _text: &str) -> Option<f64> {
+        None
+    }
+    fn latency(&mut self) -> u32 {
+        0
+    }
+    fn prepare(&mut self, sample_rate: f64, block_size: u32) -> Result<(), PluginError> {
+        let cfg = AudioConfig {
+            sample_rate: sample_rate.max(1.0),
+            max_buffer_size: block_size.max(1) as usize,
+        };
+        for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
+            c.update(cfg);
+            c.reset();
+        }
+        self.b_idle = true;
+        let n = block_size.max(1) as usize;
+        self.wet_l = vec![0.0; n];
+        self.wet_r = vec![0.0; n];
+        self.b_l = vec![0.0; n];
+        self.b_r = vec![0.0; n];
+        self.discard = vec![0.0; n];
+        self.prepared = true;
+        Ok(())
+    }
+    fn is_prepared(&self) -> bool {
+        self.prepared
+    }
+    fn process_block(
+        &mut self,
+        in_l: &[f32],
+        in_r: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        events: &PluginEvents<'_>,
+    ) -> Result<(), PluginError> {
+        for &(id, value) in events.params {
+            self.set(id, value);
+        }
+        let n = out_l
+            .len()
+            .min(out_r.len())
+            .min(in_l.len())
+            .min(in_r.len())
+            .min(self.wet_l.len());
+        for i in 0..n {
+            self.wet_l[i] = f64::from(in_l[i]);
+            self.wet_r[i] = f64::from(in_r[i]);
+        }
+        // Voice B from the same input, before voice A overwrites it.
+        let b_on = self.b_level > 0.0;
+        if b_on {
+            if self.b_idle {
+                self.chain_bl.reset();
+                self.chain_br.reset();
+                self.b_idle = false;
+            }
+            self.b_l[..n].copy_from_slice(&self.wet_l[..n]);
+            self.b_r[..n].copy_from_slice(&self.wet_r[..n]);
+            self.chain_bl
+                .process(&mut self.b_l[..n], &mut self.discard[..n]);
+            self.chain_br
+                .process(&mut self.b_r[..n], &mut self.discard[..n]);
+        } else {
+            self.b_idle = true;
+        }
+        // PitchChain is mono (it copies its result to the second buffer).
+        self.chain_l
+            .process(&mut self.wet_l[..n], &mut self.discard[..n]);
+        self.chain_r
+            .process(&mut self.wet_r[..n], &mut self.discard[..n]);
+        // out = (1 − mix) · dry · x + mix · (a · A + b · B) — `mix` keeps
+        // its dry↔wet meaning, `dry` trims the dry side of it.
+        let (mix, a, b, dry) = (self.mix, self.a_level, if b_on { self.b_level } else { 0.0 }, self.dry);
+        for i in 0..n {
+            let (dl, dr) = (f64::from(in_l[i]), f64::from(in_r[i]));
+            let (bl, br) = if b_on { (self.b_l[i], self.b_r[i]) } else { (0.0, 0.0) };
+            out_l[i] = (dl * dry).mul_add(1.0 - mix, mix * a.mul_add(self.wet_l[i], b * bl)) as f32;
+            out_r[i] = (dr * dry).mul_add(1.0 - mix, mix * a.mul_add(self.wet_r[i], b * br)) as f32;
+        }
+        Ok(())
+    }
+    fn deactivate(&mut self) {
+        self.prepared = false;
+    }
+}
+
 // ── Passthrough (block types without DSP yet: Phaser, Rotary) ──────────────
 
 /// A transparent placeholder block for a type whose DSP isn't written yet. It
@@ -4909,21 +5629,51 @@ fn descriptor(id: &str, name: &str) -> PluginDescriptor {
 
 // ── Gain (Volume / Boost utility) ──────────────────────────────────────────
 
-const GAIN_PARAMS: &[ParamSpec] = &[ParamSpec {
-    id: 0,
-    name: "gain_db",
-    min: -24.0,
-    max: 24.0,
-    default: 0.0,
-}];
+const GAIN_PARAMS: &[ParamSpec] = &[
+    ParamSpec {
+        id: 0,
+        name: "gain_db",
+        min: -24.0,
+        max: 24.0,
+        default: 0.0,
+    },
+    // Pan, −1 (left) … +1 (right), on a −4.5 dB pan law normalised to the
+    // centre: a centred guitar is exactly the old block, and panned hard to
+    // one side it comes up +4.5 dB there (the far side silent) — so it
+    // sounds as loud off to the side as in the middle.
+    ParamSpec {
+        id: 1,
+        name: "pan",
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+];
 
-/// Native gain block — a clean dB trim (the "Boost" utility). Gain changes
-/// glide over ~10 ms so footswitch boosts never click.
+/// The −4.5 dB pan law, normalised so the centre is unity: each side is
+/// `trig^1.5` of the pan angle (the geometric mean of the constant-power
+/// and linear laws), divided by its centre value `(½)^¾`.
+fn pan_law(pan: f64) -> [f64; 2] {
+    let theta = (pan.clamp(-1.0, 1.0) + 1.0) * std::f64::consts::FRAC_PI_4;
+    let centre = 0.5f64.powf(0.75);
+    [
+        theta.cos().max(0.0).powf(1.5) / centre,
+        theta.sin().max(0.0).powf(1.5) / centre,
+    ]
+}
+
+/// Native gain block — a clean dB trim (the "Boost" utility) with a
+/// balance control. Gain and pan changes glide over ~10 ms so footswitch
+/// boosts never click.
 pub struct NativeGain {
     target: f64,
     current: f64,
     coeff: f64,
     prepared: bool,
+    pan: f64,
+    /// Per-side balance gains: target, and where the glide has got to.
+    side_target: [f64; 2],
+    side: [f64; 2],
 }
 
 impl NativeGain {
@@ -4934,12 +5684,20 @@ impl NativeGain {
             current: 1.0,
             coeff: 0.0,
             prepared: false,
+            pan: 0.0,
+            side_target: [1.0, 1.0],
+            side: [1.0, 1.0],
         }
     }
 
     fn set(&mut self, id: u32, v: f64) {
-        if id == 0 {
-            self.target = 10f64.powf(v.clamp(-24.0, 24.0) / 20.0);
+        match id {
+            0 => self.target = 10f64.powf(v.clamp(-24.0, 24.0) / 20.0),
+            1 => {
+                self.pan = v.clamp(-1.0, 1.0);
+                self.side_target = pan_law(self.pan);
+            }
+            _ => {}
         }
     }
 
@@ -4973,6 +5731,119 @@ impl PluginInstance for NativeGain {
         // One-pole toward the target with a ~10 ms time constant.
         self.coeff = (-1.0 / (0.010 * sample_rate.max(1.0))).exp();
         self.current = self.target;
+        self.side = self.side_target;
+        self.prepared = true;
+        Ok(())
+    }
+    fn is_prepared(&self) -> bool {
+        self.prepared
+    }
+    fn process_block(
+        &mut self,
+        in_l: &[f32],
+        in_r: &[f32],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        events: &PluginEvents<'_>,
+    ) -> Result<(), PluginError> {
+        for &(id, value) in events.params {
+            self.set(id, value);
+        }
+        let (t, c) = (self.target, self.coeff);
+        let [tl, tr] = self.side_target;
+        let mut g = self.current;
+        let [mut sl, mut sr] = self.side;
+        for i in 0..out_l.len() {
+            g = (g - t).mul_add(c, t);
+            sl = (sl - tl).mul_add(c, tl);
+            sr = (sr - tr).mul_add(c, tr);
+            out_l[i] = in_l.get(i).copied().unwrap_or(0.0) * (g * sl) as f32;
+            out_r[i] = in_r.get(i).copied().unwrap_or(0.0) * (g * sr) as f32;
+        }
+        self.current = g;
+        self.side = [sl, sr];
+        Ok(())
+    }
+    fn deactivate(&mut self) {
+        self.prepared = false;
+    }
+}
+
+// ── Boost pedal ────────────────────────────────────────────────────────────
+
+/// The boost pedal's one knob, as on the pedal: 0 = unity, 1 = +18 dB.
+const BOOST_MAX_DB: f64 = 18.0;
+
+const BOOST_PARAMS: &[ParamSpec] = &[ParamSpec {
+    id: 0,
+    name: "drive",
+    min: 0.0,
+    max: 1.0,
+    default: 0.5,
+}];
+
+/// Native boost pedal — the clean boost at the head of the drive board: a
+/// level push into the drives and amp after it (0 dB at drive 0, +9 dB at
+/// the default 0.5, +18 dB flat out), gliding over ~10 ms so a stomp or a
+/// macro sweep never clicks.
+pub struct NativeBoost {
+    target: f64,
+    current: f64,
+    coeff: f64,
+    prepared: bool,
+}
+
+impl NativeBoost {
+    #[must_use]
+    pub fn new(_sample_rate: f64) -> Self {
+        let g = Self::gain(0.5);
+        Self {
+            target: g,
+            current: g,
+            coeff: 0.0,
+            prepared: false,
+        }
+    }
+
+    fn gain(drive: f64) -> f64 {
+        10f64.powf(drive.clamp(0.0, 1.0) * BOOST_MAX_DB / 20.0)
+    }
+
+    fn set(&mut self, id: u32, v: f64) {
+        if id == 0 {
+            self.target = Self::gain(v);
+        }
+    }
+
+    pub fn set_named(&mut self, name: &str, value: f64) {
+        if let Some(id) = param_id(BOOST_PARAMS, name) {
+            self.set(id, value);
+        }
+    }
+}
+
+impl PluginInstance for NativeBoost {
+    fn descriptor(&self) -> PluginDescriptor {
+        descriptor("signal.fx.boost", "Boost")
+    }
+    fn params(&mut self) -> Vec<PluginParamInfo> {
+        param_infos(BOOST_PARAMS)
+    }
+    fn param_value(&mut self, _id: u32) -> Option<f64> {
+        None
+    }
+    fn value_to_text(&mut self, id: u32, value: f64) -> Option<String> {
+        (id == 0).then(|| format!("+{:.1} dB", value.clamp(0.0, 1.0) * BOOST_MAX_DB))
+    }
+    fn text_to_value(&mut self, _id: u32, _text: &str) -> Option<f64> {
+        None
+    }
+    fn latency(&mut self) -> u32 {
+        0
+    }
+    fn prepare(&mut self, sample_rate: f64, _block_size: u32) -> Result<(), PluginError> {
+        self.coeff = (-1.0 / (0.010 * sample_rate.max(1.0))).exp();
+        self.current = self.target;
         self.prepared = true;
         Ok(())
     }
@@ -5002,6 +5873,26 @@ impl PluginInstance for NativeGain {
     }
     fn deactivate(&mut self) {
         self.prepared = false;
+    }
+}
+
+#[cfg(test)]
+mod boost_tests {
+    use super::*;
+
+    /// Unity at 0, +9 dB at the default, +18 dB flat out.
+    #[test]
+    fn boost_pedal_pushes_its_level() {
+        for (drive, db) in [(0.0, 0.0), (0.5, 9.0), (1.0, 18.0)] {
+            let mut b = NativeBoost::new(48_000.0);
+            b.set_named("drive", drive);
+            b.prepare(48_000.0, 256).unwrap();
+            let x = vec![0.1f32; 256];
+            let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+            b.process_block(&x, &x, &mut l, &mut r, &PluginEvents::default()).unwrap();
+            let got = 20.0 * (f64::from(l[255]) / 0.1).log10();
+            assert!((got - db).abs() < 0.05, "drive {drive}: {got} dB, want {db}");
+        }
     }
 }
 
@@ -5446,6 +6337,101 @@ mod transient_tests {
 }
 
 #[cfg(test)]
+mod pitch_tests {
+    use super::*;
+
+    fn goertzel(x: &[f32], f: f64) -> f64 {
+        let w = std::f64::consts::TAU * f / 48_000.0;
+        let c = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in x {
+            let s0 = f64::from(v) + c * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - c * s1 * s2).sqrt() * 2.0 / x.len() as f64
+    }
+
+    /// Voice A alone shifts an octave up cleanly on both channels, keeps
+    /// the dry on time and mixes at the set level.
+    #[test]
+    fn voice_a_is_a_clean_octave_up() {
+        let mut p = NativePitch::new(48_000.0);
+        p.prepare(48_000.0, 256).unwrap();
+        p.set_named("mix", 1.0);
+        p.set_named("a_level", 1.0);
+        p.set_named("b_level", 0.0);
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48_000.0).sin()) as f32)
+            .collect();
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        let ev = PluginEvents::default();
+        for ((xi, lo), ro) in x.chunks(256).zip(l.chunks_mut(256)).zip(r.chunks_mut(256)) {
+            p.process_block(xi, xi, lo, ro, &ev).unwrap();
+        }
+        for y in [&l[24_000..], &r[24_000..]] {
+            let (oct, dry) = (goertzel(y, 440.0), goertzel(y, 220.0));
+            assert!((oct - 0.5).abs() < 0.05, "octave level {oct}");
+            assert!(dry < 1e-3, "no dry at mix 1: {dry}");
+        }
+        assert_eq!(p.latency(), 0);
+    }
+
+    /// An octaver: voice A an octave up, voice B an octave down, both at
+    /// their levels over the dry; voice B silent (and skipped) at level 0.
+    #[test]
+    fn two_voices_make_an_octaver() {
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48_000.0).sin()) as f32)
+            .collect();
+        let run = |b_level: f64| {
+            let mut p = NativePitch::new(48_000.0);
+            p.prepare(48_000.0, 256).unwrap();
+            p.set_named("mix", 0.5);
+            p.set_named("a_level", 1.0);
+            p.set_named("b_semitones", -12.0);
+            p.set_named("b_level", b_level);
+            let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+            let ev = PluginEvents::default();
+            for ((xi, lo), ro) in x.chunks(256).zip(l.chunks_mut(256)).zip(r.chunks_mut(256)) {
+                p.process_block(xi, xi, lo, ro, &ev).unwrap();
+            }
+            let y = &l[24_000..];
+            (goertzel(y, 220.0), goertzel(y, 440.0), goertzel(y, 110.0))
+        };
+        let (dry, up, down) = run(1.0);
+        assert!((dry - 0.25).abs() < 0.03, "dry {dry}");
+        assert!((up - 0.25).abs() < 0.03, "octave up {up}");
+        assert!((down - 0.25).abs() < 0.04, "octave down {down}");
+        let (_, _, silent) = run(0.0);
+        assert!(silent < 1e-3, "voice B off: {silent}");
+    }
+
+    /// Out of the box the block is a POG-style octaver: the dry with the
+    /// octave down and the octave up blended in.
+    #[test]
+    fn default_is_a_pog_blend() {
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48_000.0).sin()) as f32)
+            .collect();
+        let mut p = NativePitch::new(48_000.0);
+        p.prepare(48_000.0, 256).unwrap();
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        let ev = PluginEvents::default();
+        for ((xi, lo), ro) in x.chunks(256).zip(l.chunks_mut(256)).zip(r.chunks_mut(256)) {
+            p.process_block(xi, xi, lo, ro, &ev).unwrap();
+        }
+        let y = &l[24_000..];
+        let (dry, up, down) = (goertzel(y, 220.0), goertzel(y, 440.0), goertzel(y, 110.0));
+        assert!(dry > 0.2, "dry {dry}");
+        assert!(up > 0.12 && down > 0.12, "octaves up {up} down {down}");
+    }
+}
+
+#[cfg(test)]
 mod param_table_tests {
     use super::*;
 
@@ -5461,8 +6447,10 @@ mod param_table_tests {
             ("MOD_PARAMS", MOD_PARAMS),
             ("TREM_PARAMS", TREM_PARAMS),
             ("GAIN_PARAMS", GAIN_PARAMS),
+            ("BOOST_PARAMS", BOOST_PARAMS),
             ("GATE_PARAMS", GATE_PARAMS),
             ("TRANSIENT_PARAMS", TRANSIENT_PARAMS),
+            ("PITCH_PARAMS", PITCH_PARAMS),
         ] {
             let mut ids: Vec<u32> = table.iter().map(|p| p.id).collect();
             ids.sort_unstable();

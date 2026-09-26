@@ -87,10 +87,9 @@ mod support {
     }
 
     impl GuiContextInner for RecordingGuiContext {
-
-    /// Upstream nice-plug added this to `GuiContextInner`. Nothing in a test
-    /// harness or the standalone shell has a host to restart, so it is a no-op.
-    fn request_restart(&self) {}
+        /// Upstream nice-plug added this to `GuiContextInner`. Nothing in a test
+        /// harness or the standalone shell has a host to restart, so it is a no-op.
+        fn request_restart(&self) {}
         fn plugin_api(&self) -> PluginApi {
             PluginApi::Clap
         }
@@ -1358,8 +1357,7 @@ async fn alt_drag_pins_the_gain_and_moves_only_the_frequency() -> dioxus_test::R
             .pointer_move_mods(sx + dx * t, sy + dy * t, true, Modifiers::ALT);
         fx.settle().await;
     }
-    fx.tester
-        .pointer_up_mods(sx + dx, sy + dy, Modifiers::ALT);
+    fx.tester.pointer_up_mods(sx + dx, sy + dy, Modifiers::ALT);
     fx.settle().await;
 
     assert!(
@@ -1449,8 +1447,7 @@ async fn select_all_by_rectangle(fx: &support::Fixture) {
 }
 
 #[tokio::test]
-async fn a_rectangle_selects_bands_and_a_later_drag_moves_all_of_them(
-) -> dioxus_test::Result<()> {
+async fn a_rectangle_selects_bands_and_a_later_drag_moves_all_of_them() -> dioxus_test::Result<()> {
     let fx = mount();
     // Give the two default bands opposite gains so the group drag has both a
     // boost and a cut to act on.
@@ -1521,7 +1518,10 @@ async fn a_group_drag_deepens_cuts_while_it_lifts_boosts() -> dioxus_test::Resul
     let b1 = &fx.params.bands[1];
     let g0_before = b0.gain_db.value();
     let g1_before = b1.gain_db.value();
-    assert!(g0_before > 0.2 && g1_before < -0.2, "need a boost and a cut");
+    assert!(
+        g0_before > 0.2 && g1_before < -0.2,
+        "need a boost and a cut"
+    );
 
     select_all_by_rectangle(&fx).await;
     // Drag the BOOSTING band further up; the cut should go further down.
@@ -1550,8 +1550,8 @@ async fn a_group_drag_deepens_cuts_while_it_lifts_boosts() -> dioxus_test::Resul
 /// when the *node* reached the edge, so the envelope silently ran off.
 // r[verify fx.eq.display.auto-range]
 #[tokio::test]
-async fn a_dynamic_bands_envelope_expands_the_range_before_its_node_does()
--> dioxus_test::Result<()> {
+async fn a_dynamic_bands_envelope_expands_the_range_before_its_node_does() -> dioxus_test::Result<()>
+{
     let fx = mount();
     let bp = &fx.params.bands[0];
     let (x, y) = hover_band(&fx, 0).await;
@@ -1680,7 +1680,8 @@ async fn the_gain_scale_relabels_when_the_range_expands() -> dioxus_test::Result
     }
 
     assert_ne!(
-        before, after,
+        before,
+        after,
         "the gain scale still reads {before:?} after the range expanded to ±{} dB",
         eq_ui::eq_graph_model::db_range_for_index(fx.params.db_range.value())
     );
@@ -1714,7 +1715,6 @@ impl support::Fixture {
     fn label_editor_is_open(&self) -> bool {
         self.tester.root().inner_html().contains(LABEL_INPUT)
     }
-
 }
 
 /// A single click selects the band. Only the second one opens the field —
@@ -1784,7 +1784,10 @@ async fn enter_closes_the_name_field() -> dioxus_test::Result<()> {
     fx.tester.press_key(Key::Enter, Modifiers::empty());
     fx.settle().await;
 
-    assert!(!fx.label_editor_is_open(), "Enter should close the name field");
+    assert!(
+        !fx.label_editor_is_open(),
+        "Enter should close the name field"
+    );
     Ok(())
 }
 
@@ -1909,7 +1912,8 @@ async fn clicking_into_the_empty_field_restores_the_old_name() -> dioxus_test::R
         .immediately()?;
     let (ex, ey) = el.document_origin();
     let (ew, eh) = el.size();
-    fx.click_at(ex + f64::from(ew) / 2.0, ey + f64::from(eh) / 2.0).await;
+    fx.click_at(ex + f64::from(ew) / 2.0, ey + f64::from(eh) / 2.0)
+        .await;
 
     assert_eq!(
         *fx.params.bands[1].name.read(),
@@ -2001,7 +2005,10 @@ fn near_the_top_they_flip_below_and_keep_their_order() {
     let (_, label_bottom) = band_label_anchor(bx, by, 800.0, 350.0);
     let (_, chip_y, _, _) = band_chip_rect(bx, by, 800.0, 350.0);
 
-    assert!(label_bottom > by, "with no room above, the label goes below");
+    assert!(
+        label_bottom > by,
+        "with no room above, the label goes below"
+    );
     assert!(
         chip_y >= label_bottom,
         "the chip should still be the far one: chip {chip_y} vs label {label_bottom}"
@@ -2018,8 +2025,7 @@ fn near_the_top_they_flip_below_and_keep_their_order() {
 /// at all — in a DAW or standalone. nice-plug-dioxus synthesises it now; this
 /// holds up our end of that contract.
 #[tokio::test]
-async fn the_delete_command_removes_a_character_from_the_name_field()
--> dioxus_test::Result<()> {
+async fn the_delete_command_removes_a_character_from_the_name_field() -> dioxus_test::Result<()> {
     let fx = mount();
     let (x, y) = fx.band_point(1);
     fx.double_click_at(x, y).await;
@@ -2028,9 +2034,10 @@ async fn the_delete_command_removes_a_character_from_the_name_field()
     fx.settle().await;
     assert_eq!(*fx.params.bands[1].name.read(), "Air");
 
-    fx.tester.send_ui_event(blitz_traits::events::UiEvent::AppleStandardKeybinding(
-        "deleteBackward:".into(),
-    ));
+    fx.tester
+        .send_ui_event(blitz_traits::events::UiEvent::AppleStandardKeybinding(
+            "deleteBackward:".into(),
+        ));
     fx.settle().await;
 
     assert_eq!(
@@ -2161,7 +2168,11 @@ async fn a_press_on_a_panel_dial_does_not_move_the_panel() -> dioxus_test::Resul
     let node = fx.band_point(1);
     fx.tester.pointer_move(node.0, node.1, false);
     fx.settle().await;
-    let before_x = fx.panel().expect("panel is not mounted").document_origin().0;
+    let before_x = fx
+        .panel()
+        .expect("panel is not mounted")
+        .document_origin()
+        .0;
 
     let (dx, dy) = panel_dial(&fx, "FREQ");
     fx.tester.pointer_down(dx, dy);
@@ -2169,7 +2180,11 @@ async fn a_press_on_a_panel_dial_does_not_move_the_panel() -> dioxus_test::Resul
     for step in 1..=6 {
         fx.tester.pointer_move(dx, dy - f64::from(step) * 3.0, true);
         fx.settle().await;
-        let x = fx.panel().expect("panel closed mid-drag").document_origin().0;
+        let x = fx
+            .panel()
+            .expect("panel closed mid-drag")
+            .document_origin()
+            .0;
         assert!(
             (x - before_x).abs() < 0.5,
             "the panel moved {} px while its FREQ dial was being turned",
@@ -2249,8 +2264,10 @@ async fn the_placement_keys_route_the_hovered_band() -> dioxus_test::Result<()> 
             fx.panel().is_some(),
             "{key}: the pointer is not on band 1 — nothing is hovered to route",
         );
-        fx.tester
-            .key_down(dioxus_test::keyboard_types::Key::Character(key.to_string()), Modifiers::empty());
+        fx.tester.key_down(
+            dioxus_test::keyboard_types::Key::Character(key.to_string()),
+            Modifiers::empty(),
+        );
         fx.settle().await;
         assert_eq!(
             bp.placement.value(),
@@ -2297,10 +2314,7 @@ async fn drag_select_then_delete_removes_every_selected_band() -> dioxus_test::R
     fx.settle().await;
 
     let after = enabled(&fx);
-    assert_eq!(
-        after, 0,
-        "delete left {after} of {before} bands enabled",
-    );
+    assert_eq!(after, 0, "delete left {after} of {before} bands enabled",);
     Ok(())
 }
 
@@ -2321,7 +2335,11 @@ async fn a_letter_routes_the_band_under_the_pointer() -> dioxus_test::Result<()>
         Modifiers::empty(),
     );
     fx.settle().await;
-    assert_eq!(bp.placement.value(), 3, "hover did not name a target for `m`");
+    assert_eq!(
+        bp.placement.value(),
+        3,
+        "hover did not name a target for `m`"
+    );
     Ok(())
 }
 
@@ -2399,7 +2417,10 @@ async fn d_toggles_delta_listening() -> dioxus_test::Result<()> {
     fx.settle().await;
     fx.tester.key_down(d(), Modifiers::empty());
     fx.settle().await;
-    assert!(fx.params.delta.value() < 0.5, "d did not turn delta back off");
+    assert!(
+        fx.params.delta.value() < 0.5,
+        "d did not turn delta back off"
+    );
 
     // Nothing was hovered or selected: delta is a statement about the EQ.
     assert!(
@@ -2430,7 +2451,10 @@ async fn alt_creating_a_band_makes_it_dynamic() -> dioxus_test::Result<()> {
         (Modifiers::ALT | Modifiers::SHIFT, "alt+shift", true),
     ] {
         let idx = fresh(&fx);
-        let (x, y) = (ox + 200.0 + f64::from(u8::from(spectral)) * 240.0, oy + 120.0);
+        let (x, y) = (
+            ox + 200.0 + f64::from(u8::from(spectral)) * 240.0,
+            oy + 120.0,
+        );
         // The two presses go in back to back. Double-click detection is on a
         // 400 ms wall-clock threshold, and settling between every event is
         // slow enough under a loaded test run to miss it — which showed up as
@@ -2547,7 +2571,11 @@ async fn holding_b_sweeps_the_band_you_are_on() -> dioxus_test::Result<()> {
         "the narrow Q stayed behind: {q_before} -> {}",
         bp.q.value(),
     );
-    assert_eq!(bp.filter_type.value(), shape_before, "the shape did not come back");
+    assert_eq!(
+        bp.filter_type.value(),
+        shape_before,
+        "the shape did not come back"
+    );
     assert!(
         (bp.freq_hz.value() - swept_to).abs() < 1.0,
         "the frequency the sweep found was thrown away: {swept_to} -> {}",
@@ -2612,7 +2640,8 @@ async fn a_sweep_held_during_a_drag_keeps_its_boost() -> dioxus_test::Result<()>
     // Now sweep, with the button still down and the pointer wandering in y.
     for step in 1..=5 {
         let t = f64::from(step);
-        fx.tester.pointer_move(sx + t * 70.0, sy - 4.0 + t * 14.0, true);
+        fx.tester
+            .pointer_move(sx + t * 70.0, sy - 4.0 + t * 14.0, true);
         fx.settle().await;
         assert!(
             bp.gain_db.value() > 10.0,
@@ -2672,7 +2701,10 @@ async fn where_is_everything() -> dioxus_test::Result<()> {
     let surf = fx.graph_origin();
     eprintln!("graph origin {surf:?}");
     for sel in ["eq-db-label", "eq-freq-label"] {
-        let all = fx.tester.query_all(dioxus_test::by_testid(sel)).immediately();
+        let all = fx
+            .tester
+            .query_all(dioxus_test::by_testid(sel))
+            .immediately();
         let ys: Vec<(f64, f64)> = all.iter().map(|e| e.document_origin()).collect();
         eprintln!("{sel}: {ys:?}");
     }

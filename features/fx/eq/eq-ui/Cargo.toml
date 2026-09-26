@@ -9,6 +9,13 @@ description = "EQ GUI — control view (spectrum + nodes) and profile theme rend
 [lints]
 workspace = true
 
+# The plugin's custom-widget host. Native only: it brings baseview (a
+# windowing library — there is no window in a browser) and nice-plug's
+# filesystem logging. The graph itself needs none of that; in a browser it
+# paints onto a canvas instead (`fts_audio_ui::scene_canvas`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+nice-plug-dioxus = { workspace = true, optional = true }
+
 [features]
 # Core-only by default in the signal workspace (wasm remotes). The plugin
 # builds enable `native` for the vello/nice-plug editor.
@@ -29,7 +36,12 @@ default = []
 # Split out of `native` because the rest of `native` is the plugin — the
 # nice-plug parameter tree, `ParamPtr`, the preset browser, the hardware faces
 # — and a detached surface has none of that and wants none of it.
+# The graph's painters alone: `anyrender` command lists and the geometry
+# they are written in — no plugin host, no GPU stack, no DOM. This is what
+# lets the same picture be drawn by a browser's canvas surface.
+graph-paint = ["dep:anyrender", "dep:kurbo", "dep:peniko", "spectrum-analyzer/ui"]
 graph = [
+    "graph-paint",
     "dep:nice-plug-dioxus",
     "dep:bytemuck",
     "fts-audio-ui/shader",
@@ -40,6 +52,8 @@ graph = [
 ]
 native = [
     "graph",
+    # The plugin editor mounts the analyser's settings panel.
+    "spectrum-analyzer/ui-panel",
     "dep:nice-plug",
     "dep:fts-plug-ui",
     "dep:audiocore-core",
@@ -66,13 +80,19 @@ gpu-tests = []
 # plugin that embeds this UI.
 blitz-dom = { workspace = true, features = ["autofocus"] }
 eq-dsp = { workspace = true }
+# The graph keeps its own clocks (the glow's age, the popup's fade), and
+# `std::time` panics in a browser.
+web-time = { workspace = true }
+# The painters' own dependencies (see `graph-paint`).
+anyrender = { workspace = true, optional = true }
+kurbo = { workspace = true, optional = true }
+peniko = { workspace = true, optional = true }
 audiocore-core = { workspace = true, optional = true }
 architect-ui = { workspace = true, optional = true }
 fts-audio-ui = { workspace = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 nice-plug = { workspace = true, optional = true }
 fts-plug-ui = { workspace = true, optional = true }
-nice-plug-dioxus = { workspace = true, optional = true }
 atomic_float = { workspace = true, optional = true }
 parking_lot = "0.12"
 eq-profiles = { path = "../eq-profiles", optional = true }

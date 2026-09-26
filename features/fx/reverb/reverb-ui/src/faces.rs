@@ -16,8 +16,8 @@ use std::fmt::Write;
 use dioxus::prelude::*;
 use fts_audio_ui::ParamHandle;
 use fts_audio_ui::hardware::knob::{HardwareKnob, KnobStyle};
-use musical_time_ui::{NotePicker, TimeModeSwitch};
 use fts_audio_ui::hardware::panel::{Panel, PanelEnds, PanelSlot, PanelTexture, Silkscreen};
+use musical_time_ui::{NotePicker, TimeModeSwitch};
 
 /// Panel drawing size — 2U, like the compressor's faces.
 pub const W: f64 = 960.0;
@@ -823,7 +823,10 @@ fn CentreView(
         // A sheet of steel hung in a frame, ringing. Decay drives how many
         // standing waves cross it; damping flattens them.
         Centrepiece::Sheet => {
-            let (x0, y0, sw, sh) = (110.0, 16.0, w - 220.0, h - 48.0);
+            // At least a unit each way: a face drawn small enough would
+            // otherwise give a zero or negative rect, which is invalid SVG
+            // (and the renderer warns on every frame).
+            let (x0, y0, sw, sh) = (110.0, 16.0, (w - 220.0).max(1.0), (h - 48.0).max(1.0));
             rsx! {
                 rect {
                     x: "{x0:.1}", y: "{y0:.1}", width: "{sw:.1}", height: "{sh:.1}",
@@ -854,12 +857,14 @@ fn CentreView(
         // bouncing inside it.
         Centrepiece::Room => {
             let depth = size.mul_add(46.0, 26.0);
-            let (x0, y0, rw, rh) = (170.0, 20.0, w - 340.0, h - 62.0);
+            // Clamped as the plate's is: a small face must stay valid SVG.
+            let (x0, y0, rw, rh) = (170.0, 20.0, (w - 340.0).max(1.0), (h - 62.0).max(1.0));
+            let (inner_w, inner_h) = ((rw - depth * 2.0).max(1.0), (rh - depth).max(1.0));
             rsx! {
                 rect { x: "{x0:.1}", y: "{y0:.1}", width: "{rw:.1}", height: "{rh:.1}",
                     fill: "none", stroke: "{ink}", stroke_width: "1.4" }
                 rect { x: "{x0 + depth:.1}", y: "{y0 + depth * 0.5:.1}",
-                    width: "{rw - depth * 2.0:.1}", height: "{rh - depth:.1}",
+                    width: "{inner_w:.1}", height: "{inner_h:.1}",
                     fill: "{body}", opacity: "{glow * 0.18:.3}",
                     stroke: "{body}", stroke_width: "1.4" }
                 for (i , (x1 , y1 , x2 , y2)) in [

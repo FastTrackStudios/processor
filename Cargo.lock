@@ -1901,6 +1901,7 @@ dependencies = [
  "png 0.18.1",
  "tokio",
  "vello",
+ "web-time",
 ]
 
 [[package]]
@@ -2618,6 +2619,7 @@ dependencies = [
 name = "eq-ui"
 version = "0.1.0"
 dependencies = [
+ "anyrender",
  "architect-ui",
  "atomic_float",
  "audiocore-core",
@@ -2632,16 +2634,19 @@ dependencies = [
  "fts-audio-ui",
  "fts-plug-ui",
  "futures-timer",
+ "kurbo",
  "naga",
  "nice-plug",
  "nice-plug-dioxus",
  "parking_lot",
+ "peniko",
  "pollster",
  "preset-browser",
  "preset-browser-ui",
  "spectrum-analyzer",
  "test-that",
  "tokio",
+ "web-time",
  "wgpu",
 ]
 
@@ -3072,18 +3077,23 @@ name = "fts-audio-ui"
 version = "0.1.0"
 dependencies = [
  "anyrender",
+ "anyrender_vello 0.12.0",
  "architect-ui",
  "blitz-dom",
  "bytemuck",
  "dioxus",
  "dioxus-native-dom",
  "dioxus-test",
+ "gloo-timers",
  "kurbo",
  "peniko",
  "pollster",
  "tokio",
  "tracing",
  "vello",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu",
  "wgpu_context 0.6.0",
  "wgpu_context 0.7.0",
@@ -4676,6 +4686,7 @@ dependencies = [
  "png 0.18.1",
  "tokio",
  "vello",
+ "web-time",
 ]
 
 [[package]]
@@ -6380,6 +6391,7 @@ dependencies = [
  "reverb-profiles",
  "tokio",
  "vello",
+ "web-time",
 ]
 
 [[package]]
@@ -7115,11 +7127,14 @@ dependencies = [
 name = "spectrum-analyzer-ui"
 version = "0.1.0"
 dependencies = [
+ "anyrender",
  "architect-ui",
  "audiocore-core",
  "dioxus",
  "fts-audio-ui",
+ "kurbo",
  "nice-plug-dioxus",
+ "peniko",
  "spectrum-analyzer-dsp",
 ]
 

@@ -12,7 +12,7 @@ use daw::plugin::{FxFactory, PluginInstance};
 use daw::service::fx::InstalledFx;
 
 use crate::{
-    NativeComp, NativeDelay, NativeEq, NativeGain, NativeGate, NativeLevel, NativeMod,
+    NativeComp, NativeDelay, NativeEq, NativeGain, NativeGate, NativeLevel, NativeMod, NativePitch,
     NativePreamp, NativeReverb, NativeSaturate, NativeTransient, NativeTrem, NativeTune,
 };
 
@@ -56,6 +56,9 @@ const CATALOG: &[(&str, &str, Ctor)] = &[
         Box::new(NativeSaturate::new(sr))
     }),
     ("signal.fx.tune", "Tune", |sr| Box::new(NativeTune::new(sr))),
+    ("signal.fx.pitch", "Pitch", |sr| {
+        Box::new(NativePitch::new(sr))
+    }),
 ];
 
 /// The stock built-in FX factory. Stateless; construct freely.

@@ -778,7 +778,11 @@ impl Default for FtsEqParams {
             // the graph opens at a different range than the param reports.
             delta: FloatParam::new("Delta", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_value_to_string(Arc::new(|v| {
-                    if v > 0.5 { "On".to_string() } else { "Off".to_string() }
+                    if v > 0.5 {
+                        "On".to_string()
+                    } else {
+                        "Off".to_string()
+                    }
                 }))
                 .with_string_to_value(Arc::new(|s| match s.trim().to_lowercase().as_str() {
                     "on" | "1" | "true" => Some(1.0),

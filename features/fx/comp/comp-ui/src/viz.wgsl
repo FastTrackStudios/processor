@@ -137,9 +137,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // being pushed. It is the compressor's actual output — the one thing the
     // knobs cannot show.
     let red = gr_at(uv.x);
+    // Measured before the branch, not inside it: a derivative needs its
+    // neighbouring pixels to have run the same code, and `red` varies by
+    // pixel, so WGSL rejects `fwidth` under this `if`. naga (native) lets it
+    // through; the browser's compiler does not, and the whole panel's
+    // pipeline was invalid there.
+    let d_gr = uv.y - red;
+    let aa_gr = max(fwidth(d_gr), 0.0008);
     if (red > 0.001) {
-        let d_gr = uv.y - red;
-        let aa_gr = max(fwidth(d_gr), 0.0008);
         let inside = 1.0 - smoothstep(-aa_gr, aa_gr, d_gr);
         // Same gradient, hanging the other way: brightest at the edge the
         // reduction reaches, thinning back up to the ceiling.

@@ -35,11 +35,7 @@ fn mounted(tempo: Option<f32>, synced: Option<MusicalTime>) -> Fixture {
 
 /// Same, choosing whether the two sides are linked. Link has to be set before
 /// the mount for the same reason the tempo does — see the module note.
-fn mounted_with_link(
-    tempo: Option<f32>,
-    synced: Option<MusicalTime>,
-    linked: bool,
-) -> Fixture {
+fn mounted_with_link(tempo: Option<f32>, synced: Option<MusicalTime>, linked: bool) -> Fixture {
     let state = Arc::new(DelayUiState::default());
     if let Some(bpm) = tempo {
         state
@@ -50,7 +46,10 @@ fn mounted_with_link(
     if let Some(div) = synced {
         // SAFETY: nothing else holds these yet, and this is one thread.
         unsafe {
-            params.time_sync.as_ptr()._internal_set_normalized_value(1.0);
+            params
+                .time_sync
+                .as_ptr()
+                ._internal_set_normalized_value(1.0);
             let d = &params.div_l;
             d.as_ptr()._internal_set_normalized_value(
                 d.preview_normalized(i32::try_from(div.index()).unwrap()),
@@ -91,7 +90,10 @@ async fn the_face_carries_the_time_control() -> dioxus_test::Result<()> {
     fx.settle().await;
 
     let h = html(&fx);
-    assert!(h.contains("delay-time"), "the time control should be on the face");
+    assert!(
+        h.contains("delay-time"),
+        "the time control should be on the face"
+    );
     assert!(
         h.contains("MS") && h.contains("NOTE"),
         "both modes should be offered"
@@ -126,7 +128,10 @@ async fn it_starts_in_milliseconds_showing_the_dialled_time() -> dioxus_test::Re
     let mut fx = mount_with(Arc::new(DelayParams::default()), 1280, 440);
     fx.settle().await;
 
-    assert!(!fx.params.time_sync.value(), "it should start in milliseconds");
+    assert!(
+        !fx.params.time_sync.value(),
+        "it should start in milliseconds"
+    );
     let text = readout(&fx, "time-l").expect("no Time L readout");
     assert!(
         text.contains("375"),
@@ -139,8 +144,7 @@ async fn it_starts_in_milliseconds_showing_the_dialled_time() -> dioxus_test::Re
 /// readout has to show what the NOTE works out to, not the milliseconds the
 /// parameter still happens to hold.
 #[tokio::test]
-async fn synced_the_readout_shows_the_note_not_the_stale_milliseconds()
--> dioxus_test::Result<()> {
+async fn synced_the_readout_shows_the_note_not_the_stale_milliseconds() -> dioxus_test::Result<()> {
     // A dotted sixteenth at 120 BPM is 187.5 ms; the free-running parameter
     // is still sitting at its 375 ms default.
     let mut fx = mounted(
@@ -261,7 +265,10 @@ async fn the_readout_shows_what_the_note_works_out_to() -> dioxus_test::Result<(
         Some(MusicalTime::new(NoteValue::Eighth, Flavour::Dotted)),
     );
     dotted.settle().await;
-    assert!(html(&dotted).contains("375 ms"), "expected the resolved time");
+    assert!(
+        html(&dotted).contains("375 ms"),
+        "expected the resolved time"
+    );
 
     // A straight eighth is 250 ms.
     let mut straight = mounted(
@@ -342,7 +349,10 @@ async fn link_has_a_control_and_it_toggles() -> dioxus_test::Result<()> {
     assert!(fx.params.link.value(), "Link defaults on");
 
     click(&mut fx, "delay-link").await;
-    assert!(!fx.params.link.value(), "the LINK button should turn it off");
+    assert!(
+        !fx.params.link.value(),
+        "the LINK button should turn it off"
+    );
     Ok(())
 }
 

@@ -218,15 +218,32 @@ pub fn drag_end(drag: &mut Signal<DragState>) {
 
 /// Wrap your editor root in this. Captures `mousemove`/`mouseup` and feeds
 /// them to whichever widget started a drag.
+///
+/// By default the provider spans the viewport (`100vw × 100vh`) — right for a
+/// plugin editor, whose window *is* the editor. A surface mounted inside
+/// other chrome (an app's top bar and rails around it) passes `fill: true`
+/// to take its parent's box instead; the viewport size there overflows the
+/// space the chrome left, clipping the surface's right and bottom edges.
 #[component]
-pub fn DragProvider(children: Element) -> Element {
+pub fn DragProvider(
+    children: Element,
+    /// Fill the parent (`100% × 100%`) rather than the viewport.
+    #[props(default)]
+    fill: bool,
+) -> Element {
     let mut drag = use_signal(DragState::default);
 
     use_context_provider(|| drag);
 
+    let style = if fill {
+        "width:100%; height:100%; min-width:0; min-height:0;"
+    } else {
+        "width:100vw; height:100vh;"
+    };
+
     rsx! {
         div {
-            style: "width:100vw; height:100vh;",
+            style: "{style}",
             onmousemove: move |evt: MouseEvent| drag_move(&evt, &mut drag),
             onmouseup: move |_| drag_end(&mut drag),
             {children}

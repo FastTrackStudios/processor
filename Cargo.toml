@@ -560,6 +560,9 @@ vello_hybrid = "0.0.9"
 vello_common = "0.0.9"
 peniko = "0.6"
 kurbo = "0.13"
+# A clock that works in a browser: `std::time::Instant::now()` panics on
+# wasm32-unknown-unknown, and the painted widgets keep their own clock.
+web-time = "1"
 # Text shaping for the painted expression-editor roll. Same version blitz
 # shapes DOM text with, so a label drawn into a scene and a label drawn
 # by the DOM come out of the same shaper.

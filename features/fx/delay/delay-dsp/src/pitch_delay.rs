@@ -1,21 +1,30 @@
 //! `PitchDelay` — `TimeLine` MX "Ice" machine: slices the delay buffer and
 //! plays the pieces back re-pitched.
 //!
-//! The delay tap feeds a granular pitch shifter (pitch-dsp
-//! `GranularShifter`, dual complementary-Hann grains, cubic reads).
-//! `blend` mixes dry↔ice ON THE DELAY LINE, pre-feedback, so
-//! regeneration re-shifts every pass — the classic octave ladder.
+//! The delay tap feeds pitch-dsp's `SpectralShifter` — a phase-locked
+//! phase vocoder (Laroche–Dolson peak shifting). It replaced a dual-grain
+//! delay-line shifter whose grain crossfades put a grain-rate warble and
+//! doubled pick attacks into every repeat, and — because the feedback
+//! re-shifts each pass — compounded them up the octave ladder (measured on
+//! a steady tone at +12: non-harmonic energy −38 dB → −83 dB, spectral
+//! flux ×10 lower). `blend` mixes dry↔ice ON THE DELAY LINE, pre-feedback,
+//! so regeneration re-shifts every pass — the classic octave ladder.
 //!
-//! Latency: the shifter adds `grain` samples; the tap is read `grain`
-//! samples early so the first repeat still lands at the delay time
-//! (exact at unity speed, ± half a grain while heads drift).
+//! Slice sets the analysis frame: Short 2048, Medium 4096, Long 8192
+//! samples @ 48 kHz — short slices keep the pick articulate, long ones
+//! blur each repeat into a smoother, more pad-like ladder. The frame never
+//! exceeds the delay time (so its latency can be compensated).
+//!
+//! Latency: the shifter adds exactly its frame length; the tap is read that
+//! many samples early, so every repeat lands at the delay time at any
+//! interval.
 
 use crate::tilt::DecayTilt;
 use audiocore_dsp::dc_blocker::DcBlocker;
 use audiocore_dsp::delay_line::DelayLine;
 use audiocore_dsp::smoothing::ParamSmoother;
 use dsp_core::num;
-use pitch_dsp::granular::GranularShifter;
+use pitch_dsp::spectral::SpectralShifter;
 
 /// `TimeLine` MX Ice interval menu. `Free` uses `PitchDelay::speed` raw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,11 +105,12 @@ pub enum IceSlice {
 }
 
 impl IceSlice {
-    fn grain_ms(self, time_ms: f64) -> f64 {
+    /// Shifter analysis frame (samples at 48 kHz).
+    const fn frame_48k(self) -> usize {
         match self {
-            Self::Short => (time_ms * 0.25).clamp(10.0, 200.0),
-            Self::Medium => (time_ms * 0.5).clamp(20.0, 400.0),
-            Self::Long => time_ms.clamp(40.0, 800.0),
+            Self::Short => 2048,
+            Self::Medium => 4096,
+            Self::Long => 8192,
         }
     }
 }
@@ -125,16 +135,19 @@ pub struct PitchDelay {
     pub mod_rate_hz: f64,
     /// Delay-line modulation depth (0.0–1.0; full scale ≈ ±3 ms).
     pub mod_depth: f64,
-    /// Crossfade grain size in milliseconds (when `slice` is `None`).
+    /// Shifter frame in milliseconds when `slice` is `None` (rounded to a
+    /// power-of-two frame, 1024–8192 samples @ 48 kHz).
     pub grain_ms: f64,
     /// Decay EQ tilt (-1.0 = darken repeats, 0 = neutral, +1.0 = brighten).
     pub decay_tilt: f64,
 
     decay_tilt_eq: DecayTilt,
     delay: DelayLine,
-    shifter: GranularShifter,
-    /// Shifter grain size actually in effect (samples).
-    grain_samples: f64,
+    shifter: SpectralShifter,
+    /// Shifter frame in effect (samples at 48 kHz) and the rate it was set
+    /// up for — reconfiguring clears the shifter, so only on real change.
+    frame_48k: usize,
+    frame_rate: f64,
     dc_blocker: DcBlocker,
     feedback_sample: f64,
     sample_rate: f64,
@@ -148,8 +161,9 @@ impl PitchDelay {
     #[must_use]
     pub fn new() -> Self {
         let buf_len = 48000 * 5 + 1024;
-        let mut shifter = GranularShifter::new();
+        let mut shifter = SpectralShifter::new();
         shifter.mix = 1.0;
+        shifter.speed = 1.0;
         Self {
             time_ms: 250.0,
             feedback: 0.4,
@@ -159,12 +173,13 @@ impl PitchDelay {
             blend: 1.0,
             mod_rate_hz: 0.6,
             mod_depth: 0.0,
-            grain_ms: 30.0,
+            grain_ms: 90.0,
             decay_tilt: 0.0,
             decay_tilt_eq: DecayTilt::new(),
             delay: DelayLine::new(buf_len),
             shifter,
-            grain_samples: 30.0 * 48.0,
+            frame_48k: 0,
+            frame_rate: 0.0,
             dc_blocker: DcBlocker::new(),
             feedback_sample: 0.0,
             sample_rate: 48000.0,
@@ -184,21 +199,23 @@ impl PitchDelay {
             self.speed = ratio;
         }
 
-        // Grain: slice-derived or free, capped below the delay time so the
-        // early tap that compensates shifter latency stays in range.
-        let ms = match self.slice {
-            Some(s) => s.grain_ms(self.time_ms),
-            None => self.grain_ms,
-        };
-        let time_samples = self.time_ms * 0.001 * sample_rate;
-        let grain = (ms * 0.001 * sample_rate)
-            .min(time_samples * 0.9)
-            .clamp(64.0, sample_rate * 0.9);
-        // Reconfiguring the shifter reseats its heads — only do it when
-        // the grain or rate actually changed (update runs at control rate).
-        if (grain - self.grain_samples).abs() > 1.0 {
-            self.grain_samples = grain;
-            self.shifter.grain_size = num::f64_to_index(grain);
+        // Frame: slice-derived or free, capped at the delay time so the
+        // early tap that compensates the shifter latency stays in range.
+        let want = self.slice.map_or_else(
+            || num::f64_to_index(self.grain_ms * 48.0),
+            IceSlice::frame_48k,
+        );
+        let fit = num::f64_to_index(self.time_ms * 48.0);
+        let mut frame = 1024usize;
+        while frame < 8192 && frame.saturating_mul(2) <= want.min(fit).max(1024) {
+            frame = frame.saturating_mul(2);
+        }
+        // Reconfiguring clears the shifter — only when the frame or the
+        // rate actually changed (update runs at control rate).
+        if frame != self.frame_48k || (sample_rate - self.frame_rate).abs() > 1e-9 {
+            self.frame_48k = frame;
+            self.frame_rate = sample_rate;
+            self.shifter.fft_size = frame;
             self.shifter.update(sample_rate);
         }
 
@@ -230,14 +247,12 @@ impl PitchDelay {
 
         let max_read = num::count_to_f64(self.delay.len()) - 4.0;
 
-        // Dry path reads at the delay time. The ice path taps early to
-        // compensate the shifter's re-delay, whose MEAN is speed-dependent:
-        // heads reset to one grain and drift by (1 - speed) per sample, so
-        // mean offset = grain * (1 + (1 - speed)/2). Exact at unity; at
-        // extreme up-shifts the compensation floors at zero (repeats land
-        // slightly late — can't tap the future).
+        // Dry path reads at the delay time. The ice path taps early by the
+        // shifter's latency (its frame — constant, speed-independent), so
+        // repeats land on time at every interval. (Delay times shorter than
+        // the smallest frame floor at the write head: slightly late.)
         let dry_tap = self.delay.read_cubic(smooth_delay.clamp(1.0, max_read));
-        let comp = (self.grain_samples * (1.0 - self.speed).mul_add(0.5, 1.0)).max(0.0);
+        let comp = num::count_to_f64(self.shifter.latency());
         let early = (smooth_delay - comp).clamp(1.0, max_read);
         let ice_tap = self.delay.read_cubic(early);
 
@@ -256,8 +271,8 @@ impl PitchDelay {
         } else {
             fb
         };
-        // Grain crossfades + the nonlinear limiter can build a subsonic
-        // offset over many recirculations — block it inside the loop.
+        // The nonlinear limiter (and any shifter residue) can build a
+        // subsonic offset over many recirculations — block it inside the loop.
         let clamped_fb = self.dc_blocker.tick(limited_fb.clamp(-1.5, 1.5));
 
         self.delay.write(input + clamped_fb);
@@ -406,6 +421,38 @@ mod tests {
     }
 
     #[test]
+    fn shifted_repeats_land_on_time() {
+        // The shifter's latency is compensated exactly, at any interval.
+        for (idx, time) in [(27usize, 340.0), (0, 340.0), (22, 150.0)] {
+            let mut d = PitchDelay::new();
+            d.time_ms = time;
+            d.feedback = 0.0;
+            d.interval = IceInterval::from_index(idx);
+            d.slice = Some(IceSlice::Long);
+            d.update(SR);
+            let n = num::f64_to_index(SR * 0.8);
+            let burst = num::f64_to_index(SR * 0.05);
+            let out: Vec<f64> = (0..n)
+                .map(|i| {
+                    let x = if i < burst {
+                        (2.0 * PI * 330.0 * num::count_to_f64(i) / SR).sin() * 0.5
+                    } else {
+                        0.0
+                    };
+                    d.tick(x)
+                })
+                .collect();
+            let peak = out.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let onset = out.iter().position(|v| v.abs() > 0.2 * peak).unwrap_or(0);
+            let onset_ms = num::count_to_f64(onset) / SR * 1000.0;
+            assert!(
+                (onset_ms - time).abs() < 12.0,
+                "interval {idx}: repeat at {onset_ms:.1} ms, delay {time} ms"
+            );
+        }
+    }
+
+    #[test]
     fn octave_ladder_climbs_each_pass() {
         let mut d = PitchDelay::new();
         d.time_ms = 300.0;
@@ -472,11 +519,12 @@ mod tests {
     fn slice_sizes_are_distinct() {
         let time = 400.0;
         assert!(
-            IceSlice::Long.grain_ms(time) > IceSlice::Medium.grain_ms(time)
-                && IceSlice::Medium.grain_ms(time) > IceSlice::Short.grain_ms(time)
+            IceSlice::Long.frame_48k() > IceSlice::Medium.frame_48k()
+                && IceSlice::Medium.frame_48k() > IceSlice::Short.frame_48k()
         );
 
-        // And they audibly differ.
+        // And they audibly differ: the frame sets how much each repeat's
+        // attacks blur, so drive it with detached 60 ms notes.
         let run = |slice: IceSlice| -> Vec<f64> {
             let mut d = PitchDelay::new();
             d.time_ms = time;
@@ -486,7 +534,8 @@ mod tests {
             d.update(SR);
             (0..48000)
                 .map(|i| {
-                    let x = (2.0 * PI * 220.0 * f64::from(i) / SR).sin() * 0.5;
+                    let gate = if i % 9600 < 2880 { 1.0 } else { 0.0 };
+                    let x = (2.0 * PI * 220.0 * f64::from(i) / SR).sin() * 0.5 * gate;
                     d.tick(x)
                 })
                 .collect()
