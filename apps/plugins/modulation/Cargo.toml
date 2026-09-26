@@ -25,7 +25,7 @@ atomic_float = { workspace = true }
 # Plugin framework. `nice_plug` must be a DIRECT dep: `#[derive(Params)]` and
 # `nice_export_clap!`/`nice_export_vst3!` expand to absolute `::nice_plug::…`
 # paths, so the crate has to be nameable here. `vst3` is on by default.
-nice-plug.workspace = true
+nice-plug = { workspace = true, features = ["vst3"] }
 
 # The DSP facade (re-exports chorus-dsp / trem-dsp / wah-dsp as
 # `chorus` / `trem` / `wah`). Never depend on the `*-dsp` crates directly.

@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 # Plugin framework. Must be a direct dep — the export macros expand to
 # absolute `::nice_plug::…` paths.
-nice-plug.workspace = true
+nice-plug = { workspace = true, features = ["vst3"] }
 
 # The Blitz/nice-plug editor: the six families and their panels.
 delay-ui = { workspace = true, features = ["native"] }

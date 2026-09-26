@@ -13,6 +13,6 @@ crate-type = ["cdylib", "lib"]
 workspace = true
 
 [dependencies]
-nice-plug.workspace = true
+nice-plug = { workspace = true, features = ["vst3"] }
 pitch-dsp = { workspace = true }
 audiocore-dsp = { workspace = true }
