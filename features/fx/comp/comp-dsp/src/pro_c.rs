@@ -121,6 +121,7 @@ pub struct ProC3Compressor {
     /// Last `(output gain dB, linear)` and `(gain reduction, dB)`.
     out_gain_memo: (f64, f64),
     gr_db_memo: (f64, f64),
+    in_gain_memo: (f64, f64),
 }
 
 /// `1 − e^(−1/samples)` for a time in ms, remembered for the last rate and
@@ -200,6 +201,7 @@ impl ProC3Compressor {
             crest_coeff: 0.0,
             out_gain_memo: (f64::NAN, 1.0),
             gr_db_memo: (f64::NAN, 0.0),
+            in_gain_memo: (f64::NAN, 1.0),
         };
         comp.rate_coeffs();
         comp
@@ -219,7 +221,11 @@ impl ProC3Compressor {
         // Step 0: Apply input gain
         self.smoothed_input_gain_db =
             self.smooth_parameter(self.smoothed_input_gain_db, self.input_gain_db);
-        let input_linear = input * audiocore_dsp::db::db_to_linear(self.smoothed_input_gain_db);
+        let gain_db = self.smoothed_input_gain_db;
+        if self.in_gain_memo.0.to_bits() != gain_db.to_bits() {
+            self.in_gain_memo = (gain_db, audiocore_dsp::db::db_to_linear(gain_db));
+        }
+        let input_linear = input * self.in_gain_memo.1;
         self.smoothed_detector_rms_mix =
             self.smooth_parameter(self.smoothed_detector_rms_mix, self.detector_rms_mix);
 

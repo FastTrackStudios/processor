@@ -12,6 +12,10 @@ pub struct Detector {
     peak: f64,
     rms_power: f64,
     sample_rate: f64,
+    /// The RMS window's coefficient, and the rate it was worked out for —
+    /// an `exp` of the rate alone, asked for every sample.
+    rms_coeff: f64,
+    rms_coeff_rate: f64,
 }
 
 impl Default for Detector {
@@ -27,6 +31,8 @@ impl Detector {
             peak: 0.0,
             rms_power: 0.0,
             sample_rate: 48_000.0,
+            rms_coeff: 0.0,
+            rms_coeff_rate: f64::NAN,
         }
     }
 
@@ -49,8 +55,12 @@ impl Detector {
     pub fn detect_level_with_rms_mix(&mut self, input_abs: f64, rms_mix: f64) -> f64 {
         self.peak = self.peak.max(input_abs);
 
-        let rms_window_s = 0.01;
-        let coeff = (-1.0 / (self.sample_rate * rms_window_s).max(1.0)).exp();
+        if self.rms_coeff_rate.to_bits() != self.sample_rate.to_bits() {
+            let rms_window_s = 0.01;
+            self.rms_coeff = (-1.0 / (self.sample_rate * rms_window_s).max(1.0)).exp();
+            self.rms_coeff_rate = self.sample_rate;
+        }
+        let coeff = self.rms_coeff;
         self.rms_power = coeff * self.rms_power + (1.0 - coeff) * input_abs * input_abs;
 
         let rms = self.rms_power.sqrt();
