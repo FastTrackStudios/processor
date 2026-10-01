@@ -152,6 +152,11 @@ impl PostEqBand {
     }
 }
 
+/// At or below this the input/output high-passes are off.
+const HP_OFF_HZ: f64 = 20.0;
+/// At or above this the input/output low-passes are off.
+const LP_OFF_HZ: f64 = 19_999.0;
+
 /// Full reverb processing chain.
 ///
 /// Signal flow:
@@ -1400,9 +1405,20 @@ impl ReverbChain {
             }
         }
 
-        // Input filtering
-        let filt_l = self.input_lp.tick(self.input_hp.tick(dry_l, 0), 0);
-        let filt_r = self.input_lp.tick(self.input_hp.tick(dry_r, 1), 1);
+        // Input filtering. 20 Hz / 20 kHz mean off, as documented — and must
+        // BE off: a 2-pole low-pass at 20 kHz sits at 0.83 of Nyquist at
+        // 48 kHz, dulls the top octave and rings on every transient (it was
+        // on every reverb's input and output; measured against BigSky's
+        // Cloud pulse by pulse).
+        let (mut filt_l, mut filt_r) = (dry_l, dry_r);
+        if self.input_hp_freq > HP_OFF_HZ {
+            filt_l = self.input_hp.tick(filt_l, 0);
+            filt_r = self.input_hp.tick(filt_r, 1);
+        }
+        if self.effective_input_lp() < LP_OFF_HZ {
+            filt_l = self.input_lp.tick(filt_l, 0);
+            filt_r = self.input_lp.tick(filt_r, 1);
+        }
 
         // Freeze: kill input to the algorithm but keep feedback
         // running. Infinite keeps feeding input into the
@@ -1583,11 +1599,15 @@ impl ReverbChain {
                 wet_r = self.sat_r.tick(wet_r);
             }
 
-            // Output band-shaping
-            wet_l = self.output_hp.tick(wet_l, 0);
-            wet_l = self.output_lp.tick(wet_l, 0);
-            wet_r = self.output_hp.tick(wet_r, 1);
-            wet_r = self.output_lp.tick(wet_r, 1);
+            // Output band-shaping (off at 20 Hz / 20 kHz — see the input's).
+            if self.output_hp_freq > HP_OFF_HZ {
+                wet_l = self.output_hp.tick(wet_l, 0);
+                wet_r = self.output_hp.tick(wet_r, 1);
+            }
+            if self.output_lp_freq < LP_OFF_HZ {
+                wet_l = self.output_lp.tick(wet_l, 0);
+                wet_r = self.output_lp.tick(wet_r, 1);
+            }
 
             // Tilt EQ (gate on the ramped tilt for the same reason)
             if self.tilt_smoother.value().abs() > 0.01 {

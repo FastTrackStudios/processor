@@ -9,11 +9,11 @@
 //!   tank's input — nothing recirculates sooner — and what recirculates
 //!   carries one decay gain per trip.
 //! - **The first pass is longer than the loop.** At Decay 1000 the loop
-//!   returns at −80 dB, yet the plug-in still rings ~3 s: ~450 sparse pulses
+//!   returns at −80 dB, yet the plug-in still rings ~5 s: ~1000 sparse pulses
 //!   whose level falls ~13 dB/s. That single pass IS BigSky's 4.5 s decay
 //!   floor — not a decay process, and nothing that densifies. So the ring's
 //!   end both feeds back (× the decay gain) and runs on, unrecirculated,
-//!   into three more sections: a ~3 s line tapped at every one of those
+//!   into six more sections: a ~5.7 s line tapped at every one of those
 //!   pulses ([`FIRST_PASS_TAPS`]).
 //! - **Taps along the line, alternating sides** — the measured pulses — so
 //!   the output holds level for as long as energy is still travelling: the
@@ -42,12 +42,12 @@ use audiocore_dsp::denormal::flush;
 /// Sections in the loop.
 const RING_SECTIONS: usize = 4;
 /// Sections in all: the loop, then the unrecirculated extension.
-const SECTIONS: usize = 7;
+const SECTIONS: usize = 10;
 /// Section delay lengths (ms) at size 0.5. In the loop, with each
 /// section's short allpasses (a pure delay at zero Diffusion), they add up
-/// to BigSky's 803.3 ms trip; the extension takes the line to ~3 s, past
+/// to BigSky's 803.3 ms trip; the extension takes the line to ~5.7 s, past
 /// the last measured pulse. Ratios avoid common factors.
-const DELAY_MS: [f64; SECTIONS] = [151.23, 197.49, 174.0, 206.81, 712.57, 751.33, 731.91];
+const DELAY_MS: [f64; SECTIONS] = [151.23, 197.49, 174.0, 206.81, 712.57, 751.33, 731.91, 713.29, 727.13, 742.61];
 /// The two short (diffusion) allpasses in each section, ms.
 const SHORT_AP_MS: [[f64; 2]; SECTIONS] = [
     [4.77, 11.3],
@@ -57,18 +57,41 @@ const SHORT_AP_MS: [[f64; 2]; SECTIONS] = [
     [5.11, 12.7],
     [6.83, 10.9],
     [4.97, 14.3],
+    [6.47, 11.9],
+    [5.29, 13.1],
+    [7.31, 10.3],
 ];
 /// Most taps any one section can hold.
-const MAX_SECTION_TAPS: usize = 192;
+const MAX_SECTION_TAPS: usize = 256;
 /// Overall tap level (the chain's wet calibration sets the final level).
 const TAP_GAIN: f64 = 0.25;
 /// BigSky's mono early pulse against its first ring tap: 0.1856 / 0.1328.
 pub const EARLY_TO_TAP: f64 = 1.4;
-/// How much longer than asked the first pass (BigSky's floor) and the
-/// nested input chain make the tail near the floor: `(requested s, excess
-/// s)`, interpolated, zero outside. Measured with bigsky_match's Decay
-/// sweep.
-const EXCESS: [(f64, f64); 4] = [(2.5, 0.0), (4.5, 1.2), (5.6, 0.8), (7.0, 0.0)];
+/// The loop's gain per 803.3 ms trip for each decay time (T20 of the whole
+/// response): our own loop, calibrated against BigSky's measured Decay →
+/// T20 law (bigsky_match's Decay sweep, inverted). The first pass gives
+/// the ~4.5 s floor on its own; this gain is what lengthens it. BigSky's
+/// own per-trip gains are not used directly: measured off one returning
+/// pulse against its Decay-50000 render, they are relative, and its loop
+/// re-enters at more than one point.
+/// `(T20 s, loop gain per trip)`, interpolated in log time.
+const LOOP_GAIN: [(f64, f64); 11] = [
+    (4.50, 0.0672),
+    (4.53, 0.0866),
+    (4.77, 0.1766),
+    (5.60, 0.3084),
+    (8.15, 0.5105),
+    (11.39, 0.6153),
+    (19.83, 0.7603),
+    (30.60, 0.8351),
+    (57.16, 0.9137),
+    (75.19, 0.9338),
+    (93.12, 0.9462),
+];
+/// BigSky's floor: the decay of its first pass alone.
+const FLOOR_T60: f64 = 4.5;
+/// BigSky's trip, seconds.
+const BIGSKY_TRIP_S: f64 = 0.8033;
 /// The largest size scale the buffers are sized for.
 const MAX_SCALE: f64 = 1.6;
 /// Headroom for modulation, samples.
@@ -168,8 +191,10 @@ impl InputChain {
     pub fn set_size(&mut self, size: f64) {
         let scale = (size.clamp(0.0, 1.0) + 0.5).min(MAX_SCALE);
         let k = 1e-3 * self.sample_rate * scale;
+        // Whole samples: a cubic read at a fractional delay is a gentle
+        // low-pass, and a pulse crossing a dozen of them came out blunted.
         for ap in self.stages_mut() {
-            ap.len = ap.base_ms * k;
+            ap.len = (ap.base_ms * k).round();
         }
     }
 
@@ -234,7 +259,11 @@ impl RingAp {
 struct Tap {
     pos: usize,
     right: bool,
+    /// The measured gain, and the gain in use (reshaped below the floor).
+    base: f64,
     gain: f64,
+    /// When the pulse comes on BigSky's first pass, seconds.
+    t_s: f64,
 }
 
 struct Section {
@@ -267,7 +296,7 @@ impl CloudRing {
     pub fn new(sample_rate: f64) -> Self {
         let sections = core::array::from_fn(|i| {
             let base_ms = DELAY_MS.get(i).copied().unwrap_or(200.0);
-            let cap = (base_ms * 1e-3 * sample_rate).mul_add(MAX_SCALE, 8.0);
+            let cap = (base_ms * 1e-3 * sample_rate).mul_add(MAX_SCALE, 16.0);
             let short_ms = SHORT_AP_MS.get(i).copied().unwrap_or([5.0, 10.0]);
             let phase = num::count_to_f64(i) * 0.25;
             Section {
@@ -310,7 +339,8 @@ impl CloudRing {
         for s in &mut self.sections {
             s.len = num::f64_to_index(s.base_ms * ms).max(2);
             for ap in &mut s.short {
-                ap.len = ap.base_ms * ms;
+                // Whole samples (see `InputChain::set_size`).
+                ap.len = (ap.base_ms * ms).round();
             }
             s.taps.clear();
         }
@@ -332,8 +362,9 @@ impl CloudRing {
             }
             let Some(s) = self.sections.get_mut(section) else { break };
             if s.taps.len() < MAX_SECTION_TAPS {
-                let pos = num::f64_to_index(t - start).clamp(1, s.len);
-                s.taps.push(Tap { pos, right, gain: gain * TAP_GAIN });
+                let pos = num::f64_to_index((t - start).round()).min(s.len);
+                let base = gain * TAP_GAIN;
+                s.taps.push(Tap { pos, right, base, gain: base, t_s: t / self.sample_rate });
             }
         }
         self.update_gains();
@@ -388,28 +419,37 @@ impl CloudRing {
     }
 
     fn update_gains(&mut self) {
-        // Near the floor the first pass and the loop add up: with the loop
-        // set to the requested time the tail measured long there
-        // (bigsky_match's Decay sweep). Ask the loop for that much less, so
-        // the tail lands on the time.
         let t = self.t60;
-        // Only near the floor: once the loop rings longer than the first
-        // pass (~5.5 s), the tail is the loop's and lands on it.
-        let excess = EXCESS
-            .windows(2)
-            .find(|w| t <= w[1].0)
-            .map_or(0.0, |w| {
-                let ((t0, e0), (t1, e1)) = (w[0], w[1]);
-                (e1 - e0).mul_add(((t - t0) / (t1 - t0)).clamp(0.0, 1.0), e0)
-            });
-        // Very long tails lose a little per trip besides (interpolation,
-        // the DC blocker): 4 % short at 57 s, 9 % at 75 s. Ask for more.
-        // Past the floor the loop alone lands ~5 % short (the same losses);
-        // very long tails lose more: 4 % at 57 s, 9 % at 75 s.
-        let long = (1.0 - 0.002 * (t - 30.0).clamp(0.0, 100.0)) / (1.0 + 0.05 * ((t - 6.0) / 2.0).clamp(0.0, 1.0));
-        let loop_t60 = (t - excess).max(t * 0.35) / long;
-        let trip_s = self.trip_samples() / self.sample_rate;
-        self.loop_gain = 10f64.powf(-3.0 * trip_s / loop_t60).min(1.0);
+        // The loop's gain per trip, from BigSky's own law (log-time
+        // interpolation; past the table, the trip's T60 extends it, and
+        // Infinite holds).
+        let first = LOOP_GAIN[0];
+        let last = LOOP_GAIN[LOOP_GAIN.len() - 1];
+        let g_trip = if t >= 1.0e5 {
+            1.0
+        } else if t <= first.0 {
+            first.1
+        } else if t >= last.0 {
+            10f64.powf(-3.0 * BIGSKY_TRIP_S / t).max(last.1)
+        } else {
+            LOOP_GAIN.windows(2).find(|w| t <= w[1].0).map_or(last.1, |w| {
+                let ((t0, g0), (t1, g1)) = (w[0], w[1]);
+                let f = (t / t0).ln() / (t1 / t0).ln();
+                (g1 - g0).mul_add(f, g0)
+            })
+        };
+        // Those gains are per 803.3 ms trip; a resized ring takes the gain
+        // that keeps the same decay rate.
+        let trip_ratio = self.trip_samples() / (BIGSKY_TRIP_S * self.sample_rate);
+        self.loop_gain = g_trip.powf(trip_ratio).min(1.0);
+        // Shorter than BigSky's floor (which it cannot go): tilt the first
+        // pass itself down to the time asked for.
+        let tilt = if t < FLOOR_T60 { 1.0 / t - 1.0 / FLOOR_T60 } else { 0.0 };
+        for s in &mut self.sections {
+            for tap in &mut s.taps {
+                tap.gain = tap.base * 10f64.powf(-3.0 * tap.t_s * tilt);
+            }
+        }
     }
 
     pub fn clear(&mut self) {
@@ -432,15 +472,16 @@ impl CloudRing {
         let (mut out_l, mut out_r) = (0.0, 0.0);
         for (i, s) in self.sections.iter_mut().enumerate() {
             s.delay.write(sig);
+            // `read(1)` is the sample just written: a delay of k is read(k + 1).
             for tap in &s.taps {
-                let v = s.delay.read(tap.pos) * tap.gain;
+                let v = s.delay.read(tap.pos + 1) * tap.gain;
                 if tap.right {
                     out_r += v;
                 } else {
                     out_l += v;
                 }
             }
-            let mut v = s.delay.read(s.len);
+            let mut v = s.delay.read(s.len + 1);
             for ap in &mut s.short {
                 v = ap.tick(v);
             }
@@ -490,8 +531,10 @@ mod tests {
     fn decay_only_acts_after_one_trip() {
         let mut a = CloudRing::new(48_000.0);
         let mut b = CloudRing::new(48_000.0);
+        // Both above BigSky's floor: below it the first pass itself is
+        // tilted shorter, by design.
         a.set_t60(60.0);
-        b.set_t60(2.0);
+        b.set_t60(6.0);
         a.set_diffusion(0.5);
         b.set_diffusion(0.5);
         let ea = impulse_energy(&mut a, 1.5);

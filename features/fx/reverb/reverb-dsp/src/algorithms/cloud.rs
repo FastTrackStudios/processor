@@ -28,7 +28,7 @@ use dsp_core::num;
 
 use crate::algorithm::{AlgorithmParams, CLOUD_T60, CloudParams, ReverbAlgorithm, decay_to_t60};
 use crate::primitives::cloud_ring::{CloudRing, EARLY_TO_TAP, InputChain};
-use crate::primitives::one_pole::Hp1;
+use crate::primitives::one_pole::{Hp1, Lp1};
 use crate::primitives::response_curves::resp2dec;
 use audiocore_dsp::biquad::{Biquad, FilterType};
 
@@ -116,20 +116,32 @@ impl Shelf1 {
     }
 }
 
+/// BigSky's fixed top end: every pulse of the plug-in's response trails
+/// off by ~0.245 a sample (−0.132, −0.033, −0.008 …) even at Tone 127 —
+/// a one-pole low-pass at ~10.75 kHz, under the Tone shelves.
+const TOP_END_HZ: f64 = 10_750.0;
+
 /// Cloud's Tone: BigSky's, on the wet. The product's `tone` (−1…+1) spans
 /// BigSky's knob with 0 at noon, which the manual calls balanced.
 struct ToneStage {
     /// Two shelves per side, cascaded.
     shelves: [[Shelf1; 2]; 2],
     on: bool,
+    /// The fixed top end, per side.
+    top: [Lp1; 2],
 }
 
 impl ToneStage {
     fn new() -> Self {
-        Self { shelves: [[Shelf1::default(); 2]; 2], on: false }
+        Self { shelves: [[Shelf1::default(); 2]; 2], on: false, top: [Lp1::new(), Lp1::new()] }
     }
 
     fn set(&mut self, tone: f64, sample_rate: f64) {
+        // A one-pole's pole for the corner: e^(−2π·fc/fs).
+        let pole = (-core::f64::consts::TAU * TOP_END_HZ / sample_rate).exp();
+        for f in &mut self.top {
+            f.set_coeff(pole);
+        }
         let knob = (tone.clamp(-1.0, 1.0) + 1.0) * 63.5;
         let (mut fc, mut depth) = (3919.0, 0.0);
         for w in TONE_SHELF.windows(2) {
@@ -155,10 +167,15 @@ impl ToneStage {
                 shelf.reset();
             }
         }
+        for f in &mut self.top {
+            f.reset();
+        }
     }
 
     #[inline]
     fn tick(&mut self, l: f64, r: f64) -> (f64, f64) {
+        let [tl, tr] = &mut self.top;
+        let (l, r) = (tl.tick(l), tr.tick(r));
         if !self.on {
             return (l, r);
         }
