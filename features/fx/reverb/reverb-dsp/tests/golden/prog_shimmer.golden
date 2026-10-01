@@ -3,7 +3,7 @@
 # A change here in a refactor commit means the audio changed. Investigate.
 name prog_shimmer
 len 48000
-hash 5630db8633b62bec
+hash ce3beec12bbd802c
 probe 0 0000000000000000 0
 probe 750 0000000000000000 0
 probe 1500 0000000000000000 0

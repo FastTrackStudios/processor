@@ -164,8 +164,10 @@ pub struct ReverbChain {
     algorithm_type: AlgorithmType,
     variant: usize,
 
-    // Pre-delay (up to 500ms)
+    // Pre-delay (up to 500ms), one line per side: the true-stereo
+    // engines (Cloud's crossfeed, the split routings) hear both inputs.
     predelay: DelayLine,
+    predelay_r: DelayLine,
     predelay_samples: usize,
 
     // Input conditioning
@@ -402,6 +404,7 @@ impl ReverbChain {
             algorithm_type: AlgorithmType::Room,
             variant: 0,
             predelay: DelayLine::new(max_predelay.saturating_add(1)),
+            predelay_r: DelayLine::new(max_predelay.saturating_add(1)),
             predelay_samples: 0,
             input_hp: Biquad::new(),
             input_lp: Biquad::new(),
@@ -680,11 +683,13 @@ impl ReverbChain {
         // correspondingly longer (or shorter) time to land on the requested
         // one. Without this, "2.5 seconds with tamed lows" quietly became
         // 1.36 seconds.
-        let compensated = t60_s
-            / crate::algorithm::tilt_midband_factor(
-                self.params.low_decay_mult,
-                self.params.high_decay_mult,
-            );
+        let low = if self.algorithm_type.low_end_is_filter() {
+            1.0
+        } else {
+            self.params.low_decay_mult
+        };
+        let compensated =
+            t60_s / crate::algorithm::tilt_midband_factor(low, self.params.high_decay_mult);
         let decay = crate::algorithm::t60_to_decay(compensated, lo, hi);
         self.params.decay = decay;
         self.update_params();
@@ -1094,6 +1099,7 @@ impl Processor for ReverbChain {
     fn reset(&mut self) {
         self.algorithm.reset();
         self.predelay.clear();
+        self.predelay_r.clear();
         self.input_hp.reset();
         self.input_lp.reset();
         self.output_hp.reset();
@@ -1133,13 +1139,14 @@ impl Processor for ReverbChain {
 
         let max_predelay = num::f64_to_index(config.sample_rate * 0.5);
         self.predelay = DelayLine::new(max_predelay.saturating_add(1));
+        self.predelay_r = DelayLine::new(max_predelay.saturating_add(1));
         self.predelay_samples = if matches!(
             self.algorithm_type,
             AlgorithmType::Magneto | AlgorithmType::NonLinear
         ) {
             0
         } else {
-            num::f64_to_index(self.predelay_ms * 0.001 * config.sample_rate)
+            num::f64_to_index(self.predelay_ms * 0.001 * config.sample_rate).min(max_predelay)
         };
 
         self.input_hp.set(
@@ -1405,8 +1412,11 @@ impl ReverbChain {
                 (0.0, 0.0)
             } else if self.predelay_samples > 0 {
                 self.predelay.write(filt_l);
-                let delayed = self.predelay.read(self.predelay_samples);
-                (delayed, filt_r)
+                self.predelay_r.write(filt_r);
+                (
+                    self.predelay.read(self.predelay_samples),
+                    self.predelay_r.read(self.predelay_samples),
+                )
             } else {
                 (filt_l, filt_r)
             };
@@ -1648,7 +1658,10 @@ impl ReverbChain {
                 }
                 _ => self.predelay_ms,
             };
-            self.predelay_samples = num::f64_to_index(ms * 0.001 * self.sample_rate);
+            // The line holds 500 ms; a longer read would wrap (or, in a
+            // debug build, underflow) inside `DelayLine::read`.
+            self.predelay_samples = num::f64_to_index(ms * 0.001 * self.sample_rate)
+                .min(num::f64_to_index(self.sample_rate * 0.5));
         }
 
         // Re-apply the input LP here too: the Classic-voice vintage cap

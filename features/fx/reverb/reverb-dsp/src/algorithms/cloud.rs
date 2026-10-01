@@ -13,7 +13,7 @@
 
 use dsp_core::num;
 
-use crate::algorithm::{AlgorithmParams, CloudParams, ReverbAlgorithm};
+use crate::algorithm::{AlgorithmParams, CLOUD_T60, CloudParams, ReverbAlgorithm, decay_to_t60};
 use crate::primitives::allpass_diffuser::AllpassDiffuser;
 use crate::primitives::lcg_random::random_buffer_cross_seed;
 use crate::primitives::modulated_delay::ModulatedDelay;
@@ -26,6 +26,10 @@ use crate::primitives::reverb_line::ReverbLine;
 use audiocore_dsp::biquad::{Biquad, FilterType};
 
 const TOTAL_LINE_COUNT: usize = 12;
+
+/// Cross-seed of the input stage (multitap + input diffuser), the same on
+/// both channels so the stage is identical L and R.
+const INPUT_CROSS_SEED: f64 = 0.5;
 
 /// `CloudSeed`'s 45 internal parameter indices (matching Parameters.h).
 mod param {
@@ -359,11 +363,13 @@ impl CloudChannel {
                     }
                     line.diffuser_enabled = new_val;
                 }
+                self.update_lines();
             }
             param::LATE_DIFFUSE_COUNT => {
                 for line in &mut self.lines {
                     line.set_diffuser_stages(num::f64_to_index(scaled));
                 }
+                self.update_lines();
             }
             param::LATE_LINE_SIZE
             | param::LATE_LINE_MOD_AMOUNT
@@ -378,6 +384,7 @@ impl CloudChannel {
                 for line in &mut self.lines {
                     line.set_diffuser_delay(samples);
                 }
+                self.update_lines();
             }
             param::LATE_DIFFUSE_FEEDBACK => {
                 for line in &mut self.lines {
@@ -438,8 +445,12 @@ impl CloudChannel {
                 } else {
                     0.5f64.mul_add(-scaled, 1.0)
                 };
-                self.multitap.set_cross_seed(self.cross_seed);
-                self.diffuser.set_cross_seed(self.cross_seed);
+                // The input stage is the same on both sides — BigSky's Cloud
+                // diffuses in mono (L/R correlation 0.99 for its first 20 ms)
+                // and decorrelates in the tank. Only the lines take the
+                // per-side seed.
+                self.multitap.set_cross_seed(INPUT_CROSS_SEED);
+                self.diffuser.set_cross_seed(INPUT_CROSS_SEED);
                 self.update_lines();
                 self.update_post_diffusion();
             }
@@ -536,8 +547,12 @@ impl CloudChannel {
                 delay_samples = mod_amount + 2.0;
             }
 
-            // T60 decay calculation
-            let db_after_1iter = delay_samples / t60_samples.max(1.0) * (-60.0);
+            // T60 decay calculation, over the whole trip: the line AND
+            // its in-loop diffuser. CloudSeed counted the line alone, so
+            // with the late diffusers in every tail rang about twice as
+            // long as asked (measured against BigSky's Cloud).
+            let trip = delay_samples + num::count_to_f64(line.diffuser_delay());
+            let db_after_1iter = trip / t60_samples.max(1.0) * (-60.0);
             let gain_after_1iter = db2gain(db_after_1iter);
 
             line.set_delay(num::f64_to_index(delay_samples));
@@ -557,6 +572,8 @@ impl CloudChannel {
                 .saturating_mul(u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1));
             line.set_diffuser_seed(seed, self.cross_seed);
         }
+        // The seed moves the stage delays, so the trip length with them.
+        self.update_lines();
     }
 
     /// Process one sample — exact port of `ReverbChannel::Process` (per-sample).
@@ -611,7 +628,12 @@ impl CloudChannel {
     fn clear(&mut self) {
         self.low_pass.reset();
         self.high_pass.reset();
-        self.pre_delay.clear();
+        // `reset`, not `clear`: the read position must snap onto the
+        // pre-delay too. Left gliding from its construction value (100
+        // samples) down to a short target, it swept past a sound that
+        // arrived during the glide and dropped it — with a zero pre-delay
+        // an impulse straight after a reset never reached the reverb.
+        self.pre_delay.reset();
         self.multitap.clear();
         self.diffuser.clear();
         for line in &mut self.lines {
@@ -817,6 +839,12 @@ impl Cloud {
         cloud
     }
 
+    /// Set a parameter in its own units (past `ScaleParam`) on both channels.
+    fn set_scaled_param(&mut self, param_id: usize, scaled: f64) {
+        self.left.apply_param(param_id, scaled);
+        self.right.apply_param(param_id, scaled);
+    }
+
     /// Set a raw [0, 1] parameter and apply through `ScaleParam` to both channels.
     fn set_raw_param(&mut self, param_id: usize, value: f64) {
         if let Some(slot) = self.raw_params.get_mut(param_id) {
@@ -846,42 +874,49 @@ impl ReverbAlgorithm for Cloud {
         // Map our 8 AlgorithmParams to CloudSeed's 45 raw parameters.
         // Each knob controls the most musically relevant CloudSeed parameters.
 
-        // Decay → late line decay (0.05-60s via resp3dec)
-        self.set_raw_param(param::LATE_LINE_DECAY, params.decay);
-        // Also affect tap decay
-        self.set_raw_param(param::TAP_DECAY, params.decay.mul_add(0.5, 0.3));
+        // Decay → the late lines' T60, in seconds. CloudSeed computes each
+        // line's feedback from it exactly, so Cloud converts time itself
+        // (`CLOUD_T60`) instead of going through `resp3dec` and a measured
+        // table. Freeze (`decay_to_t60`'s infinite) holds the lines at unity.
+        self.set_scaled_param(param::LATE_LINE_DECAY, decay_to_t60(params.decay, CLOUD_T60.0, CLOUD_T60.1));
 
-        // Size → late line size, tap length, early diffuse delay, late diffuse delay
+        // Size → late line size and late diffuse delay (the input chain's
+        // delay is set with Diffusion below).
         self.set_raw_param(param::LATE_LINE_SIZE, params.size);
-        self.set_raw_param(param::TAP_LENGTH, params.size);
-        self.set_raw_param(param::EARLY_DIFFUSE_DELAY, params.size);
         self.set_raw_param(param::LATE_DIFFUSE_DELAY, params.size);
 
-        // Diffusion — the Cloud continuum (manual): at MIN the reverb is
-        // "grainier yet mesmerizing on transient attacks" — a skittery
-        // DISCRETE multitap early field with the diffusers out of the
-        // way; raising the knob multiplies taps into a dense cluster
-        // and brings the cascaded diffusers in until the attack is fog.
-        let d = params.diffusion;
+        // Diffusion. Measured against BigSky's Cloud (signal-analyzer's
+        // `bigsky_match`): at minimum Diffusion its impulse response is
+        // silent for ~180 ms, then one pulse identical in L and R, then a
+        // sparse L/R echo train from the tank. That is a fixed chain of
+        // input allpasses whose gain the knob sets — at zero gain each
+        // stage is a pure delay, and the chain's delays add up. Raising
+        // the knob lets the allpasses' instantaneous paths through (energy
+        // from ~20 ms) and smears both the input and the tank into fog.
+        // So: no multitap, a fixed 8-stage input chain, and Diffusion as
+        // allpass gain on the input and late diffusers alike.
+        let d = params.diffusion.clamp(0.0, 1.0);
+        // Bloom: a flat train of taps over ~0.6 s ahead of the input chain
+        // keeps feeding the tank, so the output holds level for ~half a
+        // second before it decays — BigSky's Cloud plateaus from ~0.2 to
+        // ~0.7 s at every Decay setting.
         self.set_raw_param(param::TAP_ENABLED, 1.0);
-        // ~21 discrete taps (grainy) → ~72 blended taps (dense).
-        self.set_raw_param(param::TAP_COUNT, d.mul_add(0.2, 0.08));
-        self.set_raw_param(param::EARLY_DIFFUSE_COUNT, d);
-        self.set_raw_param(param::EARLY_DIFFUSE_FEEDBACK, d * 0.85);
-        self.set_raw_param(param::LATE_DIFFUSE_COUNT, d);
-        self.set_raw_param(param::LATE_DIFFUSE_FEEDBACK, d * 0.8);
-        self.set_raw_param(
-            param::EARLY_DIFFUSE_ENABLED,
-            if d > 0.03 { 1.0 } else { 0.0 },
-        );
-        self.set_raw_param(
-            param::LATE_DIFFUSE_ENABLED,
-            if d > 0.12 { 1.0 } else { 0.0 },
-        );
-        // Early/late balance rides the knob: grainy = the tap field
-        // stays prominent; foggy = the tank dominates.
-        self.set_raw_param(param::EARLY_OUT, d.mul_add(-0.25, 0.95));
-        self.set_raw_param(param::LATE_OUT, d.mul_add(0.15, 0.85));
+        self.set_raw_param(param::TAP_COUNT, 31.0 / 255.0);
+        self.set_raw_param(param::TAP_LENGTH, (600.0 - 10.0) / 990.0);
+        self.set_raw_param(param::TAP_DECAY, 0.6);
+        self.set_raw_param(param::EARLY_DIFFUSE_ENABLED, 1.0);
+        // 8 stages: `floor(1 + 11.999·raw)`.
+        self.set_raw_param(param::EARLY_DIFFUSE_COUNT, 7.0 / 11.999);
+        // Stage delays are 0.1–1.0 × the base, and with these seeds the 8
+        // stages sum to 2.72 × base; base ≈ 67 ms puts the chain at
+        // BigSky's ~182 ms at the default size.
+        self.set_raw_param(param::EARLY_DIFFUSE_DELAY, params.size.mul_add(0.5, 0.382));
+        self.set_raw_param(param::EARLY_DIFFUSE_FEEDBACK, (d * 1.15).min(0.92));
+        self.set_raw_param(param::LATE_DIFFUSE_ENABLED, if d > 0.02 { 1.0 } else { 0.0 });
+        self.set_raw_param(param::LATE_DIFFUSE_COUNT, 0.5);
+        self.set_raw_param(param::LATE_DIFFUSE_FEEDBACK, d * 0.7);
+        self.set_raw_param(param::EARLY_OUT, 0.85);
+        self.set_raw_param(param::LATE_OUT, 1.0);
 
         // Damping → EQ lowpass cutoff
         let cutoff_raw = 1.0 - params.damping;
@@ -900,26 +935,28 @@ impl ReverbAlgorithm for Cloud {
         let m = params.modulation.clamp(0.0, 1.0);
         let depth = (m / 0.72).min(1.0);
         let rate_seg = ((m - 0.72) / 0.28).max(0.0);
-        self.set_raw_param(param::EARLY_DIFFUSE_MOD_AMOUNT, depth);
-        self.set_raw_param(param::EARLY_DIFFUSE_MOD_RATE, 0.35 + rate_seg * 0.45);
-        self.set_raw_param(param::LATE_LINE_MOD_AMOUNT, depth * 0.25);
+        // Scaled to BigSky's measured spread around a held 1 kHz tone
+        // (bigsky_match, Welch-averaged): ~1 Hz at 0, ~7 Hz at 64, ~9 Hz
+        // at 96, ~10–13 Hz at 127. Its rate segment adds little — CloudSeed's
+        // rate law (`resp2dec · 5 Hz`) is steep, so the rise stays small.
+        self.set_raw_param(param::EARLY_DIFFUSE_MOD_AMOUNT, depth * 0.8);
+        self.set_raw_param(param::EARLY_DIFFUSE_MOD_RATE, rate_seg.mul_add(0.04, 0.35));
+        self.set_raw_param(param::LATE_LINE_MOD_AMOUNT, depth * 0.2);
         self.set_raw_param(param::LATE_LINE_MOD_RATE, 0.3);
-        self.set_raw_param(param::LATE_DIFFUSE_MOD_AMOUNT, depth * 0.35);
-        self.set_raw_param(param::LATE_DIFFUSE_MOD_RATE, 0.3 + rate_seg * 0.3);
+        self.set_raw_param(param::LATE_DIFFUSE_MOD_AMOUNT, depth * 0.28);
+        self.set_raw_param(param::LATE_DIFFUSE_MOD_RATE, rate_seg.mul_add(0.03, 0.3));
 
-        // Low End (BigSky common param): per-line low shelf inside the
-        // CloudSeed loop EQ — above 1.0 the lows bloom per pass, below
-        // they thin. Bright tone settings override with their low cut.
+        // Low End. On BigSky's Cloud it is a static first-order high-pass,
+        // not a low-band decay: per-band T20 does not move with it, and the
+        // octave levels fit a 1-pole HP whose corner runs 549 Hz (−10) →
+        // 300 Hz (0) → 84 Hz (+10), ≈ 300 − 23·LowEnd (bigsky_match). The
+        // chain's `low_end` reaches us as `low_decay_mult`; undo that law
+        // to get the knob back.
         let le = params.low_decay_mult;
-        let low_end_active = (le - 1.0).abs() > 0.02 && params.tone <= 0.0;
-        if low_end_active {
-            self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 1.0);
-            self.set_raw_param(param::EQ_LOW_FREQ, 0.35);
-            self.set_raw_param(
-                param::EQ_LOW_GAIN,
-                (le - 1.0).mul_add(0.4, 0.5).clamp(0.1, 0.75),
-            );
-        }
+        let knob01 = if le < 1.0 { le - 0.5 } else { (le - 1.0) / 1.2 + 0.5 };
+        let low_end = knob01.clamp(0.0, 1.0).mul_add(20.0, -10.0);
+        self.set_raw_param(param::LOW_CUT_ENABLED, 1.0);
+        self.set_scaled_param(param::LOW_CUT, low_end.mul_add(-23.3, 300.0).clamp(20.0, 1000.0));
 
         // Tone → EQ shelf gains
         if params.tone < 0.0 {
@@ -927,9 +964,7 @@ impl ReverbAlgorithm for Cloud {
             self.set_raw_param(param::EQ_HIGH_SHELF_ENABLED, 1.0);
             self.set_raw_param(param::EQ_HIGH_GAIN, params.tone.mul_add(0.5, 0.5));
             self.set_raw_param(param::EQ_HIGH_FREQ, 0.5);
-            if !low_end_active {
-                self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 0.0);
-            }
+            self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 0.0);
         } else if params.tone > 0.0 {
             // Bright: cut lows
             self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 1.0);
@@ -937,19 +972,23 @@ impl ReverbAlgorithm for Cloud {
             self.set_raw_param(param::EQ_LOW_FREQ, 0.3);
             self.set_raw_param(param::EQ_HIGH_SHELF_ENABLED, 0.0);
         } else {
-            if !low_end_active {
-                self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 0.0);
-            }
+            self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 0.0);
             self.set_raw_param(param::EQ_HIGH_SHELF_ENABLED, 0.0);
         }
 
-        // Extra A → pre-delay (0-500ms via resp1dec) + line count
-        // (tap count is owned by the Diffusion continuum above).
-        self.set_raw_param(param::TAP_PREDELAY, params.extra_a * 0.5);
+        // No internal pre-delay: the chain's Pre-Delay is the only one.
+        // `extra_a` used to put up to 500 ms here (43 ms at its default),
+        // so Cloud started late even at Pre-Delay 0 — BigSky's Cloud
+        // starts at once. Extra A keeps the line count.
+        self.set_raw_param(param::TAP_PREDELAY, 0.0);
         self.set_raw_param(param::LATE_LINE_COUNT, params.extra_a.mul_add(0.5, 0.4));
 
-        // Extra B → cross-seed, seeds (character/stereo width)
-        self.set_raw_param(param::EQ_CROSS_SEED, params.extra_b);
+        // Lines fully independent per side (cross-seed 0 → L and R draw
+        // from different random series): BigSky's Cloud tail is
+        // decorrelated even on a held tone (|L/R corr| ≤ 0.2), where the
+        // half-shared seeds Extra B used to give kept ours at 0.2–0.6.
+        // The input stage stays mono regardless (`INPUT_CROSS_SEED`).
+        self.set_raw_param(param::EQ_CROSS_SEED, 0.0);
         self.set_raw_param(param::INPUT_MIX, params.extra_b * 0.8);
     }
 

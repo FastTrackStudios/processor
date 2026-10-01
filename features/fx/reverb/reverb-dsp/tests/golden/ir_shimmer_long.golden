@@ -3,7 +3,7 @@
 # A change here in a refactor commit means the audio changed. Investigate.
 name ir_shimmer_long
 len 48000
-hash 16d56019a44d27da
+hash b5faaebdbeff9149
 probe 0 0000000000000000 0
 probe 750 0000000000000000 0
 probe 1500 0000000000000000 0

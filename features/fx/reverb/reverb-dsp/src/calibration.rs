@@ -1,10 +1,10 @@
 //! Measured decay → RT60 for the engines whose `decay` is a feedback law
 //! rather than a time.
 //!
-//! Room and Hall convert `decay` to seconds themselves
+//! Room, Hall and Cloud convert `decay` to seconds themselves
 //! (`AlgorithmType::t60_range`), within a few percent. The rest — springs,
 //! the plates (the Dattorro tank's own conversion measured 11–12 % short),
-//! Cloud, Bloom, Shimmer, Chorale, Swell — set a loop gain from it, so the
+//! Bloom, Shimmer, Chorale, Swell — set a loop gain from it, so the
 //! same knob position meant 0.5 s on one and 20 s on another, and "decay
 //! 0.8" said nothing about how long anything rang. These tables are what
 //! each one actually does, measured through the Reverb block by
@@ -108,12 +108,6 @@ const SPRING_1: DecayTable = DecayTable {
     t60: &[0.408, 0.427, 0.509, 0.553, 0.578, 0.693, 0.778, 0.838, 0.995, 1.056, 1.133, 1.360, 1.574, 1.835, 2.328, 2.892, 4.231],
 };
 
-/// Cloud (variant 0): 2.48 s … 28.03 s.
-const CLOUD_0: DecayTable = DecayTable {
-    decay: &[0.000, 0.400, 0.450, 0.500, 0.550, 0.600, 0.650, 0.700, 0.750, 0.800, 0.850],
-    t60: &[2.477, 2.618, 2.882, 3.362, 4.160, 5.382, 7.199, 10.000, 13.940, 19.669, 28.027],
-};
-
 /// Bloom (variant 0): 0.87 s … 21.44 s.
 const BLOOM_0: DecayTable = DecayTable {
     decay: &[0.000, 0.050, 0.100, 0.150, 0.200, 0.250, 0.300, 0.350, 0.400, 0.450, 0.500, 0.550, 0.600, 0.650, 0.700, 0.750, 0.800, 0.850],
@@ -150,7 +144,6 @@ pub const fn table(algorithm: AlgorithmType, variant: usize) -> Option<&'static 
         (AlgorithmType::Plate, 2) => Some(&PLATE_2),
         (AlgorithmType::Spring, 0) => Some(&SPRING_0),
         (AlgorithmType::Spring, 1) => Some(&SPRING_1),
-        (AlgorithmType::Cloud, _) => Some(&CLOUD_0),
         (AlgorithmType::Bloom, _) => Some(&BLOOM_0),
         (AlgorithmType::Shimmer, _) => Some(&SHIMMER_0),
         (AlgorithmType::Chorale, _) => Some(&CHORALE_0),
@@ -171,7 +164,6 @@ mod tests {
             (AlgorithmType::Plate, 2),
             (AlgorithmType::Spring, 0),
             (AlgorithmType::Spring, 1),
-            (AlgorithmType::Cloud, 0),
             (AlgorithmType::Bloom, 0),
             (AlgorithmType::Shimmer, 0),
             (AlgorithmType::Chorale, 0),

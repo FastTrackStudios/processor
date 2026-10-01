@@ -167,6 +167,15 @@ impl AllpassDiffuser {
         x
     }
 
+    /// Sum of the active stages' delays, in samples. A Schroeder allpass
+    /// delays its energy by exactly its delay length on average, whatever
+    /// its gain — so this is how much longer a feedback loop through the
+    /// diffuser really is.
+    #[must_use]
+    pub fn total_delay(&self) -> usize {
+        self.filters.iter().take(self.stages).map(|f| f.sample_delay).sum()
+    }
+
     pub fn clear(&mut self) {
         for f in &mut self.filters {
             f.clear();

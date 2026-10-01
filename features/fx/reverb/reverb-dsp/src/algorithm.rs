@@ -1341,6 +1341,11 @@ pub const HALL_CATHEDRAL_T60: (f64, f64) = (0.6, 40.0);
 pub const HALL_ARENA_T60: (f64, f64) = (0.8, 40.0);
 /// Random spaces span room-to-large-hall lengths.
 pub const RANDOM_T60: (f64, f64) = (0.15, 25.0);
+/// Cloud: `CloudSeed`'s late lines take a T60 directly, so Cloud converts
+/// time itself. The span is `BigSky`'s: its Cloud never rings shorter than
+/// ~4.5 s and reaches ~75 s before Infinite (measured, signal-analyzer's
+/// `bigsky_match`); the floor leaves room below that.
+pub const CLOUD_T60: (f64, f64) = (1.0, 90.0);
 /// The plate tank.
 ///
 /// The floor is a round trip and a half, not an arbitrary minimum: the
@@ -1379,6 +1384,15 @@ pub fn dattorro_gain_for_t60(t60_s: f64, loop_seconds: f64, applications: f64) -
 }
 
 impl AlgorithmType {
+    /// Whether Low End is a static filter on this engine rather than a
+    /// low-band decay multiplier — Cloud's, after `BigSky`'s. The chain must
+    /// not then stretch the requested decay to compensate a tilt that the
+    /// engine never applies to its decay.
+    #[must_use]
+    pub const fn low_end_is_filter(self) -> bool {
+        matches!(self, Self::Cloud)
+    }
+
     /// Whether this engine realizes the Decay Rate EQ exactly, in its own
     /// feedback path (`Fdn::set_decay_curve`).
     ///
@@ -1413,6 +1427,7 @@ impl AlgorithmType {
             (Self::Hall, 2) => Some(HALL_ARENA_T60),
             (Self::Hall, _) => Some(HALL_T60),
             (Self::Random, _) => Some(RANDOM_T60),
+            (Self::Cloud, _) => Some(CLOUD_T60),
             // The plates (the Dattorro tank's own conversion measured 11–12 %
             // short) and the engines with their own feedback law: the span measured for
             // them (`calibration`), which the chain maps `decay` across.
