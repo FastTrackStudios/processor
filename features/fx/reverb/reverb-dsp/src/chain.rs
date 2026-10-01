@@ -85,6 +85,9 @@ pub struct ChainParamSurface {
 /// Number of Post EQ bands (`fx.reverb.post-eq`).
 pub const POST_EQ_BANDS: usize = 6;
 
+/// Longest pre-delay the chain holds, in seconds — BigSky's 1.5 s.
+pub const MAX_PREDELAY_S: f64 = 1.5;
+
 /// One Post EQ band — the 6-band EQ on the final reverb sound
 /// (`fx.reverb.post-eq`, docs/spec/fx/embedded-eq.md).
 ///
@@ -402,7 +405,7 @@ impl ReverbChain {
     #[must_use]
     pub fn new() -> Self {
         let sample_rate = 48000.0;
-        let max_predelay = num::f64_to_index(sample_rate * 0.5); // 500ms
+        let max_predelay = num::f64_to_index(sample_rate * MAX_PREDELAY_S);
 
         Self {
             algorithm: algorithms::create(AlgorithmType::Room, 0, sample_rate),
@@ -1142,7 +1145,7 @@ impl Processor for ReverbChain {
             1.0
         };
 
-        let max_predelay = num::f64_to_index(config.sample_rate * 0.5);
+        let max_predelay = num::f64_to_index(config.sample_rate * MAX_PREDELAY_S);
         self.predelay = DelayLine::new(max_predelay.saturating_add(1));
         self.predelay_r = DelayLine::new(max_predelay.saturating_add(1));
         self.predelay_samples = if matches!(
@@ -1674,14 +1677,14 @@ impl ReverbChain {
             // Tempo sync wins over the ms knob when both are set.
             let ms = match (self.predelay_sync_beats, self.tempo_bpm) {
                 (Some(beats), Some(bpm)) if beats > 0.0 && bpm > 0.0 => {
-                    (beats * 60_000.0 / bpm).min(490.0)
+                    (beats * 60_000.0 / bpm).min(MAX_PREDELAY_S * 1000.0)
                 }
                 _ => self.predelay_ms,
             };
-            // The line holds 500 ms; a longer read would wrap (or, in a
-            // debug build, underflow) inside `DelayLine::read`.
+            // The line holds `MAX_PREDELAY_S`; a longer read would wrap (or,
+            // in a debug build, underflow) inside `DelayLine::read`.
             self.predelay_samples = num::f64_to_index(ms * 0.001 * self.sample_rate)
-                .min(num::f64_to_index(self.sample_rate * 0.5));
+                .min(num::f64_to_index(self.sample_rate * MAX_PREDELAY_S));
         }
 
         // Re-apply the input LP here too: the Classic-voice vintage cap

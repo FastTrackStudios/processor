@@ -158,7 +158,7 @@ fn every_algorithm_stays_bounded_across_its_knob_range() {
             continue;
         }
         for decay in [0.0, 0.5, 1.0] {
-            for predelay_ms in [0.0, 50.0, 125.0, 250.0, 500.0] {
+            for predelay_ms in [0.0, 50.0, 125.0, 250.0, 500.0, 1500.0] {
                 let ir = impulse_response(*algo, decay, predelay_ms, 4.0);
                 assert_bounded(
                     &format!("{algo:?} decay={decay} predelay={predelay_ms}ms"),
@@ -167,6 +167,17 @@ fn every_algorithm_stays_bounded_across_its_knob_range() {
             }
         }
     }
+}
+
+/// The full BigSky pre-delay reaches the output: nothing before 1.5 s, the
+/// tail after it — the line neither clamps short nor wraps.
+#[test]
+fn the_longest_predelay_is_honoured() {
+    let ir = impulse_response(AlgorithmType::Hall, 0.5, 1500.0, 2.5);
+    let onset = ir.iter().position(|v| v.abs() > 1e-6).unwrap_or(ir.len());
+    let at = num::f64_to_index(SR * 1.5);
+    assert!(onset >= at, "output at {onset} before the 1.5 s pre-delay ({at})");
+    assert!(onset < at + num::f64_to_index(SR * 0.2), "no tail within 200 ms of the pre-delay (onset {onset})");
 }
 
 /// Every tail eventually dies, measured over a horizon set by its own decay.
