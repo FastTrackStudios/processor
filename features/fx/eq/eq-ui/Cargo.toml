@@ -15,6 +15,11 @@ workspace = true
 # paints onto a canvas instead (`fts_audio_ui::scene_canvas`).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 nice-plug-dioxus = { workspace = true, optional = true }
+# The graph's custom-widget mechanism, straight from Blitz (what
+# `nice_plug_dioxus::widget` re-exports) — so a surface with no plugin
+# window (a phone app, which baseview cannot build for) can mount it.
+dioxus-native = { workspace = true, optional = true }
+blitz-traits = { workspace = true, optional = true }
 
 [features]
 # Core-only by default in the signal workspace (wasm remotes). The plugin
@@ -42,7 +47,8 @@ default = []
 graph-paint = ["dep:anyrender", "dep:kurbo", "dep:peniko", "spectrum-analyzer/ui"]
 graph = [
     "graph-paint",
-    "dep:nice-plug-dioxus",
+    "dep:dioxus-native",
+    "dep:blitz-traits",
     "dep:bytemuck",
     "fts-audio-ui/shader",
     "dep:architect-ui",
@@ -52,6 +58,7 @@ graph = [
 ]
 native = [
     "graph",
+    "dep:nice-plug-dioxus",
     # The plugin editor mounts the analyser's settings panel.
     "spectrum-analyzer/ui-panel",
     "dep:nice-plug",

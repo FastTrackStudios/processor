@@ -41,7 +41,7 @@ pub use dioxus_native_dom::CustomWidgetAttr;
 /// outside dioxus's reactive world. Cloned into the widget at mount, kept by
 /// the component.
 #[derive(Clone, Default)]
-pub struct SceneSlot(Rc<RefCell<Option<Scene>>>);
+pub struct SceneSlot(Rc<RefCell<Option<Scene>>>, Rc<std::cell::Cell<bool>>);
 
 impl SceneSlot {
     pub fn new() -> Self {
@@ -51,6 +51,8 @@ impl SceneSlot {
     /// Leave a freshly built scene for the next frame.
     pub fn put(&self, scene: Scene) {
         *self.0.borrow_mut() = Some(scene);
+        // Unpainted: the host draws a frame for it (see `needs_redraw`).
+        self.1.set(true);
     }
 
     /// What the last render left, if anything.
@@ -86,7 +88,15 @@ impl blitz_dom::Widget for SceneWidget {
         // unused: the scene was built in CSS pixels against the same box and
         // the renderer applies the device scale. Scaling here would
         // reintroduce the ratio that made inline svg wrong.
+        self.slot.1.set(false);
         self.slot.take_scene().unwrap_or_default()
+    }
+
+    /// A scene left since the last paint: the host redraws for it, and
+    /// only for it — a component re-rendering changes no DOM when all it
+    /// changed is its picture.
+    fn needs_redraw(&self) -> bool {
+        self.slot.1.get()
     }
 }
 
@@ -115,4 +125,169 @@ pub fn use_painted() -> Painted {
 pub struct Painted {
     pub slot: SceneSlot,
     pub widget: CustomWidgetAttr,
+}
+
+/// A flag a component sets when it hands its widget something new to draw
+/// (see [`Freshened`]). Cloned: the component keeps one, the widget one.
+#[derive(Clone, Default)]
+pub struct Fresh(Rc<std::cell::Cell<bool>>);
+
+impl Fresh {
+    /// Something new to draw: the host paints a frame for it.
+    pub fn mark(&self) {
+        self.0.set(true);
+    }
+}
+
+/// A widget whose picture a component updates behind its back (a view in
+/// an `Rc<RefCell<…>>` set during render), told so by a [`Fresh`] flag.
+///
+/// The host redraws when the DOM changes or a widget says it needs to.
+/// Re-rendering a component that only updates its widget's view changes
+/// no DOM, so without this the new view is never drawn. Wraps any widget
+/// and leaves it as it is otherwise.
+pub struct Freshened<W> {
+    inner: W,
+    fresh: Fresh,
+}
+
+impl<W> Freshened<W> {
+    pub fn new(inner: W, fresh: Fresh) -> Self {
+        Self { inner, fresh }
+    }
+}
+
+impl<W: blitz_dom::Widget> blitz_dom::Widget for Freshened<W> {
+    fn connected(&mut self) {
+        self.inner.connected();
+    }
+    fn disconnected(&mut self) {
+        self.inner.disconnected();
+    }
+    fn attribute_changed(&mut self, name: &str, old_value: Option<&str>, new_value: Option<&str>) {
+        self.inner.attribute_changed(name, old_value, new_value);
+    }
+    fn can_create_surfaces(&mut self, render_ctx: &mut dyn anyrender::RenderContext) {
+        self.inner.can_create_surfaces(render_ctx);
+    }
+    fn destroy_surfaces(&mut self) {
+        self.inner.destroy_surfaces();
+    }
+    fn handle_event(&mut self, event: &blitz_traits::events::UiEvent) {
+        self.inner.handle_event(event);
+    }
+    fn needs_redraw(&self) -> bool {
+        self.fresh.0.get() || self.inner.needs_redraw()
+    }
+    fn composite_texture(&self) -> Option<anyrender::ResourceId> {
+        self.inner.composite_texture()
+    }
+    fn paint(
+        &mut self,
+        render_ctx: &mut dyn anyrender::RenderContext,
+        styles: &blitz_dom::node::ComputedStyles,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Scene {
+        self.fresh.0.set(false);
+        self.inner.paint(render_ctx, styles, width, height, scale)
+    }
+}
+
+/// A widget whose scene is rendered into a texture of its own
+/// ([`anyrender_vello::Rasterizer`]) rather than into the page, so the host
+/// can draw it over the page as a layer: a frame where only it moved then
+/// costs its own small render, not the whole page's.
+///
+/// For widgets that move on their own (a visualiser's decay, a sweeping
+/// LFO). The inner widget paints as ever; its resources (a shader's
+/// texture) register with the rasteriser. On a renderer with no wgpu
+/// device it paints into the page as before.
+pub struct Rasterized<W> {
+    inner: W,
+    raster: Option<anyrender_vello::Rasterizer>,
+    /// The texture as the host knows it, and its size.
+    texture: Option<(anyrender::ResourceId, (u32, u32))>,
+}
+
+impl<W> Rasterized<W> {
+    pub fn new(inner: W) -> Self {
+        Self { inner, raster: None, texture: None }
+    }
+}
+
+impl<W: blitz_dom::Widget> blitz_dom::Widget for Rasterized<W> {
+    fn connected(&mut self) {
+        self.inner.connected();
+    }
+    fn disconnected(&mut self) {
+        self.inner.disconnected();
+    }
+    fn attribute_changed(&mut self, name: &str, old_value: Option<&str>, new_value: Option<&str>) {
+        self.inner.attribute_changed(name, old_value, new_value);
+    }
+    fn can_create_surfaces(&mut self, render_ctx: &mut dyn anyrender::RenderContext) {
+        self.texture = None;
+        self.raster = render_ctx.renderer_specific_context().and_then(anyrender_vello::Rasterizer::new);
+        match self.raster.as_mut() {
+            Some(raster) => self.inner.can_create_surfaces(raster),
+            None => self.inner.can_create_surfaces(render_ctx),
+        }
+    }
+    fn destroy_surfaces(&mut self) {
+        self.inner.destroy_surfaces();
+        self.raster = None;
+        self.texture = None;
+    }
+    fn handle_event(&mut self, event: &blitz_traits::events::UiEvent) {
+        self.inner.handle_event(event);
+    }
+    fn needs_redraw(&self) -> bool {
+        self.inner.needs_redraw()
+    }
+    fn composite_texture(&self) -> Option<anyrender::ResourceId> {
+        self.texture.map(|(id, _)| id)
+    }
+    fn paint(
+        &mut self,
+        render_ctx: &mut dyn anyrender::RenderContext,
+        styles: &blitz_dom::node::ComputedStyles,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Scene {
+        let Some(raster) = self.raster.as_mut() else {
+            return self.inner.paint(render_ctx, styles, width, height, scale);
+        };
+        // Nothing new to draw: the texture already shows it.
+        let current = self.texture.is_some_and(|(_, size)| size == (width, height));
+        if !(current && !self.inner.needs_redraw()) {
+            let scene = self.inner.paint(raster, styles, width, height, scale);
+            let Some((texture, fresh)) = raster.render(scene, (width, height)) else {
+                return Scene::new();
+            };
+            if fresh || !current {
+                if let Some((old, _)) = self.texture.take() {
+                    render_ctx.unregister_resource(old);
+                }
+                self.texture = render_ctx
+                    .try_register_custom_resource(Box::new(texture))
+                    .ok()
+                    .map(|id| (id, (width, height)));
+            }
+        }
+        let mut scene = Scene::new();
+        if let Some((id, _)) = self.texture {
+            use anyrender::PaintScene;
+            scene.fill(
+                peniko::Fill::NonZero,
+                kurbo::Affine::IDENTITY,
+                anyrender::Paint::Resource(peniko::ImageBrush { image: id, sampler: peniko::ImageSampler::default() }),
+                None,
+                &kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+            );
+        }
+        scene
+    }
 }

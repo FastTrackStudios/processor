@@ -409,23 +409,16 @@ pub fn paint_reverb(scene: &mut Scene, view: &ReverbView, w: f64, h: f64) {
 
 // ── Mounting ────────────────────────────────────────────────────────────────
 
-/// Mark this scope dirty ~40 times a second, for as long as it lives.
+/// Mark this scope dirty ~40 times a second while `active` (the effect on),
+/// for as long as it lives.
 ///
 /// Blitz repaints when the document changes, and an animation changes nothing
 /// in the DOM — the movement is inside a widget's scene. So the clock has to
 /// come from outside: a thread that pokes the runtime. `schedule_update` is
 /// documented as safe to call from off the runtime, which is what this is.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn use_repaint_clock() {
-    use_hook(|| {
-        let updater = dioxus_core::schedule_update();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                updater();
-            }
-        });
-    });
+pub fn use_repaint_clock(active: bool) {
+    fts_audio_ui::animate::use_frame_clock(active, std::time::Duration::from_millis(25));
 }
 
 /// In a browser there is no thread to spawn — and no need for one: the
@@ -433,7 +426,7 @@ pub fn use_repaint_clock() {
 /// clock and redraws the canvas without the document changing at all. (A
 /// thread here is not a slow path in wasm32, it is a panic.)
 #[cfg(target_arch = "wasm32")]
-pub fn use_repaint_clock() {}
+pub fn use_repaint_clock(_active: bool) {}
 
 /// A reverb, painted by [`ReverbWidget`].
 ///
@@ -455,11 +448,15 @@ pub fn ReverbViz(
     beat_ms: f32,
     color: [u8; 3],
 ) -> Element {
-    use_repaint_clock();
+    use_repaint_clock(on);
     let view: Shared<ReverbView> = use_hook(|| Rc::new(RefCell::new(ReverbView::default())));
+    // Marked each render: the view below is new, and only the widget
+    // knows to draw it (the DOM does not change).
+    #[cfg(not(target_arch = "wasm32"))]
+    let fresh = use_hook(fts_audio_ui::widget::Fresh::default);
     #[cfg(not(target_arch = "wasm32"))]
     let attr =
-        use_hook(|| dioxus_native_dom::CustomWidgetAttr::new(ReverbWidget::new(Rc::clone(&view))));
+        use_hook(|| dioxus_native_dom::CustomWidgetAttr::new(fts_audio_ui::widget::Rasterized::new(fts_audio_ui::widget::Freshened::new(ReverbWidget::new(Rc::clone(&view)), fresh.clone()))));
 
     *view.borrow_mut() = ReverbView {
         decay,
@@ -474,6 +471,8 @@ pub fn ReverbViz(
         // The widget keeps its own clock; this is only a starting value.
         time: 0.0,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    fresh.mark();
 
     // The surface: a scene composited by Blitz natively, the same scene
     // replayed onto a `<canvas>` (vello_hybrid, WebGL2) in the browser —

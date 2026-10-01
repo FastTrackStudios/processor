@@ -5920,14 +5920,55 @@ const GATE_PARAMS: &[ParamSpec] = &[
         max: 500.0,
         default: 120.0,
     },
+    // 0 = gate (closed is the range's floor), 1 = expander (below the
+    // threshold the level falls 2:1, down to the floor).
+    ParamSpec {
+        id: 3,
+        name: "mode",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    // How far it closes, in dB (90 = silence).
+    ParamSpec {
+        id: 4,
+        name: "range",
+        min: 0.0,
+        max: 90.0,
+        default: 90.0,
+    },
+    // How long it stays open after the level drops, in ms.
+    ParamSpec {
+        id: 5,
+        name: "hold",
+        min: 0.0,
+        max: 500.0,
+        default: 0.0,
+    },
+    // How far under the threshold the level must fall to close, in dB.
+    ParamSpec {
+        id: 6,
+        name: "hysteresis",
+        min: 0.0,
+        max: 12.0,
+        default: 0.0,
+    },
 ];
 
 /// Native noise gate — peak-follower downward gate. Opens fast (attack),
-/// closes smoothly (release); full mute below threshold.
+/// closes smoothly (release) to its range's floor once the level has
+/// fallen the hysteresis under the threshold and the hold has run out; or,
+/// as an expander, eases the level down 2:1 under the threshold.
 pub struct NativeGate {
     threshold: f64,
     attack_ms: f64,
     release_ms: f64,
+    expander: bool,
+    floor: f64,
+    hold_ms: f64,
+    hysteresis: f64,
+    open: bool,
+    held: u32,
     env: f64,
     gain: f64,
     attack_coeff: f64,
@@ -5944,6 +5985,12 @@ impl NativeGate {
             threshold: 10f64.powf(-50.0 / 20.0),
             attack_ms: 1.0,
             release_ms: 120.0,
+            expander: false,
+            floor: 10f64.powf(-90.0 / 20.0),
+            hold_ms: 0.0,
+            hysteresis: 1.0,
+            open: false,
+            held: 0,
             env: 0.0,
             gain: 0.0,
             attack_coeff: 0.0,
@@ -5975,6 +6022,10 @@ impl NativeGate {
                 self.release_ms = v;
                 self.update_coeffs();
             }
+            3 => self.expander = v >= 0.5,
+            4 => self.floor = 10f64.powf(-v.clamp(0.0, 90.0) / 20.0),
+            5 => self.hold_ms = v.clamp(0.0, 500.0),
+            6 => self.hysteresis = 10f64.powf(-v.clamp(0.0, 12.0) / 20.0),
             _ => {}
         }
     }
@@ -6041,7 +6092,25 @@ impl PluginInstance for NativeGate {
             } else {
                 (self.env - peak).mul_add(self.env_coeff, peak)
             };
-            let target = if self.env >= self.threshold { 1.0 } else { 0.0 };
+            // Open at the threshold; closed once under it by the
+            // hysteresis, after the hold.
+            if self.env >= self.threshold {
+                self.open = true;
+                self.held = (self.hold_ms / 1000.0 * self.sample_rate) as u32;
+            } else if self.env < self.threshold * self.hysteresis {
+                if self.held > 0 {
+                    self.held -= 1;
+                } else {
+                    self.open = false;
+                }
+            }
+            let target = if self.open {
+                1.0
+            } else if self.expander {
+                (self.env / self.threshold).clamp(self.floor, 1.0)
+            } else {
+                self.floor
+            };
             let coeff = if target > self.gain {
                 self.attack_coeff
             } else {
