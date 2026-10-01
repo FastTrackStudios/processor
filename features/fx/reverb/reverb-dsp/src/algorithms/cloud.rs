@@ -6,16 +6,17 @@
 //! built from interconnected loops of allpasses and delays (Griesinger's
 //! late-'70s structure); the measurements fill in the numbers:
 //!
-//! - **Input**: a mono chain of eight allpasses whose delays add to
-//!   ~182 ms. Diffusion is their *gain* — at zero each stage is a pure
-//!   delay and the plug-in's impulse response is silent for 182 ms, then
+//! - **Input**: a mono chain of four allpasses whose delays add to
+//!   ~183 ms. Diffusion is their *gain* — at zero each stage is a pure
+//!   delay and the plug-in's impulse response is silent for 183 ms, then
 //!   a single pulse identical in L and R. Its output also goes straight to
 //!   both outputs (the mono early field: L/R correlation 0.99 for 20 ms).
 //!   Modulation is a quadrature LFO on these stages — depth up to "2
 //!   o'clock", then rate.
-//! - **Tank**: [`CloudRing`] — one ring, 803 ms a trip, tapped along its
-//!   length, long allpasses inside setting the ~4.5 s floor that every
-//!   short Decay lands on, one decay gain per trip.
+//! - **Tank**: [`CloudRing`] — five four-allpass stages in series, the
+//!   input and each stage's output mixed into one line read by BigSky's
+//!   158-tap pattern; that one pass is the ~4.5 s floor every short Decay
+//!   lands on, and it recirculates every 803 ms with one decay gain.
 //! - **Low End**: a static one-pole high-pass on the input, 549 Hz (−10)
 //!   → 300 Hz (0) → 84 Hz (+10).
 //!
@@ -324,8 +325,6 @@ pub struct Cloud {
     tone: ToneStage,
     /// Input crossfeed (Extra B), 0 = none … 0.4 = most.
     crossfeed: f64,
-    /// Output level trim that follows Diffusion (linear).
-    diffusion_gain: f64,
     ensemble: Ensemble,
     ensemble_level: f64,
     sample_rate: f64,
@@ -340,7 +339,6 @@ impl Cloud {
             ring: CloudRing::new(sample_rate),
             tone: ToneStage::new(),
             crossfeed: 0.2,
-            diffusion_gain: 1.0,
             ensemble: Ensemble::new(sample_rate),
             ensemble_level: 0.0,
             sample_rate,
@@ -382,8 +380,8 @@ impl ReverbAlgorithm for Cloud {
         self.ring.set_t60(decay_to_t60(params.decay, CLOUD_T60.0, CLOUD_T60.1));
         self.ring.set_size(params.size);
 
-        // Diffusion: the input allpasses' gain (zero = pure delay, as on
-        // BigSky) and the short allpasses inside the ring.
+        // Diffusion: the gain of every allpass, input chain and tank (zero =
+        // pure delay, as on BigSky).
         let d = params.diffusion.clamp(0.0, 1.0);
         // BigSky's input gain: 0.85 × the knob, exactly linear — measured
         // at seven settings from the ratio of the chain's two first pulses
@@ -394,16 +392,9 @@ impl ReverbAlgorithm for Cloud {
             s.diffuser.set_size(size);
             s.diffuser.set_gain(input_g);
         });
-        // Inside the tank the gain rises a little more slowly than the
-        // input chain's at the bottom of the knob: at −5 BigSky's tail
-        // levels off part-grainy (echo density ~0.67), where a linear law
-        // fogged ours over and a ^1.5 one built too slowly at 0.
-        self.ring.set_diffusion(d.powf(1.25) * 0.85);
-        // BigSky gets louder as Diffusion rises past ~+4 where ours held
-        // level: measured on burst and pad, ours fell 1.2 dB behind at +7
-        // and 2.7 at +10. Flat below the default, so the shared wet
-        // calibration (taken at the default) stands.
-        self.diffusion_gain = 10f64.powf(9.0 * (d - 0.7).max(0.0) / 20.0);
+        // The tank's stages run at the same 0.85 × the knob — fitted from
+        // −8 to +10 against the plug-in's own output.
+        self.ring.set_diffusion(input_g);
 
         // Modulation, the manual's two segments: up to ~72 % of travel the
         // depth of the input chain's quadrature LFOs rises, past it their
@@ -413,7 +404,7 @@ impl ReverbAlgorithm for Cloud {
         let m = params.modulation.clamp(0.0, 1.0);
         let depth = (m / 0.72).min(1.0);
         let rate_seg = ((m - 0.72) / 0.28).max(0.0);
-        let amount = ms(depth * 2.9);
+        let amount = ms(depth * 5.4);
         let rate_hz = resp2dec(rate_seg.mul_add(0.04, 0.35)) * 5.0;
         self.for_inputs(|s| s.diffuser.set_modulation(amount, rate_hz));
         self.ring.set_modulation(depth * 6.0, 0.5);
@@ -460,10 +451,6 @@ impl ReverbAlgorithm for Cloud {
         let early_l = self.input_l.tick(in_l);
         let early_r = self.input_r.tick(in_r);
         let (ring_l, ring_r) = self.ring.tick(early_l, early_r);
-        let g = self.diffusion_gain;
-        self.tone.tick(
-            g * EARLY_OUT.mul_add(early_l, ring_l),
-            g * EARLY_OUT.mul_add(early_r, ring_r),
-        )
+        self.tone.tick(EARLY_OUT.mul_add(early_l, ring_l), EARLY_OUT.mul_add(early_r, ring_r))
     }
 }
