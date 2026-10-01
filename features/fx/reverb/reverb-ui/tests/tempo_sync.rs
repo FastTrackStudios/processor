@@ -93,13 +93,13 @@ fn a_host_with_no_tempo_falls_back_to_the_free_time() {
     assert!((p.predelay_ms(None) - 40.0).abs() < EPS_MS);
 }
 
-/// The pre-delay stops at 250 ms, and a quarter note at any sane tempo is
-/// longer than that. The note stays selectable; the time stops where the
-/// control stops, rather than wrapping or reading as zero.
+/// The pre-delay stops at 1.5 s, and a half note at 60 BPM is two seconds.
+/// The note stays selectable; the time stops where the control stops,
+/// rather than wrapping or reading as zero.
 #[test]
 fn a_note_longer_than_the_control_clamps() {
     let p = ReverbParams::default();
     set_bool(&p.predelay_sync, true);
-    set_int(&p.predelay_div, div(NoteValue::Quarter, Flavour::Straight));
-    assert!((p.predelay_ms(Some(120.0)) - MAX_PREDELAY_MS).abs() < EPS_MS);
+    set_int(&p.predelay_div, div(NoteValue::Half, Flavour::Straight));
+    assert!((p.predelay_ms(Some(60.0)) - MAX_PREDELAY_MS).abs() < EPS_MS);
 }

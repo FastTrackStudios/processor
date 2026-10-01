@@ -107,12 +107,47 @@ pub struct ProC3Compressor {
     pub inertia: f64,
     pub inertia_decay: f64,
     pub ceiling: f64,
+
+    // Per-sample math that only changes with the rate or a setting, kept
+    // rather than recomputed every sample (bit-identical results).
+    /// Upward / expander ballistics, by attack and release time.
+    attack_pole: OnePole,
+    release_pole: OnePole,
+    /// The parameter smoother's, the bright drive's and the crest
+    /// detector's coefficients — functions of the sample rate alone.
+    param_coeff: f64,
+    bright_coeff: f64,
+    crest_coeff: f64,
+    /// Last `(output gain dB, linear)` and `(gain reduction, dB)`.
+    out_gain_memo: (f64, f64),
+    gr_db_memo: (f64, f64),
+    in_gain_memo: (f64, f64),
+}
+
+/// `1 − e^(−1/samples)` for a time in ms, remembered for the last rate and
+/// time: the ballistics ask for it every sample, and it changes only when
+/// the time or the rate does.
+#[derive(Clone, Copy, Debug, Default)]
+struct OnePole {
+    key: (f64, f64),
+    coeff: f64,
+}
+
+impl OnePole {
+    fn get(&mut self, sample_rate: f64, time_ms: f64) -> f64 {
+        if self.key != (sample_rate, time_ms) || self.coeff == 0.0 {
+            let samples = (sample_rate * time_ms / 1000.0).max(1.0);
+            self.coeff = 1.0 - (-1.0 / samples).exp();
+            self.key = (sample_rate, time_ms);
+        }
+        self.coeff
+    }
 }
 
 impl ProC3Compressor {
     #[must_use]
     pub fn new(sample_rate: f64) -> Self {
-        Self {
+        let mut comp = Self {
             detector: Detector::new(),
             gain_curve: GainCurve::new(sample_rate),
             hermite_smoother: HermiteCubicSmoother::new(StateFuncHypothesis::Identity),
@@ -159,7 +194,26 @@ impl ProC3Compressor {
             inertia: 0.0,
             inertia_decay: 0.0,
             ceiling: 0.0,
-        }
+            attack_pole: OnePole::default(),
+            release_pole: OnePole::default(),
+            param_coeff: 0.0,
+            bright_coeff: 0.0,
+            crest_coeff: 0.0,
+            out_gain_memo: (f64::NAN, 1.0),
+            gr_db_memo: (f64::NAN, 0.0),
+            in_gain_memo: (f64::NAN, 1.0),
+        };
+        comp.rate_coeffs();
+        comp
+    }
+
+    /// The coefficients that depend on the sample rate alone.
+    fn rate_coeffs(&mut self) {
+        let samples = (self.sample_rate * PARAM_SMOOTHING_MS / 1000.0).max(1.0);
+        self.param_coeff = 1.0 - (-1.0 / samples).exp();
+        self.bright_coeff =
+            1.0 - (-2.0 * std::f64::consts::PI * 8_000.0 / self.sample_rate).exp();
+        self.crest_coeff = (-1.0 / (self.sample_rate * 0.2)).exp();
     }
 
     /// Process a mono sample through the compressor core.
@@ -167,7 +221,11 @@ impl ProC3Compressor {
         // Step 0: Apply input gain
         self.smoothed_input_gain_db =
             self.smooth_parameter(self.smoothed_input_gain_db, self.input_gain_db);
-        let input_linear = input * audiocore_dsp::db::db_to_linear(self.smoothed_input_gain_db);
+        let gain_db = self.smoothed_input_gain_db;
+        if self.in_gain_memo.0.to_bits() != gain_db.to_bits() {
+            self.in_gain_memo = (gain_db, audiocore_dsp::db::db_to_linear(gain_db));
+        }
+        let input_linear = input * self.in_gain_memo.1;
         self.smoothed_detector_rms_mix =
             self.smooth_parameter(self.smoothed_detector_rms_mix, self.detector_rms_mix);
 
@@ -220,11 +278,24 @@ impl ProC3Compressor {
 
         // Step 4: APPLY TO AUDIO
         let mut output = input_linear * gr_smoothed;
-        output *= audiocore_dsp::db::db_to_linear(self.process_upward(level_db, channel));
-        output *= audiocore_dsp::db::db_to_linear(self.process_expander(level_db, channel));
+        // 0 dB is exactly unity: skip the pow when a stage is idle.
+        let upward_db = self.process_upward(level_db, channel);
+        if upward_db != 0.0 {
+            output *= audiocore_dsp::db::db_to_linear(upward_db);
+        }
+        let expander_db = self.process_expander(level_db, channel);
+        if expander_db != 0.0 {
+            output *= audiocore_dsp::db::db_to_linear(expander_db);
+        }
 
         // Step 5: OUTPUT GAIN
-        let gr_db = -audiocore_dsp::db::linear_to_db(gr_smoothed.max(1e-10)).min(0.0);
+        if self.gr_db_memo.0.to_bits() != gr_smoothed.to_bits() {
+            self.gr_db_memo = (
+                gr_smoothed,
+                -audiocore_dsp::db::linear_to_db(gr_smoothed.max(1e-10)).min(0.0),
+            );
+        }
+        let gr_db = self.gr_db_memo.1;
         self.channels[channel].auto_makeup_db = if self.auto_makeup {
             // Use half of the current reduction for conservative gain matching.
             // Full compensation tends to over-brighten and overload transients.
@@ -237,9 +308,11 @@ impl ProC3Compressor {
         };
         self.smoothed_output_gain_db =
             self.smooth_parameter(self.smoothed_output_gain_db, self.output_gain_db);
-        let output_gain = audiocore_dsp::db::db_to_linear(
-            self.smoothed_output_gain_db + self.channels[channel].auto_makeup_db,
-        );
+        let gain_db = self.smoothed_output_gain_db + self.channels[channel].auto_makeup_db;
+        if self.out_gain_memo.0.to_bits() != gain_db.to_bits() {
+            self.out_gain_memo = (gain_db, audiocore_dsp::db::db_to_linear(gain_db));
+        }
+        let output_gain = self.out_gain_memo.1;
         output *= output_gain;
         output = self.apply_drive(output, channel);
 
@@ -264,6 +337,7 @@ impl ProC3Compressor {
     pub fn update(&mut self, sample_rate: f64) {
         if (sample_rate - self.sample_rate).abs() > 0.1 {
             self.sample_rate = sample_rate;
+            self.rate_coeffs();
             self.detector.update_sample_rate(sample_rate);
             self.gain_curve = GainCurve::new(sample_rate);
             self.hermite_smoother.reset();
@@ -323,9 +397,7 @@ impl ProC3Compressor {
             return target;
         }
 
-        let samples = (self.sample_rate * PARAM_SMOOTHING_MS / 1000.0).max(1.0);
-        let coeff = 1.0 - (-1.0 / samples).exp();
-        (target - current).mul_add(coeff, current)
+        (target - current).mul_add(self.param_coeff, current)
     }
 
     fn smooth_gain_computer_params(&mut self) {
@@ -372,14 +444,16 @@ impl ProC3Compressor {
             (below_threshold * (1.0 - ratio)).max(-120.0)
         };
 
+        // Off and settled: nothing to move (the result is exactly 0 dB).
+        if target_db == 0.0 && self.channels[channel].expander_gain_db == 0.0 {
+            return 0.0;
+        }
         let moving_deeper = target_db < self.channels[channel].expander_gain_db;
-        let time_ms = if moving_deeper {
-            self.attack_ms.max(0.1)
+        let coeff = if moving_deeper {
+            self.attack_pole.get(self.sample_rate, self.attack_ms.max(0.1))
         } else {
-            self.release_ms.max(1.0)
+            self.release_pole.get(self.sample_rate, self.release_ms.max(1.0))
         };
-        let samples = (self.sample_rate * time_ms / 1000.0).max(1.0);
-        let coeff = 1.0 - (-1.0 / samples).exp();
         self.channels[channel].expander_gain_db +=
             (target_db - self.channels[channel].expander_gain_db) * coeff;
         self.channels[channel].expander_gain_db
@@ -394,14 +468,15 @@ impl ProC3Compressor {
             (below_threshold * (1.0 - 1.0 / ratio)).min(36.0)
         };
 
+        if target_db == 0.0 && self.channels[channel].upward_gain_db == 0.0 {
+            return 0.0;
+        }
         let moving_louder = target_db > self.channels[channel].upward_gain_db;
-        let time_ms = if moving_louder {
-            self.attack_ms.max(0.1)
+        let coeff = if moving_louder {
+            self.attack_pole.get(self.sample_rate, self.attack_ms.max(0.1))
         } else {
-            self.release_ms.max(1.0)
+            self.release_pole.get(self.sample_rate, self.release_ms.max(1.0))
         };
-        let samples = (self.sample_rate * time_ms / 1000.0).max(1.0);
-        let coeff = 1.0 - (-1.0 / samples).exp();
         self.channels[channel].upward_gain_db +=
             (target_db - self.channels[channel].upward_gain_db) * coeff;
         self.channels[channel].upward_gain_db
@@ -437,8 +512,7 @@ impl ProC3Compressor {
     }
 
     fn apply_bright_drive(&mut self, sample: f64, pre_gain: f64, channel: Channel) -> f64 {
-        let cutoff_hz = 8_000.0;
-        let coeff = 1.0 - (-2.0 * std::f64::consts::PI * cutoff_hz / self.sample_rate).exp();
+        let coeff = self.bright_coeff;
         self.channels[channel].bright_lowpass +=
             (sample - self.channels[channel].bright_lowpass) * coeff;
 
@@ -497,7 +571,7 @@ impl ProC3Compressor {
 
         let amp = audiocore_dsp::db::db_to_linear(level_db).clamp(0.0, 16.0);
         let power = amp * amp;
-        let coeff = (-1.0 / (self.sample_rate * 0.2)).exp();
+        let coeff = self.crest_coeff;
         self.crest_peak_power = power.max(coeff * self.crest_peak_power + (1.0 - coeff) * power);
         self.crest_rms_power = coeff * self.crest_rms_power + (1.0 - coeff) * power;
 

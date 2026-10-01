@@ -1,622 +1,206 @@
-//! Cloud reverb — full `CloudSeedCore` reverb engine.
+//! Cloud — after Strymon `BigSky`'s Cloud, from measurements of the
+//! plug-in (signal-analyzer's `bigsky_match`) and the `BigSky` manuals
+//! (`spec/bigsky-classic-reference.md`).
 //!
-//! Faithfully ported from `CloudSeedCore` (MIT, Ghost Note Audio).
-//! Implements the complete 45-parameter `CloudSeed` architecture:
-//! Input HP/LP → `PreDelay` → `MultitapDelay` → `AllpassDiffuser`
-//! → Parallel `ReverbLines` with per-line feedback/diffusion/EQ → Output.
+//! The manual's sketch is cascaded input diffusion ahead of a reverb
+//! built from interconnected loops of allpasses and delays (Griesinger's
+//! late-'70s structure); the measurements fill in the numbers:
 //!
-//! The stereo version runs two independent channels with cross-seed
-//! decorrelation, matching `CloudSeed`'s `ReverbController` architecture.
+//! - **Input**: a mono chain of four allpasses whose delays add to
+//!   ~183 ms. Diffusion is their *gain* — at zero each stage is a pure
+//!   delay and the plug-in's impulse response is silent for 183 ms, then
+//!   a single pulse identical in L and R. Its output also goes straight to
+//!   both outputs (the mono early field: L/R correlation 0.99 for 20 ms).
+//!   Modulation is a quadrature LFO on these stages — depth up to "2
+//!   o'clock", then rate.
+//! - **Tank**: [`CloudRing`] — five four-allpass stages in series, the
+//!   input and each stage's output mixed into one line read by BigSky's
+//!   158-tap pattern; that one pass is the ~4.5 s floor every short Decay
+//!   lands on, and it recirculates every 803 ms with one decay gain.
+//! - **Low End**: a static one-pole high-pass on the input, 549 Hz (−10)
+//!   → 300 Hz (0) → 84 Hz (+10).
 //!
-//! The 8 `AlgorithmParams` are mapped to `CloudSeed`'s 45 internal parameters
-//! using the original `ScaleParam()` response curves.
+//! This replaced a `CloudSeed` port (parallel comb lines): its tail
+//! started decaying the moment it started, where `BigSky`'s holds level
+//! for half a second, and it could not reach the plug-in's decay floor or
+//! its early stereo at all.
 
 use dsp_core::num;
 
-use crate::algorithm::{AlgorithmParams, CloudParams, ReverbAlgorithm};
-use crate::primitives::allpass_diffuser::AllpassDiffuser;
-use crate::primitives::lcg_random::random_buffer_cross_seed;
-use crate::primitives::modulated_delay::ModulatedDelay;
-use crate::primitives::multitap_delay::MultitapDelay;
+use crate::algorithm::{AlgorithmParams, CLOUD_T60, CloudParams, ReverbAlgorithm, decay_to_t60};
+use crate::primitives::cloud_ring::{CloudRing, EARLY_TO_TAP, InputChain};
 use crate::primitives::one_pole::{Hp1, Lp1};
-use crate::primitives::response_curves::{
-    db2gain, resp1dec, resp2dec, resp3dec, resp3oct, resp4oct,
-};
-use crate::primitives::reverb_line::ReverbLine;
 use audiocore_dsp::biquad::{Biquad, FilterType};
 
-const TOTAL_LINE_COUNT: usize = 12;
+/// Level of the input chain's own output (the early field), linear:
+/// BigSky's early pulse is 1.4× its first ring tap.
+const EARLY_OUT: f64 = EARLY_TO_TAP * 0.25;
 
-/// `CloudSeed`'s 45 internal parameter indices (matching Parameters.h).
-mod param {
-    pub const INTERPOLATION: usize = 0;
-    pub const LOW_CUT_ENABLED: usize = 1;
-    pub const HIGH_CUT_ENABLED: usize = 2;
-    pub const INPUT_MIX: usize = 3;
-    pub const LOW_CUT: usize = 4;
-    pub const HIGH_CUT: usize = 5;
-    pub const DRY_OUT: usize = 6;
-    pub const EARLY_OUT: usize = 7;
-    pub const LATE_OUT: usize = 8;
-    pub const TAP_ENABLED: usize = 9;
-    pub const TAP_COUNT: usize = 10;
-    pub const TAP_DECAY: usize = 11;
-    pub const TAP_PREDELAY: usize = 12;
-    pub const TAP_LENGTH: usize = 13;
-    pub const EARLY_DIFFUSE_ENABLED: usize = 14;
-    pub const EARLY_DIFFUSE_COUNT: usize = 15;
-    pub const EARLY_DIFFUSE_DELAY: usize = 16;
-    pub const EARLY_DIFFUSE_MOD_AMOUNT: usize = 17;
-    pub const EARLY_DIFFUSE_FEEDBACK: usize = 18;
-    pub const EARLY_DIFFUSE_MOD_RATE: usize = 19;
-    pub const LATE_MODE: usize = 20;
-    pub const LATE_LINE_COUNT: usize = 21;
-    pub const LATE_DIFFUSE_ENABLED: usize = 22;
-    pub const LATE_DIFFUSE_COUNT: usize = 23;
-    pub const LATE_LINE_SIZE: usize = 24;
-    pub const LATE_LINE_MOD_AMOUNT: usize = 25;
-    pub const LATE_DIFFUSE_DELAY: usize = 26;
-    pub const LATE_DIFFUSE_MOD_AMOUNT: usize = 27;
-    pub const LATE_LINE_DECAY: usize = 28;
-    pub const LATE_LINE_MOD_RATE: usize = 29;
-    pub const LATE_DIFFUSE_FEEDBACK: usize = 30;
-    pub const LATE_DIFFUSE_MOD_RATE: usize = 31;
-    pub const EQ_LOW_SHELF_ENABLED: usize = 32;
-    pub const EQ_HIGH_SHELF_ENABLED: usize = 33;
-    pub const EQ_LOWPASS_ENABLED: usize = 34;
-    pub const EQ_LOW_FREQ: usize = 35;
-    pub const EQ_HIGH_FREQ: usize = 36;
-    pub const EQ_CUTOFF: usize = 37;
-    pub const EQ_LOW_GAIN: usize = 38;
-    pub const EQ_HIGH_GAIN: usize = 39;
-    pub const EQ_CROSS_SEED: usize = 40;
-    pub const SEED_TAP: usize = 41;
-    pub const SEED_DIFFUSION: usize = 42;
-    pub const SEED_DELAY: usize = 43;
-    pub const SEED_POST_DIFFUSION: usize = 44;
-    pub const COUNT: usize = 45;
+/// BigSky's modulation by MOD knob (0…127): how far each Diffusion allpass's
+/// delay shortens at most, ms, and its LFO's rate, Hz.
+const MOD_DEPTH_MS: [(f64, f64); 6] = [(0.0, 0.0), (64.0, 0.385), (80.0, 0.37), (96.0, 0.31), (112.0, 0.27), (127.0, 0.207)];
+const MOD_RATE_HZ: [(f64, f64); 8] =
+    [(0.0, 0.87), (72.0, 0.88), (80.0, 1.16), (88.0, 1.68), (96.0, 2.3), (104.0, 3.1), (112.0, 4.26), (127.0, 7.5)];
+
+/// Linear interpolation in a `(x, y)` table, clamped at its ends.
+fn interp<const N: usize>(table: &[(f64, f64); N], x: f64) -> f64 {
+    let (Some(first), Some(last)) = (table.first(), table.last()) else { return 0.0 };
+    if x <= first.0 {
+        return first.1;
+    }
+    table.windows(2).find(|w| x <= w[1].0).map_or(last.1, |w| {
+        let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+        (y1 - y0).mul_add((x - x0) / (x1 - x0), y0)
+    })
 }
 
-/// `CloudSeed`'s `ScaleParam()` — exact port from Parameters.h.
-fn scale_param(val: f64, index: usize) -> f64 {
-    match index {
-        param::INTERPOLATION
-        | param::LOW_CUT_ENABLED
-        | param::HIGH_CUT_ENABLED
-        | param::TAP_ENABLED
-        | param::LATE_DIFFUSE_ENABLED
-        | param::EQ_LOW_SHELF_ENABLED
-        | param::EQ_HIGH_SHELF_ENABLED
-        | param::EQ_LOWPASS_ENABLED
-        | param::EARLY_DIFFUSE_ENABLED
-        | param::LATE_MODE => {
-            if val < 0.5 {
-                0.0
-            } else {
-                1.0
-            }
-        }
-
-        // Pass-through 0..1 params, handled by the wildcard below: INPUT_MIX,
-        // EARLY_DIFFUSE_FEEDBACK, TAP_DECAY, LATE_DIFFUSE_FEEDBACK,
-        // EQ_CROSS_SEED. Listed here because "which params are unscaled" is
-        // not otherwise readable from this table.
-        param::SEED_TAP
-        | param::SEED_DIFFUSION
-        | param::SEED_DELAY
-        | param::SEED_POST_DIFFUSION => (val * 999.999).floor(),
-
-        param::LOW_CUT => resp4oct(val).mul_add(980.0, 20.0),
-        param::HIGH_CUT | param::EQ_HIGH_FREQ | param::EQ_CUTOFF => {
-            resp4oct(val).mul_add(19600.0, 400.0)
-        }
-
-        param::DRY_OUT | param::EARLY_OUT | param::LATE_OUT => val.mul_add(30.0, -30.0),
-
-        param::TAP_COUNT => val.mul_add(255.0, 1.0).floor(),
-        param::TAP_PREDELAY => resp1dec(val) * 500.0,
-        param::TAP_LENGTH => val.mul_add(990.0, 10.0),
-
-        param::EARLY_DIFFUSE_COUNT | param::LATE_LINE_COUNT => val.mul_add(11.999, 1.0).floor(),
-        param::EARLY_DIFFUSE_DELAY | param::LATE_DIFFUSE_DELAY => val.mul_add(90.0, 10.0),
-        param::EARLY_DIFFUSE_MOD_AMOUNT
-        | param::LATE_LINE_MOD_AMOUNT
-        | param::LATE_DIFFUSE_MOD_AMOUNT => val * 2.5,
-        param::EARLY_DIFFUSE_MOD_RATE
-        | param::LATE_LINE_MOD_RATE
-        | param::LATE_DIFFUSE_MOD_RATE => resp2dec(val) * 5.0,
-
-        param::LATE_DIFFUSE_COUNT => val.mul_add(7.999, 1.0).floor(),
-        param::LATE_LINE_SIZE => resp2dec(val).mul_add(980.0, 20.0),
-        param::LATE_LINE_DECAY => resp3dec(val).mul_add(59.95, 0.05),
-
-        param::EQ_LOW_FREQ => resp3oct(val).mul_add(980.0, 20.0),
-        param::EQ_LOW_GAIN | param::EQ_HIGH_GAIN => val.mul_add(20.0, -20.0),
-
-        _ => val,
-    }
+/// One side's input stage: Low End high-pass, then the diffusion chain.
+struct InputStage {
+    low_cut: Hp1,
+    diffuser: InputChain,
 }
 
-/// Which of a channel's input stages are engaged. One struct rather
-/// than three loose `*_enabled` bools sitting next to each other.
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-struct InputStages {
-    low_cut: bool,
-    high_cut: bool,
-    multitap: bool,
-}
-
-/// Single `CloudSeed` reverb channel (mono).
-struct CloudChannel {
-    params_scaled: [f64; param::COUNT],
-    sample_rate: f64,
-
-    pre_delay: ModulatedDelay,
-    multitap: MultitapDelay,
-    diffuser: AllpassDiffuser,
-    lines: Vec<ReverbLine>,
-    high_pass: Hp1,
-    low_pass: Lp1,
-
-    delay_line_seed: u64,
-    post_diffusion_seed: u64,
-    line_count: usize,
-
-    /// The three input stages ahead of the late reverb, engaged
-    /// independently.
-    input_stages: InputStages,
-    diffuser_enabled: bool,
-    input_mix: f64,
-    early_out: f64,
-    line_out: f64,
-    cross_seed: f64,
-    is_right: bool,
-}
-
-impl CloudChannel {
-    fn new(sample_rate: f64, is_right: bool) -> Self {
-        let lines: Vec<ReverbLine> = (0..TOTAL_LINE_COUNT)
-            .map(|_| ReverbLine::new(sample_rate))
-            .collect();
-
-        let mut diffuser = AllpassDiffuser::new_default();
-        diffuser.set_sample_rate(sample_rate);
-        diffuser.set_interpolation_enabled(true);
-        // BigSky Cloud modulation scheme: quadrature stage LFOs — high
-        // depth on the input diffusors without common-mode pumping.
-        diffuser.set_quadrature_phases();
-
-        let mut high_pass = Hp1::new();
-        high_pass.set_freq(20.0, sample_rate);
-        let mut low_pass = Lp1::new();
-        low_pass.set_freq(20000.0, sample_rate);
-
-        let mut ch = Self {
-            params_scaled: [0.0; param::COUNT],
-            sample_rate,
-            pre_delay: ModulatedDelay::new(),
-            multitap: MultitapDelay::new(384_000),
-            diffuser,
-            lines,
-            high_pass,
-            low_pass,
-            delay_line_seed: 0,
-            post_diffusion_seed: 0,
-            line_count: 8,
-            input_stages: InputStages {
-                multitap: true,
-                ..InputStages::default()
-            },
-            diffuser_enabled: true,
-            input_mix: 0.0,
-            early_out: 1.0,
-            line_out: 1.0,
-            // Same seed both sides (kept explicit for future L/R spread).
-            cross_seed: 0.5,
-            is_right,
-        };
-
-        ch.clear();
-        ch.update_lines();
-        ch
+impl InputStage {
+    fn new(sample_rate: f64) -> Self {
+        let mut low_cut = Hp1::new();
+        low_cut.set_freq(300.0, sample_rate);
+        Self { low_cut, diffuser: InputChain::new(sample_rate) }
     }
 
-    fn set_sample_rate(&mut self, sr: f64) {
-        self.sample_rate = sr;
-        self.high_pass.set_sample_rate(sr);
-        self.low_pass.set_sample_rate(sr);
-        self.diffuser.set_sample_rate(sr);
-        for line in &mut self.lines {
-            line.set_sample_rate(sr);
-        }
-        self.reapply_all_params();
-        self.clear();
-        self.update_lines();
-    }
-
-    fn reapply_all_params(&mut self) {
-        for i in 0..param::COUNT {
-            let val = self.params_scaled.get(i).copied().unwrap_or(0.0);
-            self.apply_param(i, val);
-        }
-    }
-
-    /// Apply a single scaled parameter — exact port of `ReverbChannel::SetParameter`.
-    ///
-    /// The port's one 175-line match is split by section; the ids are
-    /// distinct, so trying each in turn is the same dispatch.
-    fn apply_param(&mut self, para: usize, scaled: f64) {
-        if let Some(slot) = self.params_scaled.get_mut(para) {
-            *slot = scaled;
-        }
-
-        let _handled = self.apply_input_param(para, scaled)
-            || self.apply_early_param(para, scaled)
-            || self.apply_late_param(para, scaled)
-            || self.apply_eq_param(para, scaled)
-            || self.apply_seed_param(para, scaled);
-    }
-
-    /// Handles the input filters, mix and the two output taps. Returns whether `para` was one of them.
-    fn apply_input_param(&mut self, para: usize, scaled: f64) -> bool {
-        match para {
-            param::INTERPOLATION => {
-                for line in &mut self.lines {
-                    line.set_interpolation_enabled(scaled >= 0.5);
-                }
-            }
-            param::LOW_CUT_ENABLED => {
-                self.input_stages.low_cut = scaled >= 0.5;
-                if self.input_stages.low_cut {
-                    self.high_pass.reset();
-                }
-            }
-            param::HIGH_CUT_ENABLED => {
-                self.input_stages.high_cut = scaled >= 0.5;
-                if self.input_stages.high_cut {
-                    self.low_pass.reset();
-                }
-            }
-            param::INPUT_MIX => self.input_mix = scaled,
-            param::LOW_CUT => self.high_pass.set_cutoff(scaled),
-            param::HIGH_CUT => self.low_pass.set_cutoff(scaled),
-            param::EARLY_OUT => {
-                self.early_out = if scaled <= -30.0 {
-                    0.0
-                } else {
-                    db2gain(scaled)
-                };
-            }
-            param::LATE_OUT => {
-                self.line_out = if scaled <= -30.0 {
-                    0.0
-                } else {
-                    db2gain(scaled)
-                };
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Handles the multitap early reflections and the early diffuser. Returns whether `para` was one of them.
-    fn apply_early_param(&mut self, para: usize, scaled: f64) -> bool {
-        match para {
-            param::TAP_ENABLED => {
-                let new_val = scaled >= 0.5;
-                if new_val != self.input_stages.multitap {
-                    self.multitap.clear();
-                }
-                self.input_stages.multitap = new_val;
-            }
-            param::TAP_COUNT => self.multitap.set_tap_count(num::f64_to_index(scaled)),
-            param::TAP_DECAY => self.multitap.set_tap_decay(scaled),
-            param::TAP_PREDELAY => {
-                self.pre_delay.sample_delay = num::f64_to_index(self.ms2samples(scaled));
-            }
-            param::TAP_LENGTH => {
-                self.multitap
-                    .set_tap_length(num::f64_to_index(self.ms2samples(scaled)));
-            }
-
-            param::EARLY_DIFFUSE_ENABLED => {
-                let new_val = scaled >= 0.5;
-                if new_val != self.diffuser_enabled {
-                    self.diffuser.clear();
-                }
-                self.diffuser_enabled = new_val;
-            }
-            param::EARLY_DIFFUSE_COUNT => self.diffuser.stages = num::f64_to_index(scaled),
-            param::EARLY_DIFFUSE_DELAY => {
-                self.diffuser
-                    .set_delay(num::f64_to_index(self.ms2samples(scaled)));
-            }
-            param::EARLY_DIFFUSE_MOD_AMOUNT => {
-                self.diffuser.set_modulation_enabled(scaled > 0.5);
-                self.diffuser.set_mod_amount(self.ms2samples(scaled));
-            }
-            param::EARLY_DIFFUSE_FEEDBACK => self.diffuser.set_feedback(scaled),
-            param::EARLY_DIFFUSE_MOD_RATE => self.diffuser.set_mod_rate(scaled),
-            _ => return false,
-        }
-        true
-    }
-
-    /// Handles the late reverb lines and their diffusers. Returns whether `para` was one of them.
-    fn apply_late_param(&mut self, para: usize, scaled: f64) -> bool {
-        match para {
-            param::LATE_MODE => {
-                for line in &mut self.lines {
-                    line.tap_post_diffuser = scaled >= 0.5;
-                }
-            }
-            param::LATE_LINE_COUNT => self.line_count = num::f64_to_index(scaled),
-            param::LATE_DIFFUSE_ENABLED => {
-                for line in &mut self.lines {
-                    let new_val = scaled >= 0.5;
-                    if new_val != line.diffuser_enabled {
-                        line.clear_diffuser();
-                    }
-                    line.diffuser_enabled = new_val;
-                }
-            }
-            param::LATE_DIFFUSE_COUNT => {
-                for line in &mut self.lines {
-                    line.set_diffuser_stages(num::f64_to_index(scaled));
-                }
-            }
-            param::LATE_LINE_SIZE
-            | param::LATE_LINE_MOD_AMOUNT
-            | param::LATE_DIFFUSE_MOD_AMOUNT
-            | param::LATE_LINE_DECAY
-            | param::LATE_LINE_MOD_RATE
-            | param::LATE_DIFFUSE_MOD_RATE => {
-                self.update_lines();
-            }
-            param::LATE_DIFFUSE_DELAY => {
-                let samples = num::f64_to_index(self.ms2samples(scaled));
-                for line in &mut self.lines {
-                    line.set_diffuser_delay(samples);
-                }
-            }
-            param::LATE_DIFFUSE_FEEDBACK => {
-                for line in &mut self.lines {
-                    line.set_diffuser_feedback(scaled);
-                }
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Handles the per-line EQ, and the cross-seed that derives from it. Returns whether `para` was one of them.
-    fn apply_eq_param(&mut self, para: usize, scaled: f64) -> bool {
-        match para {
-            param::EQ_LOW_SHELF_ENABLED => {
-                for line in &mut self.lines {
-                    line.filters.low_shelf = scaled >= 0.5;
-                }
-            }
-            param::EQ_HIGH_SHELF_ENABLED => {
-                for line in &mut self.lines {
-                    line.filters.high_shelf = scaled >= 0.5;
-                }
-            }
-            param::EQ_LOWPASS_ENABLED => {
-                for line in &mut self.lines {
-                    line.filters.cutoff = scaled >= 0.5;
-                }
-            }
-            param::EQ_LOW_FREQ => {
-                for line in &mut self.lines {
-                    line.set_low_shelf_frequency(scaled);
-                }
-            }
-            param::EQ_HIGH_FREQ => {
-                for line in &mut self.lines {
-                    line.set_high_shelf_frequency(scaled);
-                }
-            }
-            param::EQ_CUTOFF => {
-                for line in &mut self.lines {
-                    line.set_cutoff_frequency(scaled);
-                }
-            }
-            param::EQ_LOW_GAIN => {
-                for line in &mut self.lines {
-                    line.set_low_shelf_gain(scaled);
-                }
-            }
-            param::EQ_HIGH_GAIN => {
-                for line in &mut self.lines {
-                    line.set_high_shelf_gain(scaled);
-                }
-            }
-            param::EQ_CROSS_SEED => {
-                self.cross_seed = if self.is_right {
-                    0.5 * scaled
-                } else {
-                    0.5f64.mul_add(-scaled, 1.0)
-                };
-                self.multitap.set_cross_seed(self.cross_seed);
-                self.diffuser.set_cross_seed(self.cross_seed);
-                self.update_lines();
-                self.update_post_diffusion();
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Handles the four generator seeds. Returns whether `para` was one of them.
-    fn apply_seed_param(&mut self, para: usize, scaled: f64) -> bool {
-        match para {
-            param::SEED_TAP => self.multitap.set_seed(num::f64_to_u64(scaled)),
-            param::SEED_DIFFUSION => self.diffuser.set_seed(num::f64_to_u64(scaled)),
-            param::SEED_DELAY => {
-                self.delay_line_seed = num::f64_to_u64(scaled);
-                self.update_lines();
-            }
-            param::SEED_POST_DIFFUSION => {
-                self.post_diffusion_seed = num::f64_to_u64(scaled);
-                self.update_post_diffusion();
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn ms2samples(&self, ms: f64) -> f64 {
-        ms / 1000.0 * self.sample_rate
-    }
-
-    fn per_line_gain(&self) -> f64 {
-        1.0 / num::count_to_f64(self.line_count.max(1)).sqrt()
-    }
-
-    /// Exact port of `ReverbChannel::UpdateLines`.
-    fn update_lines(&mut self) {
-        let base_delay_samples = self.ms2samples(
-            self.params_scaled
-                .get(param::LATE_LINE_SIZE)
-                .copied()
-                .unwrap_or(0.0),
-        );
-        let decay_ms = self
-            .params_scaled
-            .get(param::LATE_LINE_DECAY)
-            .copied()
-            .unwrap_or(0.0)
-            * 1000.0;
-        let t60_samples = self.ms2samples(decay_ms);
-
-        let line_mod_amount = self.ms2samples(
-            self.params_scaled
-                .get(param::LATE_LINE_MOD_AMOUNT)
-                .copied()
-                .unwrap_or(0.0),
-        );
-        let line_mod_rate = self
-            .params_scaled
-            .get(param::LATE_LINE_MOD_RATE)
-            .copied()
-            .unwrap_or(0.0);
-
-        let late_diff_mod_amount = self.ms2samples(
-            self.params_scaled
-                .get(param::LATE_DIFFUSE_MOD_AMOUNT)
-                .copied()
-                .unwrap_or(0.0),
-        );
-        let late_diff_mod_rate = self
-            .params_scaled
-            .get(param::LATE_DIFFUSE_MOD_RATE)
-            .copied()
-            .unwrap_or(0.0);
-
-        let seeds =
-            random_buffer_cross_seed(self.delay_line_seed, TOTAL_LINE_COUNT * 3, self.cross_seed);
-
-        // `seeds` is three per line, laid out as three consecutive blocks:
-        // modulation amount, modulation rate, then delay length.
-        let seed_at = |block: usize, i: usize| {
-            seeds
-                .get(TOTAL_LINE_COUNT.saturating_mul(block).saturating_add(i))
-                .copied()
-                .unwrap_or(0.0)
-        };
-        for (i, line) in self.lines.iter_mut().enumerate().take(TOTAL_LINE_COUNT) {
-            let mod_amount = line_mod_amount * 0.3f64.mul_add(seed_at(0, i), 0.7);
-            let mod_rate = line_mod_rate * 0.3f64.mul_add(seed_at(1, i), 0.7) / self.sample_rate;
-
-            let mut delay_samples = 1.0f64.mul_add(seed_at(2, i), 0.5) * base_delay_samples;
-            // When delay is really short and modulation is high,
-            // mod could take delay time negative — prevent that
-            if delay_samples < mod_amount + 2.0 {
-                delay_samples = mod_amount + 2.0;
-            }
-
-            // T60 decay calculation
-            let db_after_1iter = delay_samples / t60_samples.max(1.0) * (-60.0);
-            let gain_after_1iter = db2gain(db_after_1iter);
-
-            line.set_delay(num::f64_to_index(delay_samples));
-            line.set_feedback(gain_after_1iter);
-            line.set_line_mod_amount(mod_amount);
-            line.set_line_mod_rate(mod_rate);
-            line.set_diffuser_mod_amount(late_diff_mod_amount);
-            line.set_diffuser_mod_rate(late_diff_mod_rate);
-        }
-    }
-
-    /// Exact port of `ReverbChannel::UpdatePostDiffusion`.
-    fn update_post_diffusion(&mut self) {
-        for (i, line) in self.lines.iter_mut().enumerate() {
-            let seed = self
-                .post_diffusion_seed
-                .saturating_mul(u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1));
-            line.set_diffuser_seed(seed, self.cross_seed);
-        }
-    }
-
-    /// Process one sample — exact port of `ReverbChannel::Process` (per-sample).
-    #[inline]
-    fn tick(&mut self, input: f64) -> (f64, f64) {
-        let mut x = input;
-
-        // Input filters
-        if self.input_stages.low_cut {
-            x = self.high_pass.tick(x);
-        }
-        if self.input_stages.high_cut {
-            x = self.low_pass.tick(x);
-        }
-
-        // Denormal prevention (CloudSeed: zero if n*n < 1e-9)
-        if x * x < 1e-9 {
-            x = 0.0;
-        }
-
-        // Pre-delay
-        x = self.pre_delay.tick(x);
-
-        // Multitap early reflections
-        if self.input_stages.multitap {
-            x = self.multitap.tick(x);
-        }
-
-        // Input diffusion
-        if self.diffuser_enabled {
-            x = self.diffuser.tick(x);
-        }
-
-        let early = x;
-
-        // Late reverb: parallel delay lines
-        let mut line_sum = 0.0;
-        for line in self
-            .lines
-            .iter_mut()
-            .take(self.line_count.min(TOTAL_LINE_COUNT))
-        {
-            line_sum += line.tick(x);
-        }
-        line_sum *= self.per_line_gain();
-
-        // Output = early * earlyOut + late * lineOut
-        let output = self.early_out.mul_add(early, self.line_out * line_sum);
-        (output, line_sum)
+    fn set_sample_rate(&mut self, sample_rate: f64) {
+        // The chain's buffers are sized for the rate it was built at.
+        self.diffuser = InputChain::new(sample_rate);
+        self.low_cut.set_sample_rate(sample_rate);
     }
 
     fn clear(&mut self) {
-        self.low_pass.reset();
-        self.high_pass.reset();
-        self.pre_delay.clear();
-        self.multitap.clear();
+        self.low_cut.reset();
         self.diffuser.clear();
-        for line in &mut self.lines {
-            line.clear();
+    }
+
+    #[inline]
+    fn tick(&mut self, x: f64) -> f64 {
+        let x = self.low_cut.tick(x);
+        self.diffuser.tick(x)
+    }
+}
+
+/// BigSky's Tone, measured: two cascaded first-order high shelves, flat
+/// at the top of the knob and deepening as it comes down (fits the
+/// plug-in's third-octave response to 0.14 dB RMS, 62 Hz–16 kHz).
+/// `(knob 0–127, shelf corner Hz, total depth dB)`; interpolated between.
+const TONE_SHELF: [(f64, f64, f64); 6] = [
+    (0.0, 1026.0, -46.0),
+    (32.0, 2189.0, -18.5),
+    (64.0, 3105.0, -9.5),
+    (96.0, 3105.0, -3.5),
+    (110.0, 3919.0, -2.0),
+    (127.0, 3919.0, 0.0),
+];
+
+/// One first-order high shelf (bilinear, pre-warped at the pole).
+#[derive(Clone, Copy, Default)]
+struct Shelf1 {
+    b0: f64,
+    b1: f64,
+    a1: f64,
+    x1: f64,
+    y1: f64,
+}
+
+impl Shelf1 {
+    /// `fp`: the shelf's corner (pole); `depth_db`: its gain at the top.
+    fn set(&mut self, fp: f64, depth_db: f64, sample_rate: f64) {
+        let wp = core::f64::consts::TAU * fp.clamp(20.0, sample_rate * 0.45);
+        let wz = wp * 10f64.powf(-depth_db / 20.0);
+        let k = wp / (wp / (2.0 * sample_rate)).tan();
+        let a0 = 1.0 + k / wp;
+        self.b0 = (1.0 + k / wz) / a0;
+        self.b1 = (1.0 - k / wz) / a0;
+        self.a1 = (1.0 - k / wp) / a0;
+    }
+
+    fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.y1 = 0.0;
+    }
+
+    #[inline]
+    fn tick(&mut self, x: f64) -> f64 {
+        let y = self.b0.mul_add(x, self.b1.mul_add(self.x1, -self.a1 * self.y1));
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+}
+
+/// BigSky's fixed top end: every pulse of the plug-in's response trails
+/// off by ~0.245 a sample (−0.132, −0.033, −0.008 …) even at Tone 127 —
+/// a one-pole low-pass at ~10.75 kHz, under the Tone shelves.
+const TOP_END_HZ: f64 = 10_750.0;
+
+/// Cloud's Tone: BigSky's, on the wet. The product's `tone` (−1…+1) spans
+/// BigSky's knob with 0 at noon, which the manual calls balanced.
+struct ToneStage {
+    /// Two shelves per side, cascaded.
+    shelves: [[Shelf1; 2]; 2],
+    on: bool,
+    /// The fixed top end, per side.
+    top: [Lp1; 2],
+}
+
+impl ToneStage {
+    fn new() -> Self {
+        Self { shelves: [[Shelf1::default(); 2]; 2], on: false, top: [Lp1::new(), Lp1::new()] }
+    }
+
+    fn set(&mut self, tone: f64, sample_rate: f64) {
+        // A one-pole's pole for the corner: e^(−2π·fc/fs).
+        let pole = (-core::f64::consts::TAU * TOP_END_HZ / sample_rate).exp();
+        for f in &mut self.top {
+            f.set_coeff(pole);
         }
+        let knob = (tone.clamp(-1.0, 1.0) + 1.0) * 63.5;
+        let (mut fc, mut depth) = (3919.0, 0.0);
+        for w in TONE_SHELF.windows(2) {
+            let ((k0, f0, d0), (k1, f1, d1)) = (w[0], w[1]);
+            if knob <= k1 {
+                let t = ((knob - k0) / (k1 - k0)).clamp(0.0, 1.0);
+                fc = f0 * (f1 / f0).powf(t);
+                depth = (d1 - d0).mul_add(t, d0);
+                break;
+            }
+        }
+        self.on = depth < -0.05;
+        for side in &mut self.shelves {
+            for shelf in side {
+                shelf.set(fc, depth / 2.0, sample_rate);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        for side in &mut self.shelves {
+            for shelf in side {
+                shelf.reset();
+            }
+        }
+        for f in &mut self.top {
+            f.reset();
+        }
+    }
+
+    #[inline]
+    fn tick(&mut self, l: f64, r: f64) -> (f64, f64) {
+        let [tl, tr] = &mut self.top;
+        let (l, r) = (tl.tick(l), tr.tick(r));
+        if !self.on {
+            return (l, r);
+        }
+        let [sl, sr] = &mut self.shelves;
+        let l = sl.iter_mut().fold(l, |v, s| s.tick(v));
+        let r = sr.iter_mut().fold(r, |v, s| s.tick(v));
+        (l, r)
     }
 }
 
@@ -750,17 +334,14 @@ impl Ensemble {
     }
 }
 
-/// Cloud reverb — stereo `CloudSeed` engine.
-///
-/// Exact port of `CloudSeedCore`'s `ReverbController`:
-/// two independent `ReverbChannels` with input crossfeed mixing
-/// and per-channel cross-seed decorrelation. The `BigSky` MX "Ensemble"
-/// layer (pitch-tracked synthetic strings) is additive on the input
-/// and coexists with Diffusion.
+/// Cloud reverb: mono input diffusion into one tapped ring tank.
 pub struct Cloud {
-    left: CloudChannel,
-    right: CloudChannel,
-    raw_params: [f64; param::COUNT],
+    input_l: InputStage,
+    input_r: InputStage,
+    ring: CloudRing,
+    tone: ToneStage,
+    /// Input crossfeed (Extra B), 0 = none … 0.4 = most.
+    crossfeed: f64,
     ensemble: Ensemble,
     ensemble_level: f64,
     sample_rate: f64,
@@ -770,187 +351,104 @@ impl Cloud {
     #[must_use]
     pub fn new(sample_rate: f64) -> Self {
         let mut cloud = Self {
-            left: CloudChannel::new(sample_rate, false),
-            right: CloudChannel::new(sample_rate, true),
-            raw_params: [0.0; param::COUNT],
+            input_l: InputStage::new(sample_rate),
+            input_r: InputStage::new(sample_rate),
+            ring: CloudRing::new(sample_rate),
+            tone: ToneStage::new(),
+            crossfeed: 0.2,
             ensemble: Ensemble::new(sample_rate),
             ensemble_level: 0.0,
             sample_rate,
         };
-
-        // Set sensible defaults for the 45 parameters (raw [0,1] values)
-        cloud.set_raw_param(param::INTERPOLATION, 1.0);
-        cloud.set_raw_param(param::INPUT_MIX, 0.5);
-        cloud.set_raw_param(param::DRY_OUT, 0.0); // -30 + 0*30 = -30dB (muted)
-        cloud.set_raw_param(param::EARLY_OUT, 0.8); // -30 + 0.8*30 = -6dB
-        cloud.set_raw_param(param::LATE_OUT, 1.0); // -30 + 1.0*30 = 0dB
-        cloud.set_raw_param(param::TAP_ENABLED, 1.0);
-        cloud.set_raw_param(param::TAP_COUNT, 0.12); // ~32 taps
-        cloud.set_raw_param(param::TAP_DECAY, 0.5);
-        cloud.set_raw_param(param::TAP_PREDELAY, 0.2);
-        cloud.set_raw_param(param::TAP_LENGTH, 0.3);
-        cloud.set_raw_param(param::EARLY_DIFFUSE_ENABLED, 1.0);
-        cloud.set_raw_param(param::EARLY_DIFFUSE_COUNT, 0.6); // ~8 stages
-        cloud.set_raw_param(param::EARLY_DIFFUSE_DELAY, 0.5);
-        cloud.set_raw_param(param::EARLY_DIFFUSE_FEEDBACK, 0.6);
-        cloud.set_raw_param(param::EARLY_DIFFUSE_MOD_AMOUNT, 0.2);
-        cloud.set_raw_param(param::EARLY_DIFFUSE_MOD_RATE, 0.3);
-        cloud.set_raw_param(param::LATE_LINE_COUNT, 0.65); // ~8 lines
-        cloud.set_raw_param(param::LATE_DIFFUSE_ENABLED, 1.0);
-        cloud.set_raw_param(param::LATE_DIFFUSE_COUNT, 0.5); // ~5 stages
-        cloud.set_raw_param(param::LATE_LINE_SIZE, 0.4);
-        cloud.set_raw_param(param::LATE_LINE_DECAY, 0.3);
-        cloud.set_raw_param(param::LATE_LINE_MOD_AMOUNT, 0.15);
-        cloud.set_raw_param(param::LATE_LINE_MOD_RATE, 0.3);
-        cloud.set_raw_param(param::LATE_DIFFUSE_DELAY, 0.4);
-        cloud.set_raw_param(param::LATE_DIFFUSE_FEEDBACK, 0.6);
-        cloud.set_raw_param(param::LATE_DIFFUSE_MOD_AMOUNT, 0.1);
-        cloud.set_raw_param(param::LATE_DIFFUSE_MOD_RATE, 0.3);
-        cloud.set_raw_param(param::EQ_LOWPASS_ENABLED, 1.0);
-        cloud.set_raw_param(param::EQ_CUTOFF, 0.6);
-        cloud.set_raw_param(param::EQ_CROSS_SEED, 0.4);
-        cloud.set_raw_param(param::SEED_TAP, 0.3);
-        cloud.set_raw_param(param::SEED_DIFFUSION, 0.5);
-        cloud.set_raw_param(param::SEED_DELAY, 0.7);
-        cloud.set_raw_param(param::SEED_POST_DIFFUSION, 0.4);
-
+        cloud.set_params(&AlgorithmParams::default());
         cloud
     }
 
-    /// Set a raw [0, 1] parameter and apply through `ScaleParam` to both channels.
-    fn set_raw_param(&mut self, param_id: usize, value: f64) {
-        if let Some(slot) = self.raw_params.get_mut(param_id) {
-            *slot = value;
-        }
-        let scaled = scale_param(value, param_id);
-        self.left.apply_param(param_id, scaled);
-        self.right.apply_param(param_id, scaled);
+    fn for_inputs(&mut self, mut f: impl FnMut(&mut InputStage)) {
+        f(&mut self.input_l);
+        f(&mut self.input_r);
     }
 }
 
 impl ReverbAlgorithm for Cloud {
     fn reset(&mut self) {
-        self.left.clear();
-        self.right.clear();
+        self.input_l.clear();
+        self.input_r.clear();
+        self.ring.clear();
+        self.tone.clear();
         self.ensemble.reset();
     }
 
     fn set_sample_rate(&mut self, sample_rate: f64) {
         self.sample_rate = sample_rate;
-        self.left.set_sample_rate(sample_rate);
-        self.right.set_sample_rate(sample_rate);
+        self.input_l.set_sample_rate(sample_rate);
+        self.input_r.set_sample_rate(sample_rate);
+        // The ring's buffers are sized for the rate it was built at.
+        self.ring = CloudRing::new(sample_rate);
         self.ensemble.set_sample_rate(sample_rate);
     }
 
     fn set_params(&mut self, params: &AlgorithmParams) {
-        // Map our 8 AlgorithmParams to CloudSeed's 45 raw parameters.
-        // Each knob controls the most musically relevant CloudSeed parameters.
+        let sr = self.sample_rate;
+        let ms = |v: f64| v * 1e-3 * sr;
 
-        // Decay → late line decay (0.05-60s via resp3dec)
-        self.set_raw_param(param::LATE_LINE_DECAY, params.decay);
-        // Also affect tap decay
-        self.set_raw_param(param::TAP_DECAY, params.decay.mul_add(0.5, 0.3));
+        // Decay is a time (CLOUD_T60); the ring turns it into one loop
+        // gain per trip, and Freeze's infinite holds the ring.
+        self.ring.set_t60(decay_to_t60(params.decay, CLOUD_T60.0, CLOUD_T60.1));
+        self.ring.set_size(params.size);
 
-        // Size → late line size, tap length, early diffuse delay, late diffuse delay
-        self.set_raw_param(param::LATE_LINE_SIZE, params.size);
-        self.set_raw_param(param::TAP_LENGTH, params.size);
-        self.set_raw_param(param::EARLY_DIFFUSE_DELAY, params.size);
-        self.set_raw_param(param::LATE_DIFFUSE_DELAY, params.size);
+        // Diffusion: the gain of every allpass, input chain and tank (zero =
+        // pure delay, as on BigSky).
+        let d = params.diffusion.clamp(0.0, 1.0);
+        // BigSky's input gain: 0.85 × the knob, exactly linear — measured
+        // at seven settings from the ratio of the chain's two first pulses
+        // (all stages instant: g⁴; stage 1 delayed: −(1−g²)·g³).
+        let input_g = d * 0.85;
+        let size = params.size;
+        self.for_inputs(|s| {
+            s.diffuser.set_size(size);
+            s.diffuser.set_gain(input_g);
+        });
+        // The tank's stages run at the same 0.85 × the knob — fitted from
+        // −8 to +10 against the plug-in's own output.
+        self.ring.set_diffusion(input_g);
 
-        // Diffusion — the Cloud continuum (manual): at MIN the reverb is
-        // "grainier yet mesmerizing on transient attacks" — a skittery
-        // DISCRETE multitap early field with the diffusers out of the
-        // way; raising the knob multiplies taps into a dense cluster
-        // and brings the cascaded diffusers in until the attack is fog.
-        let d = params.diffusion;
-        self.set_raw_param(param::TAP_ENABLED, 1.0);
-        // ~21 discrete taps (grainy) → ~72 blended taps (dense).
-        self.set_raw_param(param::TAP_COUNT, d.mul_add(0.2, 0.08));
-        self.set_raw_param(param::EARLY_DIFFUSE_COUNT, d);
-        self.set_raw_param(param::EARLY_DIFFUSE_FEEDBACK, d * 0.85);
-        self.set_raw_param(param::LATE_DIFFUSE_COUNT, d);
-        self.set_raw_param(param::LATE_DIFFUSE_FEEDBACK, d * 0.8);
-        self.set_raw_param(
-            param::EARLY_DIFFUSE_ENABLED,
-            if d > 0.03 { 1.0 } else { 0.0 },
+        // Modulation, the manual's two segments, measured: every Diffusion
+        // allpass (input chain and stages; not the figure-8) shortens its
+        // delay by up to D on an LFO. D rises to ~0.385 ms by MOD 64; past
+        // ~72 the rate climbs from ~0.9 Hz to ~7.5 Hz as D eases back. Read
+        // off the plug-in's early pulse (the chain alone) and its first
+        // stage's own tap, tracked through a train of impulses.
+        let m = params.modulation.clamp(0.0, 1.0) * 127.0;
+        let depth_ms = interp(&MOD_DEPTH_MS, m);
+        let rate_hz = interp(&MOD_RATE_HZ.map(|(k, r)| (k, r.ln())), m).exp();
+        let amount = ms(depth_ms);
+        self.for_inputs(|s| s.diffuser.set_modulation(amount, rate_hz));
+        // The stages' depth is not as cleanly readable (their taps collide
+        // with older pulses); 1.5× the chain's lands BigSky's spread round
+        // a held 1 kHz tone (±20 % from MOD 32 to 127, against −25…−35 % at
+        // 1×).
+        self.ring.set_modulation(amount * 1.5, rate_hz);
+
+        // Damping: off at zero (BigSky's Cloud decays evenly across the
+        // band), otherwise a low-pass on the ring's recirculation.
+        self.ring.set_damping(
+            (params.damping > 0.05).then(|| 20_000.0 * 10f64.powf(-params.damping * 1.3)),
         );
-        self.set_raw_param(
-            param::LATE_DIFFUSE_ENABLED,
-            if d > 0.12 { 1.0 } else { 0.0 },
-        );
-        // Early/late balance rides the knob: grainy = the tap field
-        // stays prominent; foggy = the tank dominates.
-        self.set_raw_param(param::EARLY_OUT, d.mul_add(-0.25, 0.95));
-        self.set_raw_param(param::LATE_OUT, d.mul_add(0.15, 0.85));
 
-        // Damping → EQ lowpass cutoff
-        let cutoff_raw = 1.0 - params.damping;
-        self.set_raw_param(
-            param::EQ_LOWPASS_ENABLED,
-            if params.damping > 0.05 { 1.0 } else { 0.0 },
-        );
-        self.set_raw_param(param::EQ_CUTOFF, cutoff_raw);
-
-        // Modulation — the manual's two-segment law: min → "2 o'clock"
-        // (~72% travel) raises the DEPTH of the quadrature oscillators
-        // on the INPUT DIFFUSOR sections; past 2 o'clock the oscillator
-        // FREQUENCY rises instead. The tank itself stays nearly still —
-        // that is the stated design for high modulation without
-        // muddying the sustaining tail.
-        let m = params.modulation.clamp(0.0, 1.0);
-        let depth = (m / 0.72).min(1.0);
-        let rate_seg = ((m - 0.72) / 0.28).max(0.0);
-        self.set_raw_param(param::EARLY_DIFFUSE_MOD_AMOUNT, depth);
-        self.set_raw_param(param::EARLY_DIFFUSE_MOD_RATE, 0.35 + rate_seg * 0.45);
-        self.set_raw_param(param::LATE_LINE_MOD_AMOUNT, depth * 0.25);
-        self.set_raw_param(param::LATE_LINE_MOD_RATE, 0.3);
-        self.set_raw_param(param::LATE_DIFFUSE_MOD_AMOUNT, depth * 0.35);
-        self.set_raw_param(param::LATE_DIFFUSE_MOD_RATE, 0.3 + rate_seg * 0.3);
-
-        // Low End (BigSky common param): per-line low shelf inside the
-        // CloudSeed loop EQ — above 1.0 the lows bloom per pass, below
-        // they thin. Bright tone settings override with their low cut.
+        // Low End — BigSky's static one-pole high-pass, ≈ 300 − 23·LowEnd
+        // Hz. The chain's `low_end` reaches us as `low_decay_mult`; undo
+        // that law to get the knob back.
         let le = params.low_decay_mult;
-        let low_end_active = (le - 1.0).abs() > 0.02 && params.tone <= 0.0;
-        if low_end_active {
-            self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 1.0);
-            self.set_raw_param(param::EQ_LOW_FREQ, 0.35);
-            self.set_raw_param(
-                param::EQ_LOW_GAIN,
-                (le - 1.0).mul_add(0.4, 0.5).clamp(0.1, 0.75),
-            );
-        }
+        let knob01 = if le < 1.0 { le - 0.5 } else { (le - 1.0) / 1.2 + 0.5 };
+        let low_end = knob01.clamp(0.0, 1.0).mul_add(20.0, -10.0);
+        let low_cut_hz = low_end.mul_add(-23.3, 300.0).clamp(20.0, 1000.0);
+        self.for_inputs(|s| s.low_cut.set_cutoff(low_cut_hz));
 
-        // Tone → EQ shelf gains
-        if params.tone < 0.0 {
-            // Dark: cut highs
-            self.set_raw_param(param::EQ_HIGH_SHELF_ENABLED, 1.0);
-            self.set_raw_param(param::EQ_HIGH_GAIN, params.tone.mul_add(0.5, 0.5));
-            self.set_raw_param(param::EQ_HIGH_FREQ, 0.5);
-            if !low_end_active {
-                self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 0.0);
-            }
-        } else if params.tone > 0.0 {
-            // Bright: cut lows
-            self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 1.0);
-            self.set_raw_param(param::EQ_LOW_GAIN, params.tone.mul_add(-0.5, 0.5));
-            self.set_raw_param(param::EQ_LOW_FREQ, 0.3);
-            self.set_raw_param(param::EQ_HIGH_SHELF_ENABLED, 0.0);
-        } else {
-            if !low_end_active {
-                self.set_raw_param(param::EQ_LOW_SHELF_ENABLED, 0.0);
-            }
-            self.set_raw_param(param::EQ_HIGH_SHELF_ENABLED, 0.0);
-        }
+        self.tone.set(params.tone, sr);
 
-        // Extra A → pre-delay (0-500ms via resp1dec) + line count
-        // (tap count is owned by the Diffusion continuum above).
-        self.set_raw_param(param::TAP_PREDELAY, params.extra_a * 0.5);
-        self.set_raw_param(param::LATE_LINE_COUNT, params.extra_a.mul_add(0.5, 0.4));
-
-        // Extra B → cross-seed, seeds (character/stereo width)
-        self.set_raw_param(param::EQ_CROSS_SEED, params.extra_b);
-        self.set_raw_param(param::INPUT_MIX, params.extra_b * 0.8);
+        // Extra B: input crossfeed between the sides.
+        self.crossfeed = params.extra_b.clamp(0.0, 1.0) * 0.4;
     }
 
     fn set_cloud_params(&mut self, params: &CloudParams) -> bool {
@@ -967,18 +465,13 @@ impl ReverbAlgorithm for Cloud {
         } else {
             (left, right)
         };
+        let c = self.crossfeed;
+        let in_l = left.mul_add(1.0 - c, right * c);
+        let in_r = right.mul_add(1.0 - c, left * c);
 
-        // CloudSeed ReverbController input crossfeed mixing
-        let input_mix = scale_param(self.raw_params[param::INPUT_MIX], param::INPUT_MIX);
-        let cm = input_mix * 0.5;
-        let cmi = 1.0 - cm;
-
-        let left_in = left.mul_add(cmi, right * cm);
-        let right_in = right.mul_add(cmi, left * cm);
-
-        let (out_l, _) = self.left.tick(left_in);
-        let (out_r, _) = self.right.tick(right_in);
-
-        (out_l, out_r)
+        let early_l = self.input_l.tick(in_l);
+        let early_r = self.input_r.tick(in_r);
+        let (ring_l, ring_r) = self.ring.tick(early_l, early_r);
+        self.tone.tick(EARLY_OUT.mul_add(early_l, ring_l), EARLY_OUT.mul_add(early_r, ring_r))
     }
 }

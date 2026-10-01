@@ -149,8 +149,11 @@ fn cloud_ensemble_tracks_pitch() {
         goertzel(body, input_freq * 2.0) / goertzel(body, input_freq).max(1e-30)
     };
 
-    let with = octave_ratio(220.0);
-    let without = base_ratio(220.0);
+    // 110 Hz: at 220 the layer's octave sits ~115 dB under the
+    // fundamental — below the reverb's own modulation floor there, so the
+    // comparison measured the floor, not the ensemble.
+    let with = octave_ratio(110.0);
+    let without = base_ratio(110.0);
     assert!(
         with > without * 2.0,
         "ensemble must add pitched octave content: with={with:e} without={without:e}"

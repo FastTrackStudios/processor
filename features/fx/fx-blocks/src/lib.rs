@@ -2821,7 +2821,7 @@ const REVERB_PARAMS: &[ParamSpec] = &[
         id: 43,
         name: "predelay",
         min: 0.0,
-        max: 200.0,
+        max: 1500.0,
         default: 0.0,
     },
     // INFINITE footswitch: engage (0/1) + per-preset mode
