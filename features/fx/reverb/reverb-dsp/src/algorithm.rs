@@ -50,7 +50,7 @@ impl AlgorithmType {
             Self::Hall => 0.47,
             Self::Plate => 8.82,
             Self::Spring => 5.93,
-            Self::Cloud => -2.25,
+            Self::Cloud => 3.39,
             Self::Bloom => 22.84,
             Self::Shimmer => -0.58,
             Self::Chorale => -0.50,
