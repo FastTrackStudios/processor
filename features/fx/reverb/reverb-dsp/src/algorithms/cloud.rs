@@ -392,7 +392,7 @@ impl ReverbAlgorithm for Cloud {
         let m = params.modulation.clamp(0.0, 1.0);
         let depth = (m / 0.72).min(1.0);
         let rate_seg = ((m - 0.72) / 0.28).max(0.0);
-        let amount = ms(depth * 4.4);
+        let amount = ms(depth * 2.9);
         let rate_hz = resp2dec(rate_seg.mul_add(0.04, 0.35)) * 5.0;
         self.for_inputs(|s| s.diffuser.set_modulation(amount, rate_hz));
         self.ring.set_modulation(depth * 6.0, 0.5);

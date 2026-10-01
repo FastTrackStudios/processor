@@ -43,9 +43,17 @@ const SECTIONS: usize = 4;
 /// 803.3 ms trip: 167.3, 217.6, 189.3 and 229.1 ms a section. The ratios
 /// avoid common factors so the ring does not flutter.
 const DELAY_MS: [f64; SECTIONS] = [151.23, 197.49, 174.0, 206.81];
-/// The long (floor) allpass in each section, ms. Intervals that recur in
-/// BigSky's Cloud impulse response.
-const LONG_AP_MS: [f64; SECTIONS] = [61.04, 85.40, 43.35, 95.60];
+/// The ring's one long (floor) allpass, ms, in section 0: twice the 61.04 ms
+/// spacing of the arrivals in BigSky's Cloud impulse response.
+///
+/// ONE, not one per section: allpasses in series multiply the echo paths
+/// on every trip, and four of them turned the tail to fog within ~2 s at
+/// zero Diffusion, where BigSky's stays grainy for its whole length (echo
+/// density ≤ 0.18 over 3 s) while still ringing to its 4.5 s floor. A
+/// single allpass sustains the floor with one sparse series of copies.
+const FLOOR_AP_MS: f64 = 122.08;
+/// The section that carries it.
+const FLOOR_SECTION: usize = 0;
 /// The two short (diffusion) allpasses in each section, ms.
 const SHORT_AP_MS: [[f64; 2]; SECTIONS] = [[4.77, 11.3], [6.21, 13.9], [5.43, 9.87], [7.09, 15.2]];
 /// The ring's output taps: BigSky's Cloud's first pass through its tank,
@@ -162,9 +170,10 @@ const TAP_GAIN: f64 = 0.25;
 pub const EARLY_TO_TAP: f64 = 1.4;
 /// Shortest the long allpasses ring, seconds: BigSky's Cloud floor.
 pub const FLOOR_T60: f64 = 4.5;
-/// How much longer than asked the floor allpasses make the tail, seconds
+/// How much longer than asked the floor allpass and the nested input chain
+/// make the tail, seconds
 /// (at and below ~8 s; it fades out above).
-const EXCESS_S: f64 = 1.4;
+const EXCESS_S: f64 = 1.3;
 /// The largest size scale the buffers are sized for.
 const MAX_SCALE: f64 = 1.6;
 /// Headroom for modulation, samples.
@@ -210,72 +219,120 @@ impl RingAp {
         // Cubic: a linear read is a gentle low-pass, and the ring applies
         // it on every pass — the top octave died early.
         let delayed = self.line.read_cubic(d.clamp(1.0, cap));
-        let v = self.g.mul_add(-delayed, x);
+        // Schroeder's sign, as BigSky's: −g on the instant path (its
+        // first-order pulses come out negative against the main one).
+        let v = self.g.mul_add(delayed, x);
         self.line.write(flush(v));
-        self.g.mul_add(v, delayed)
+        (-self.g).mul_add(v, delayed)
     }
 }
 
-/// Cloud's input chain: four allpasses in series, the same on both sides
-/// (the plug-in's early field is mono). Delays read off BigSky's Cloud at
-/// a small Diffusion, where each stage leaves one faint pulse before the
-/// chain's main pulse and one after it: 22.35, 28.60, 55.85 and 76.35 ms,
-/// summing to the 183 ms the chain takes at zero gain.
-const INPUT_AP_MS: [f64; 4] = [22.35, 28.60, 55.85, 76.35];
+/// Cloud's input chain, the same on both sides (the plug-in's early field
+/// is mono). Read off BigSky's Cloud: at a small Diffusion each stage
+/// leaves a faint pulse either side of the chain's 183 ms main pulse, at
+/// 22.35, 28.60, 55.85 and 76.35 ms; at moderate Diffusion pulses also
+/// appear at the *differences* (6.25 = 28.60 − 22.35, 33.50, 54.00) — which
+/// a series chain cannot make and a nested one does. So: a 22.35 ms
+/// allpass, then three allpasses of 6.25 / 33.50 / 54.00 ms each with a
+/// 22.35 ms allpass nested in its loop (loop = the measured delay).
+const INPUT_AP_MS: f64 = 22.35;
+const INPUT_OUTER_MS: [f64; 3] = [6.25, 33.50, 54.00];
+/// The nested allpasses' gain against the outer ones'.
+const INNER_GAIN: f64 = 0.8;
 
-/// The input diffusion: [`INPUT_AP_MS`] allpasses, quadrature-modulated.
+/// The input diffusion: one allpass, then three nested pairs,
+/// quadrature-modulated.
 pub struct InputChain {
-    stages: [RingAp; 4],
+    first: RingAp,
+    outer: [RingAp; 3],
+    inner: [RingAp; 3],
     sample_rate: f64,
 }
 
 impl InputChain {
     #[must_use]
     pub fn new(sample_rate: f64) -> Self {
-        // Quadrature: the four stages' LFOs a quarter-cycle apart, so the
+        // Quadrature: the stages' LFOs a quarter-cycle apart, so the
         // modulation does not pump in common.
-        let stages = core::array::from_fn(|i| {
-            RingAp::new(
-                INPUT_AP_MS.get(i).copied().unwrap_or(20.0),
-                sample_rate,
-                num::count_to_f64(i) * 0.25,
-            )
-        });
-        Self { stages, sample_rate }
+        let phase = |i: usize| num::count_to_f64(i) * 0.25;
+        Self {
+            first: RingAp::new(INPUT_AP_MS, sample_rate, 0.0),
+            outer: core::array::from_fn(|i| {
+                RingAp::new(INPUT_OUTER_MS.get(i).copied().unwrap_or(20.0), sample_rate, phase(i + 1))
+            }),
+            inner: core::array::from_fn(|i| RingAp::new(INPUT_AP_MS, sample_rate, phase(i) + 0.125)),
+            sample_rate,
+        }
+    }
+
+    fn stages_mut(&mut self) -> impl Iterator<Item = &mut RingAp> {
+        core::iter::once(&mut self.first).chain(self.outer.iter_mut()).chain(self.inner.iter_mut())
     }
 
     /// Size 0.5 is BigSky's chain; it scales with the ring.
     pub fn set_size(&mut self, size: f64) {
         let scale = (size.clamp(0.0, 1.0) + 0.5).min(MAX_SCALE);
-        for ap in &mut self.stages {
-            ap.len = ap.base_ms * 1e-3 * self.sample_rate * scale;
+        let k = 1e-3 * self.sample_rate * scale;
+        for ap in self.stages_mut() {
+            ap.len = ap.base_ms * k;
         }
     }
 
     /// The allpasses' gain: Diffusion. At zero each stage is a pure delay.
     pub fn set_gain(&mut self, g: f64) {
-        for ap in &mut self.stages {
-            ap.g = g.clamp(0.0, 0.9);
+        let g = g.clamp(0.0, 0.9);
+        self.first.g = g;
+        for ap in &mut self.outer {
+            ap.g = g;
+        }
+        for ap in &mut self.inner {
+            ap.g = g * INNER_GAIN;
         }
     }
 
     /// LFO depth (samples) and rate (Hz); each stage a touch off the rate.
     pub fn set_modulation(&mut self, depth: f64, rate_hz: f64) {
-        for (i, ap) in self.stages.iter_mut().enumerate() {
+        let sr = self.sample_rate;
+        for (i, ap) in self.stages_mut().enumerate() {
             ap.depth = depth;
-            ap.inc = rate_hz * 0.07f64.mul_add(num::count_to_f64(i), 0.9) / self.sample_rate;
+            ap.inc = rate_hz * 0.07f64.mul_add(num::count_to_f64(i % 4), 0.9) / sr;
         }
     }
 
     pub fn clear(&mut self) {
-        for ap in &mut self.stages {
+        for ap in self.stages_mut() {
             ap.line.clear();
         }
     }
 
     #[inline]
     pub fn tick(&mut self, x: f64) -> f64 {
-        self.stages.iter_mut().fold(x, |v, ap| ap.tick(v))
+        let mut v = self.first.tick(x);
+        for (outer, inner) in self.outer.iter_mut().zip(self.inner.iter_mut()) {
+            v = outer.tick_nested(v, inner);
+        }
+        v
+    }
+}
+
+impl RingAp {
+    /// A nested allpass (Gardner): `inner` sits in this one's delay path,
+    /// so the loop is this line plus the inner allpass.
+    #[inline]
+    fn tick_nested(&mut self, x: f64, inner: &mut Self) -> f64 {
+        let mut d = self.len;
+        if self.depth > 0.0 {
+            self.phase += self.inc;
+            if self.phase >= 1.0 {
+                self.phase -= 1.0;
+            }
+            d += self.depth * (self.phase * core::f64::consts::TAU).sin();
+        }
+        let cap = num::count_to_f64(self.line.len()) - 4.0;
+        let w = inner.tick(self.line.read_cubic(d.clamp(1.0, cap)));
+        let v = self.g.mul_add(w, x);
+        self.line.write(flush(v));
+        (-self.g).mul_add(v, w)
     }
 }
 
@@ -324,7 +381,7 @@ impl CloudRing {
                 base_ms,
                 len: 1,
                 taps: Vec::with_capacity(MAX_SECTION_TAPS),
-                long_ap: RingAp::new(LONG_AP_MS.get(i).copied().unwrap_or(60.0), sample_rate, phase),
+                long_ap: RingAp::new(FLOOR_AP_MS, sample_rate, phase),
                 short: [
                     RingAp::new(short_ms[0], sample_rate, phase + 0.13),
                     RingAp::new(short_ms[1], sample_rate, phase + 0.61),
@@ -436,14 +493,18 @@ impl CloudRing {
     fn trip_samples(&self) -> f64 {
         self.sections
             .iter()
-            .map(|s| num::count_to_f64(s.len) + s.long_ap.len + s.short.iter().map(|a| a.len).sum::<f64>())
+            .enumerate()
+            .map(|(i, s)| {
+                let floor = if i == FLOOR_SECTION { s.long_ap.len } else { 0.0 };
+                num::count_to_f64(s.len) + floor + s.short.iter().map(|a| a.len).sum::<f64>()
+            })
             .sum()
     }
 
     fn update_gains(&mut self) {
         let sr = self.sample_rate;
-        // The floor allpasses' ringing adds to the loop's decay: with both
-        // set to the requested time the tail measured ~1.4 s long below
+        // The floor allpass's ringing adds to the loop's decay: with both
+        // set to the requested time the tail measured ~1.3 s long below
         // ~8 s, the excess fading out above (bigsky_match's Decay sweep).
         // Ask the loop for that much less, so the tail lands on the time.
         let t = self.t60;
@@ -452,7 +513,7 @@ impl CloudRing {
         let excess = if t <= 8.0 {
             EXCESS_S * ((t - 2.5) / 3.0).clamp(0.0, 1.0)
         } else {
-            EXCESS_S * (-(t - 8.0) / 15.0).exp()
+            EXCESS_S * (-(t - 8.0) / 8.0).exp()
         };
         // Very long tails lose a little per trip besides (interpolation,
         // the DC blocker): 4 % short at 57 s, 9 % at 75 s. Ask for more.
@@ -489,7 +550,7 @@ impl CloudRing {
     pub fn tick(&mut self, in_l: f64, in_r: f64) -> (f64, f64) {
         let mut sig = self.feedback + 0.5 * (in_l + in_r);
         let (mut out_l, mut out_r) = (0.0, 0.0);
-        for s in &mut self.sections {
+        for (i, s) in self.sections.iter_mut().enumerate() {
             s.delay.write(sig);
             for tap in &s.taps {
                 let v = s.delay.read(tap.pos) * tap.gain;
@@ -500,7 +561,9 @@ impl CloudRing {
                 }
             }
             let mut v = s.delay.read(s.len);
-            v = s.long_ap.tick(v);
+            if i == FLOOR_SECTION {
+                v = s.long_ap.tick(v);
+            }
             for ap in &mut s.short {
                 v = ap.tick(v);
             }
