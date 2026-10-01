@@ -38,33 +38,128 @@ use audiocore_dsp::denormal::flush;
 
 /// Sections in the ring.
 const SECTIONS: usize = 4;
-/// Section delay lengths (ms) at size 0.5 — they sum to BigSky's 803.3 ms
-/// trip. The ratios avoid common factors so the ring does not flutter.
-const DELAY_MS: [f64; SECTIONS] = [167.3, 217.6, 189.3, 229.1];
+/// Section delay lengths (ms) at size 0.5. With each section's short
+/// allpasses (a pure delay at zero Diffusion) they add up to BigSky's
+/// 803.3 ms trip: 167.3, 217.6, 189.3 and 229.1 ms a section. The ratios
+/// avoid common factors so the ring does not flutter.
+const DELAY_MS: [f64; SECTIONS] = [151.23, 197.49, 174.0, 206.81];
 /// The long (floor) allpass in each section, ms. Intervals that recur in
 /// BigSky's Cloud impulse response.
 const LONG_AP_MS: [f64; SECTIONS] = [61.04, 85.40, 43.35, 95.60];
 /// The two short (diffusion) allpasses in each section, ms.
 const SHORT_AP_MS: [[f64; 2]; SECTIONS] = [[4.77, 11.3], [6.21, 13.9], [5.43, 9.87], [7.09, 15.2]];
-/// Output taps as fractions of a section's delay: BigSky's first-section
-/// pattern (L 24.5, R 49.4, R 53.6, L 71.1, L 74.4 ms of 167.3), then the
-/// same half a section on with the sides swapped, so a pulse lights the
-/// outputs all the way along the section rather than in bursts. Mirrored
-/// L↔R on alternate sections. `(position, right side?, gain)`.
-const TAPS: [(f64, bool, f64); 10] = [
-    (0.146, false, -1.0),
-    (0.295, true, -1.0),
-    (0.321, true, 0.75),
-    (0.425, false, 0.75),
-    (0.445, false, -1.0),
-    (0.646, true, -1.0),
-    (0.795, false, -1.0),
-    (0.821, false, 0.75),
-    (0.925, true, 0.75),
-    (0.945, true, -1.0),
+/// The ring's output taps: BigSky's Cloud's first pass through its tank,
+/// pulse for pulse — read off the plug-in at Diffusion −10 (every
+/// allpass a pure delay), MOD 0, Decay at its top (nothing decays inside
+/// one trip), as `(ms after the tank's input, right side?, gain re the
+/// first tap)`. Each tap sits at that time along the ring, so a pulse
+/// travelling our ring lights the outputs where it lit BigSky's.
+const FIRST_PASS_TAPS: [(f64, bool, f64); 98] = [
+    (24.479, false, -0.998),
+    (49.438, true, -0.998),
+    (53.646, true, 0.751),
+    (71.146, false, 0.749),
+    (74.438, false, -1.000),
+    (85.396, true, 1.000),
+    (85.396, false, -1.000),
+    (109.875, false, -1.000),
+    (134.833, true, -1.000),
+    (139.042, true, 0.752),
+    (156.542, false, 0.750),
+    (159.833, false, -1.002),
+    (207.479, false, 1.000),
+    (207.479, true, -1.000),
+    (214.896, true, -0.998),
+    (231.958, false, -1.000),
+    (236.458, false, 0.438),
+    (256.917, true, -1.000),
+    (261.125, true, 0.752),
+    (268.479, false, -1.000),
+    (268.479, true, 1.000),
+    (271.250, true, 0.433),
+    (278.625, false, 0.750),
+    (281.917, false, -1.002),
+    (292.958, false, -1.000),
+    (300.292, true, -1.000),
+    (317.917, true, -1.000),
+    (321.854, false, 0.438),
+    (322.125, true, 0.752),
+    (339.625, false, 0.750),
+    (342.917, false, -1.003),
+    (356.646, true, 0.438),
+    (390.562, false, -0.801),
+    (390.562, true, 0.801),
+    (401.146, true, -0.749),
+    (401.771, false, -0.328),
+    (402.396, true, 1.004),
+    (415.042, false, -0.801),
+    (422.375, true, -1.000),
+    (425.521, false, -0.749),
+    (440.000, true, -0.801),
+    (443.937, false, 0.438),
+    (444.208, true, 0.602),
+    (461.708, false, 0.601),
+    (465.000, false, -0.803),
+    (478.729, true, 0.438),
+    (483.375, true, -1.001),
+    (486.542, true, -0.747),
+    (487.167, false, -0.328),
+    (487.792, true, 1.007),
+    (488.854, true, -0.332),
+    (504.937, false, 0.438),
+    (510.917, false, -0.750),
+    (512.646, false, 0.705),
+    (512.646, true, 0.701),
+    (537.125, false, -0.701),
+    (538.854, false, 1.003),
+    (539.729, true, 0.438),
+    (562.083, true, -0.701),
+    (566.292, true, 0.527),
+    (566.458, true, -0.442),
+    (567.083, false, 0.246),
+    (574.250, true, -0.328),
+    (583.792, false, 0.526),
+    (587.083, false, -0.702),
+    (599.896, true, 0.749),
+    (605.458, true, -0.802),
+    (608.625, true, -0.748),
+    (609.250, false, -0.328),
+    (609.875, true, 1.007),
+    (624.250, false, 1.000),
+    (627.021, false, 0.347),
+    (633.000, false, -0.751),
+    (643.125, false, -0.437),
+    (651.854, true, -0.438),
+    (652.479, false, 0.246),
+    (661.812, true, 0.350),
+    (669.625, true, -0.750),
+    (670.250, false, -0.328),
+    (670.875, true, 1.006),
+    (685.292, true, 0.750),
+    (694.000, false, -0.750),
+    (696.333, true, -0.328),
+    (706.458, true, 0.246),
+    (727.542, true, -0.701),
+    (728.521, false, -0.438),
+    (731.354, false, 0.750),
+    (731.771, true, 0.329),
+    (746.333, false, 1.000),
+    (749.104, false, 0.303),
+    (757.333, true, -0.328),
+    (773.937, true, -0.438),
+    (774.562, false, 0.246),
+    (783.896, true, 0.307),
+    (791.708, true, -0.601),
+    (791.854, true, 0.254),
+    (792.333, false, -0.263),
+    (792.958, true, 0.803),
 ];
+/// Most taps any one section can hold.
+const MAX_SECTION_TAPS: usize = 48;
 /// Overall tap level (the chain's wet calibration sets the final level).
 const TAP_GAIN: f64 = 0.25;
+/// BigSky's mono early pulse against its first ring tap: 0.1856 / 0.1328.
+pub const EARLY_TO_TAP: f64 = 1.4;
 /// Shortest the long allpasses ring, seconds: BigSky's Cloud floor.
 pub const FLOOR_T60: f64 = 4.5;
 /// How much longer than asked the floor allpasses make the tail, seconds
@@ -194,7 +289,7 @@ struct Section {
     delay: DelayLine,
     base_ms: f64,
     len: usize,
-    taps: [Tap; TAPS.len()],
+    taps: Vec<Tap>,
     long_ap: RingAp,
     short: [RingAp; 2],
 }
@@ -228,7 +323,7 @@ impl CloudRing {
                 delay: DelayLine::new(num::f64_to_index(cap)),
                 base_ms,
                 len: 1,
-                taps: core::array::from_fn(|_| Tap { pos: 1, right: false, gain: 0.0 }),
+                taps: Vec::with_capacity(MAX_SECTION_TAPS),
                 long_ap: RingAp::new(LONG_AP_MS.get(i).copied().unwrap_or(60.0), sample_rate, phase),
                 short: [
                     RingAp::new(short_ms[0], sample_rate, phase + 0.13),
@@ -256,29 +351,40 @@ impl CloudRing {
     }
 
     /// Size 0.5 is BigSky's ring (803 ms a trip); 0 → 0.5×, 1 → 1.5×.
+    ///
+    /// Allocation-free: the per-section tap lists are refilled within the
+    /// capacity reserved in [`Self::new`].
     pub fn set_size(&mut self, size: f64) {
         self.scale = (size.clamp(0.0, 1.0) + 0.5).min(MAX_SCALE);
         let ms = self.sample_rate * 1e-3 * self.scale;
         for s in &mut self.sections {
             s.len = num::f64_to_index(s.base_ms * ms).max(2);
-            let len = num::count_to_f64(s.len);
-            for (tap, &(pos, right, gain)) in s.taps.iter_mut().zip(TAPS.iter()) {
-                tap.pos = num::f64_to_index(pos * len).max(1);
-                tap.right = right;
-                tap.gain = gain * TAP_GAIN;
-            }
             s.long_ap.len = s.long_ap.base_ms * ms;
             for ap in &mut s.short {
                 ap.len = ap.base_ms * ms;
             }
+            s.taps.clear();
         }
-        // Odd sections tap the opposite sides: the pattern mirrors round
-        // the ring.
-        for (i, s) in self.sections.iter_mut().enumerate() {
-            if i % 2 == 1 {
-                for tap in &mut s.taps {
-                    tap.right = !tap.right;
+        // Walk the ring as a pulse does at zero Diffusion — each section's
+        // delay, then its short allpasses (pure delays) — and drop each
+        // tap on the delay line where that time falls. A tap that lands on
+        // the allpasses goes to the line's end.
+        let mut start = 0.0;
+        let mut section = 0;
+        for &(t_ms, right, gain) in &FIRST_PASS_TAPS {
+            let t = t_ms * ms;
+            while let Some(s) = self.sections.get(section) {
+                let span = num::count_to_f64(s.len) + s.short.iter().map(|a| a.len).sum::<f64>();
+                if t < start + span {
+                    break;
                 }
+                start += span;
+                section += 1;
+            }
+            let Some(s) = self.sections.get_mut(section) else { break };
+            if s.taps.len() < MAX_SECTION_TAPS {
+                let pos = num::f64_to_index(t - start).clamp(1, s.len);
+                s.taps.push(Tap { pos, right, gain: gain * TAP_GAIN });
             }
         }
         self.update_gains();
@@ -348,7 +454,10 @@ impl CloudRing {
         } else {
             EXCESS_S * (-(t - 8.0) / 15.0).exp()
         };
-        let loop_t60 = (t - excess).max(t * 0.35);
+        // Very long tails lose a little per trip besides (interpolation,
+        // the DC blocker): 4 % short at 57 s, 9 % at 75 s. Ask for more.
+        let long = 1.0 - 0.002 * (t - 30.0).clamp(0.0, 100.0);
+        let loop_t60 = (t - excess).max(t * 0.35) / long;
         // One decay gain per trip.
         let trip_s = self.trip_samples() / sr;
         self.loop_gain = 10f64.powf(-3.0 * trip_s / loop_t60).min(1.0);

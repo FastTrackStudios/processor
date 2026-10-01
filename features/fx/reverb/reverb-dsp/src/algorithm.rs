@@ -50,7 +50,7 @@ impl AlgorithmType {
             Self::Hall => 0.47,
             Self::Plate => 8.82,
             Self::Spring => 5.93,
-            Self::Cloud => 3.39,
+            Self::Cloud => 6.47,
             Self::Bloom => 22.84,
             Self::Shimmer => -0.58,
             Self::Chorale => -0.50,
@@ -1343,9 +1343,10 @@ pub const HALL_ARENA_T60: (f64, f64) = (0.8, 40.0);
 pub const RANDOM_T60: (f64, f64) = (0.15, 25.0);
 /// Cloud: `CloudSeed`'s late lines take a T60 directly, so Cloud converts
 /// time itself. The span is `BigSky`'s: its Cloud never rings shorter than
-/// ~4.5 s and reaches ~75 s before Infinite (measured, signal-analyzer's
-/// `bigsky_match`); the floor leaves room below that.
-pub const CLOUD_T60: (f64, f64) = (1.0, 90.0);
+/// ~4.5 s and reaches ~93 s before Infinite (measured, signal-analyzer's
+/// `bigsky_match`); the floor leaves room below that, and the top of the
+/// range (≥ ~119 s, `FREEZE_DECAY`) holds like BigSky's Infinite.
+pub const CLOUD_T60: (f64, f64) = (1.0, 120.0);
 /// The plate tank.
 ///
 /// The floor is a round trip and a half, not an arbitrary minimum: the

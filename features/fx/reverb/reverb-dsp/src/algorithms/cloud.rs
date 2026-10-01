@@ -27,13 +27,14 @@
 use dsp_core::num;
 
 use crate::algorithm::{AlgorithmParams, CLOUD_T60, CloudParams, ReverbAlgorithm, decay_to_t60};
-use crate::primitives::cloud_ring::{CloudRing, InputChain};
-use crate::primitives::one_pole::{Hp1, Lp1};
+use crate::primitives::cloud_ring::{CloudRing, EARLY_TO_TAP, InputChain};
+use crate::primitives::one_pole::Hp1;
 use crate::primitives::response_curves::resp2dec;
 use audiocore_dsp::biquad::{Biquad, FilterType};
 
-/// Level of the input chain's own output (the early field), linear.
-const EARLY_OUT: f64 = 0.25;
+/// Level of the input chain's own output (the early field), linear:
+/// BigSky's early pulse is 1.4× its first ring tap.
+const EARLY_OUT: f64 = EARLY_TO_TAP * 0.25;
 
 /// One side's input stage: Low End high-pass, then the diffusion chain.
 struct InputStage {
@@ -66,57 +67,104 @@ impl InputStage {
     }
 }
 
-/// The product's Tone on Cloud: a static tilt on the wet, darker below
-/// zero (one-pole low-pass) and thinner above (one-pole high-pass).
+/// BigSky's Tone, measured: two cascaded first-order high shelves, flat
+/// at the top of the knob and deepening as it comes down (fits the
+/// plug-in's third-octave response to 0.14 dB RMS, 62 Hz–16 kHz).
+/// `(knob 0–127, shelf corner Hz, total depth dB)`; interpolated between.
+const TONE_SHELF: [(f64, f64, f64); 6] = [
+    (0.0, 1026.0, -46.0),
+    (32.0, 2189.0, -18.5),
+    (64.0, 3105.0, -9.5),
+    (96.0, 3105.0, -3.5),
+    (110.0, 3919.0, -2.0),
+    (127.0, 3919.0, 0.0),
+];
+
+/// One first-order high shelf (bilinear, pre-warped at the pole).
+#[derive(Clone, Copy, Default)]
+struct Shelf1 {
+    b0: f64,
+    b1: f64,
+    a1: f64,
+    x1: f64,
+    y1: f64,
+}
+
+impl Shelf1 {
+    /// `fp`: the shelf's corner (pole); `depth_db`: its gain at the top.
+    fn set(&mut self, fp: f64, depth_db: f64, sample_rate: f64) {
+        let wp = core::f64::consts::TAU * fp.clamp(20.0, sample_rate * 0.45);
+        let wz = wp * 10f64.powf(-depth_db / 20.0);
+        let k = wp / (wp / (2.0 * sample_rate)).tan();
+        let a0 = 1.0 + k / wp;
+        self.b0 = (1.0 + k / wz) / a0;
+        self.b1 = (1.0 - k / wz) / a0;
+        self.a1 = (1.0 - k / wp) / a0;
+    }
+
+    fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.y1 = 0.0;
+    }
+
+    #[inline]
+    fn tick(&mut self, x: f64) -> f64 {
+        let y = self.b0.mul_add(x, self.b1.mul_add(self.x1, -self.a1 * self.y1));
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+}
+
+/// Cloud's Tone: BigSky's, on the wet. The product's `tone` (−1…+1) spans
+/// BigSky's knob with 0 at noon, which the manual calls balanced.
 struct ToneStage {
-    lp: [Lp1; 2],
-    hp: [Hp1; 2],
-    lp_on: bool,
-    hp_on: bool,
+    /// Two shelves per side, cascaded.
+    shelves: [[Shelf1; 2]; 2],
+    on: bool,
 }
 
 impl ToneStage {
     fn new() -> Self {
-        Self { lp: [Lp1::new(), Lp1::new()], hp: [Hp1::new(), Hp1::new()], lp_on: false, hp_on: false }
+        Self { shelves: [[Shelf1::default(); 2]; 2], on: false }
     }
 
     fn set(&mut self, tone: f64, sample_rate: f64) {
-        let tone = tone.clamp(-1.0, 1.0);
-        self.lp_on = tone < -0.01;
-        self.hp_on = tone > 0.01;
-        // −1 → ~1.6 kHz; +1 → ~600 Hz.
-        let lp_hz = 20_000.0 * 10f64.powf(tone.min(0.0) * 1.1);
-        let hp_hz = 20.0 * 30f64.powf(tone.max(0.0));
-        for f in &mut self.lp {
-            f.set_freq(lp_hz, sample_rate);
+        let knob = (tone.clamp(-1.0, 1.0) + 1.0) * 63.5;
+        let (mut fc, mut depth) = (3919.0, 0.0);
+        for w in TONE_SHELF.windows(2) {
+            let ((k0, f0, d0), (k1, f1, d1)) = (w[0], w[1]);
+            if knob <= k1 {
+                let t = ((knob - k0) / (k1 - k0)).clamp(0.0, 1.0);
+                fc = f0 * (f1 / f0).powf(t);
+                depth = (d1 - d0).mul_add(t, d0);
+                break;
+            }
         }
-        for f in &mut self.hp {
-            f.set_freq(hp_hz, sample_rate);
+        self.on = depth < -0.05;
+        for side in &mut self.shelves {
+            for shelf in side {
+                shelf.set(fc, depth / 2.0, sample_rate);
+            }
         }
     }
 
     fn clear(&mut self) {
-        for f in &mut self.lp {
-            f.reset();
-        }
-        for f in &mut self.hp {
-            f.reset();
+        for side in &mut self.shelves {
+            for shelf in side {
+                shelf.reset();
+            }
         }
     }
 
     #[inline]
     fn tick(&mut self, l: f64, r: f64) -> (f64, f64) {
-        let (mut l, mut r) = (l, r);
-        if self.lp_on {
-            let [a, b] = &mut self.lp;
-            l = a.tick(l);
-            r = b.tick(r);
+        if !self.on {
+            return (l, r);
         }
-        if self.hp_on {
-            let [a, b] = &mut self.hp;
-            l = a.tick(l);
-            r = b.tick(r);
-        }
+        let [sl, sr] = &mut self.shelves;
+        let l = sl.iter_mut().fold(l, |v, s| s.tick(v));
+        let r = sr.iter_mut().fold(r, |v, s| s.tick(v));
         (l, r)
     }
 }
@@ -259,6 +307,8 @@ pub struct Cloud {
     tone: ToneStage,
     /// Input crossfeed (Extra B), 0 = none … 0.4 = most.
     crossfeed: f64,
+    /// Output level trim that follows Diffusion (linear).
+    diffusion_gain: f64,
     ensemble: Ensemble,
     ensemble_level: f64,
     sample_rate: f64,
@@ -273,6 +323,7 @@ impl Cloud {
             ring: CloudRing::new(sample_rate),
             tone: ToneStage::new(),
             crossfeed: 0.2,
+            diffusion_gain: 1.0,
             ensemble: Ensemble::new(sample_rate),
             ensemble_level: 0.0,
             sample_rate,
@@ -317,14 +368,21 @@ impl ReverbAlgorithm for Cloud {
         // Diffusion: the input allpasses' gain (zero = pure delay, as on
         // BigSky) and the short allpasses inside the ring.
         let d = params.diffusion.clamp(0.0, 1.0);
-        // BigSky's input gain: ≈ 0.72 × the knob (measured at −8).
-        let input_g = d * 0.72;
+        // BigSky's input gain: 0.85 × the knob, exactly linear — measured
+        // at seven settings from the ratio of the chain's two first pulses
+        // (all stages instant: g⁴; stage 1 delayed: −(1−g²)·g³).
+        let input_g = d * 0.85;
         let size = params.size;
         self.for_inputs(|s| {
             s.diffuser.set_size(size);
             s.diffuser.set_gain(input_g);
         });
-        self.ring.set_diffusion(d * 0.6);
+        self.ring.set_diffusion(d * 0.85);
+        // BigSky gets louder as Diffusion rises past ~+4 where ours held
+        // level: measured on burst and pad, ours fell 1.2 dB behind at +7
+        // and 2.7 at +10. Flat below the default, so the shared wet
+        // calibration (taken at the default) stands.
+        self.diffusion_gain = 10f64.powf(9.0 * (d - 0.7).max(0.0) / 20.0);
 
         // Modulation, the manual's two segments: up to ~72 % of travel the
         // depth of the input chain's quadrature LFOs rises, past it their
@@ -381,6 +439,10 @@ impl ReverbAlgorithm for Cloud {
         let early_l = self.input_l.tick(in_l);
         let early_r = self.input_r.tick(in_r);
         let (ring_l, ring_r) = self.ring.tick(early_l, early_r);
-        self.tone.tick(EARLY_OUT.mul_add(early_l, ring_l), EARLY_OUT.mul_add(early_r, ring_r))
+        let g = self.diffusion_gain;
+        self.tone.tick(
+            g * EARLY_OUT.mul_add(early_l, ring_l),
+            g * EARLY_OUT.mul_add(early_r, ring_r),
+        )
     }
 }
