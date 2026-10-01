@@ -155,17 +155,55 @@ impl RingAp {
 ///   pair is 28.60 − 22.35: one stage passing twice, another instantly);
 /// - five short allpasses NESTED inside the last two (the total stays
 ///   183 ms at zero gain): they leave their own ± pairs, absent at Diffusion
-///   −10 and growing with it, then saturating — 10.42 / 13.34 / 14.90 ms
-///   at 0.11·(1 − e^(−g/0.12)), 7.44 / 9.52 ms at half that. 55.85 holds
-///   14.90 + 10.42 and 76.35 holds 13.34 + 9.52 + 7.44, where the missing
-///   cross-terms put them; those two stages run at 0.86 × the gain of the
-///   plain ones (their first-order pulses, at every setting measured).
+///   −10. 55.85 holds 14.90 + 10.42 and 76.35 holds 13.34 + 9.52 + 7.44,
+///   where the missing cross-terms put them; those two stages run at 0.845
+///   × the gain of the plain ones. The inner gains are not a law of the
+///   outer: each rises, peaks between −5 and −2 and is gone by +4…+7
+///   (`INNER_GAIN`) — BigSky hands the smearing to the outer stages as
+///   they take over.
+///
+/// The gains were fitted at every Diffusion step from −8 to +10 against the
+/// deconvolved response, with the same deconvolution applied to the model
+/// (checked by recovering our own chain's gains from our own render).
 const INPUT_STAGE_MS: [f64; 4] = [22.35, 28.60, 55.85, 76.35];
-/// The nested allpasses: `(stage, delay ms, level of their gain law)`.
-const INPUT_NESTED: [(usize, f64, f64); 5] =
-    [(2, 14.90, 1.0), (2, 10.42, 1.0), (3, 13.34, 1.0), (3, 9.52, 0.5), (3, 7.44, 0.5)];
+/// The nested allpasses: `(stage, delay ms)`.
+const INPUT_NESTED: [(usize, f64); 5] = [(2, 14.90), (2, 10.42), (3, 13.34), (3, 9.52), (3, 7.44)];
 /// The nesting stages' gain against the plain ones'.
-const NESTING_STAGE_GAIN: f64 = 0.86;
+const NESTING_STAGE_GAIN: f64 = 0.845;
+/// The nested allpasses' gains (`INPUT_NESTED` order) by Diffusion knob
+/// (−10…+10), as measured.
+#[rustfmt::skip]
+const INNER_GAIN: [(f64, [f64; 5]); 18] = [
+    (-10.0, [0.0,   0.0,   0.0,   0.0,   0.0  ]),
+    (-8.0,  [0.048, 0.047, 0.046, 0.022, 0.024]),
+    (-7.0,  [0.063, 0.068, 0.067, 0.030, 0.033]),
+    (-6.0,  [0.071, 0.084, 0.085, 0.036, 0.039]),
+    (-5.0,  [0.072, 0.098, 0.100, 0.040, 0.042]),
+    (-4.0,  [0.069, 0.107, 0.112, 0.042, 0.042]),
+    (-3.0,  [0.063, 0.112, 0.120, 0.043, 0.040]),
+    (-2.0,  [0.057, 0.113, 0.124, 0.042, 0.037]),
+    (-1.0,  [0.049, 0.108, 0.121, 0.038, 0.033]),
+    (0.0,   [0.039, 0.096, 0.112, 0.031, 0.028]),
+    (1.0,   [0.028, 0.079, 0.097, 0.022, 0.022]),
+    (2.0,   [0.017, 0.061, 0.080, 0.014, 0.016]),
+    (3.0,   [0.007, 0.043, 0.063, 0.007, 0.011]),
+    (4.0,   [0.0,   0.028, 0.046, 0.003, 0.006]),
+    (5.0,   [0.0,   0.015, 0.031, 0.0,   0.001]),
+    (6.0,   [0.0,   0.006, 0.020, 0.0,   0.0  ]),
+    (7.0,   [0.0,   0.0,   0.010, 0.0,   0.0  ]),
+    (10.0,  [0.0,   0.0,   0.0,   0.0,   0.0  ]),
+];
+
+/// `INNER_GAIN` at a Diffusion knob position, linearly between rows.
+fn inner_gains(knob: f64) -> [f64; 5] {
+    let k = knob.clamp(-10.0, 10.0);
+    let i = INNER_GAIN.iter().rposition(|r| r.0 <= k).unwrap_or(0).min(INNER_GAIN.len() - 2);
+    let (Some(&(k0, a)), Some(&(k1, b))) = (INNER_GAIN.get(i), INNER_GAIN.get(i + 1)) else {
+        return [0.0; 5];
+    };
+    let t = ((k - k0) / (k1 - k0)).clamp(0.0, 1.0);
+    core::array::from_fn(|j| (b[j] - a[j]).mul_add(t, a[j]))
+}
 
 /// The input diffusion: four allpasses, the last two with allpasses nested
 /// in their loops, quadrature-modulated.
@@ -200,12 +238,26 @@ impl InputChain {
     }
 
     /// Size 0.5 is BigSky's chain; it scales with the ring. Whole samples:
-    /// a cubic read at a fractional delay is a gentle low-pass.
+    /// a cubic read at a fractional delay is a gentle low-pass. A nesting
+    /// stage rounds its total and gives its line what the inners leave —
+    /// rounding the line alone came out a sample short of BigSky's
+    /// (2680/3664 against 2681/3665), and at high Diffusion that sample
+    /// decides which near-coincident cross-terms add and which cancel.
     pub fn set_size(&mut self, size: f64) {
         let scale = (size.clamp(0.0, 1.0) + 0.5).min(MAX_SCALE);
         let k = 1e-3 * self.sample_rate * scale;
-        for ap in self.all_mut() {
+        for ap in &mut self.nested {
             ap.len = (ap.base_ms * k).round();
+        }
+        for (i, ap) in self.stages.iter_mut().enumerate() {
+            let total = (INPUT_STAGE_MS.get(i).copied().unwrap_or(ap.base_ms) * k).round();
+            let inner: f64 = INPUT_NESTED
+                .iter()
+                .zip(self.nested.iter())
+                .filter(|(n, _)| n.0 == i)
+                .map(|(_, inner)| inner.len)
+                .sum();
+            ap.len = (total - inner).max(1.0);
         }
     }
 
@@ -216,9 +268,11 @@ impl InputChain {
             let nests = INPUT_NESTED.iter().any(|n| n.0 == i);
             ap.g = if nests { g * NESTING_STAGE_GAIN } else { g };
         }
-        let inner = 0.11 * (1.0 - (-g / 0.12).exp());
-        for (ap, n) in self.nested.iter_mut().zip(INPUT_NESTED.iter()) {
-            ap.g = inner * n.2;
+        // The caller's gain is 0.85 × Diffusion (0…1); the table is in
+        // knob units.
+        let inner = inner_gains((g / 0.85).mul_add(20.0, -10.0));
+        for (ap, gi) in self.nested.iter_mut().zip(inner) {
+            ap.g = gi;
         }
     }
 
