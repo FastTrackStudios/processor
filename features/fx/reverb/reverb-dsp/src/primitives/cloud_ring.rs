@@ -146,54 +146,65 @@ impl RingAp {
 }
 
 /// Cloud's input chain, the same on both sides (the plug-in's early field
-/// is mono). Read off BigSky's Cloud: at a small Diffusion each stage
-/// leaves a faint pulse either side of the chain's 183 ms main pulse, at
-/// 22.35, 28.60, 55.85 and 76.35 ms; at moderate Diffusion pulses also
-/// appear at the *differences* (6.25 = 28.60 − 22.35, 33.50, 54.00) — which
-/// a series chain cannot make and a nested one does. So: a 22.35 ms
-/// allpass, then three allpasses of 6.25 / 33.50 / 54.00 ms each with a
-/// 22.35 ms allpass nested in its loop (loop = the measured delay).
-const INPUT_AP_MS: f64 = 22.35;
-const INPUT_OUTER_MS: [f64; 3] = [6.25, 33.50, 54.00];
-/// The nested allpasses' gain against the outer ones'.
-const INNER_GAIN: f64 = 0.8;
+/// is mono). Recovered from BigSky's Cloud by deconvolving its tank (its
+/// Diffusion −10 response) out of its output at other Diffusion settings:
+///
+/// - four allpasses in series, 22.35 / 28.60 / 55.85 / 76.35 ms — each
+///   leaves a faint pulse either side of the chain's 183 ms main pulse, and
+///   the series alone accounts for the second-order pulses (the ±6.25 ms
+///   pair is 28.60 − 22.35: one stage passing twice, another instantly);
+/// - five short allpasses NESTED inside the last two (the total stays
+///   183 ms at zero gain): they leave their own ± pairs, absent at Diffusion
+///   −10 and growing with it, then saturating — 10.42 / 13.34 / 14.90 ms
+///   at 0.11·(1 − e^(−g/0.12)), 7.44 / 9.52 ms at half that. 55.85 holds
+///   14.90 + 10.42 and 76.35 holds 13.34 + 9.52 + 7.44, where the missing
+///   cross-terms put them; those two stages run at 0.86 × the gain of the
+///   plain ones (their first-order pulses, at every setting measured).
+const INPUT_STAGE_MS: [f64; 4] = [22.35, 28.60, 55.85, 76.35];
+/// The nested allpasses: `(stage, delay ms, level of their gain law)`.
+const INPUT_NESTED: [(usize, f64, f64); 5] =
+    [(2, 14.90, 1.0), (2, 10.42, 1.0), (3, 13.34, 1.0), (3, 9.52, 0.5), (3, 7.44, 0.5)];
+/// The nesting stages' gain against the plain ones'.
+const NESTING_STAGE_GAIN: f64 = 0.86;
 
-/// The input diffusion: one allpass, then three nested pairs,
-/// quadrature-modulated.
+/// The input diffusion: four allpasses, the last two with allpasses nested
+/// in their loops, quadrature-modulated.
 pub struct InputChain {
-    first: RingAp,
-    outer: [RingAp; 3],
-    inner: [RingAp; 3],
+    /// The outer stages; a stage's `base_ms` is its own line (its total
+    /// less what it nests).
+    stages: [RingAp; 4],
+    nested: [RingAp; 5],
     sample_rate: f64,
 }
 
 impl InputChain {
     #[must_use]
     pub fn new(sample_rate: f64) -> Self {
+        let line_ms = |i: usize| {
+            let total = INPUT_STAGE_MS.get(i).copied().unwrap_or(20.0);
+            total - INPUT_NESTED.iter().filter(|n| n.0 == i).map(|n| n.1).sum::<f64>()
+        };
         // Quadrature: the stages' LFOs a quarter-cycle apart, so the
         // modulation does not pump in common.
-        let phase = |i: usize| num::count_to_f64(i) * 0.25;
         Self {
-            first: RingAp::new(INPUT_AP_MS, sample_rate, 0.0),
-            outer: core::array::from_fn(|i| {
-                RingAp::new(INPUT_OUTER_MS.get(i).copied().unwrap_or(20.0), sample_rate, phase(i + 1))
+            stages: core::array::from_fn(|i| RingAp::new(line_ms(i), sample_rate, num::count_to_f64(i) * 0.25)),
+            nested: core::array::from_fn(|i| {
+                RingAp::new(INPUT_NESTED.get(i).map_or(10.0, |n| n.1), sample_rate, num::count_to_f64(i) * 0.25 + 0.125)
             }),
-            inner: core::array::from_fn(|i| RingAp::new(INPUT_AP_MS, sample_rate, phase(i) + 0.125)),
             sample_rate,
         }
     }
 
-    fn stages_mut(&mut self) -> impl Iterator<Item = &mut RingAp> {
-        core::iter::once(&mut self.first).chain(self.outer.iter_mut()).chain(self.inner.iter_mut())
+    fn all_mut(&mut self) -> impl Iterator<Item = &mut RingAp> {
+        self.stages.iter_mut().chain(self.nested.iter_mut())
     }
 
-    /// Size 0.5 is BigSky's chain; it scales with the ring.
+    /// Size 0.5 is BigSky's chain; it scales with the ring. Whole samples:
+    /// a cubic read at a fractional delay is a gentle low-pass.
     pub fn set_size(&mut self, size: f64) {
         let scale = (size.clamp(0.0, 1.0) + 0.5).min(MAX_SCALE);
         let k = 1e-3 * self.sample_rate * scale;
-        // Whole samples: a cubic read at a fractional delay is a gentle
-        // low-pass, and a pulse crossing a dozen of them came out blunted.
-        for ap in self.stages_mut() {
+        for ap in self.all_mut() {
             ap.len = (ap.base_ms * k).round();
         }
     }
@@ -201,35 +212,42 @@ impl InputChain {
     /// The allpasses' gain: Diffusion. At zero each stage is a pure delay.
     pub fn set_gain(&mut self, g: f64) {
         let g = g.clamp(0.0, 0.9);
-        self.first.g = g;
-        for ap in &mut self.outer {
-            ap.g = g;
+        for (i, ap) in self.stages.iter_mut().enumerate() {
+            let nests = INPUT_NESTED.iter().any(|n| n.0 == i);
+            ap.g = if nests { g * NESTING_STAGE_GAIN } else { g };
         }
-        for ap in &mut self.inner {
-            ap.g = g * INNER_GAIN;
+        let inner = 0.11 * (1.0 - (-g / 0.12).exp());
+        for (ap, n) in self.nested.iter_mut().zip(INPUT_NESTED.iter()) {
+            ap.g = inner * n.2;
         }
     }
 
     /// LFO depth (samples) and rate (Hz); each stage a touch off the rate.
     pub fn set_modulation(&mut self, depth: f64, rate_hz: f64) {
         let sr = self.sample_rate;
-        for (i, ap) in self.stages_mut().enumerate() {
+        for (i, ap) in self.all_mut().enumerate() {
             ap.depth = depth;
             ap.inc = rate_hz * 0.07f64.mul_add(num::count_to_f64(i % 4), 0.9) / sr;
         }
     }
 
     pub fn clear(&mut self) {
-        for ap in self.stages_mut() {
+        for ap in self.all_mut() {
             ap.line.clear();
         }
     }
 
     #[inline]
     pub fn tick(&mut self, x: f64) -> f64 {
-        let mut v = self.first.tick(x);
-        for (outer, inner) in self.outer.iter_mut().zip(self.inner.iter_mut()) {
-            v = outer.tick_nested(v, inner);
+        let (first, rest) = self.stages.split_at_mut(2);
+        let mut v = x;
+        for ap in first.iter_mut() {
+            v = ap.tick(v);
+        }
+        let (n55, n76) = self.nested.split_at_mut(2);
+        if let [s55, s76] = rest {
+            v = s55.tick_nested(v, n55);
+            v = s76.tick_nested(v, n76);
         }
         v
     }
@@ -237,9 +255,9 @@ impl InputChain {
 
 impl RingAp {
     /// A nested allpass (Gardner): `inner` sits in this one's delay path,
-    /// so the loop is this line plus the inner allpass.
+    /// so the loop is this line plus the inner allpasses.
     #[inline]
-    fn tick_nested(&mut self, x: f64, inner: &mut Self) -> f64 {
+    fn tick_nested(&mut self, x: f64, inner: &mut [Self]) -> f64 {
         let mut d = self.len;
         if self.depth > 0.0 {
             self.phase += self.inc;
@@ -249,7 +267,7 @@ impl RingAp {
             d += self.depth * (self.phase * core::f64::consts::TAU).sin();
         }
         let cap = num::count_to_f64(self.line.len()) - 4.0;
-        let w = inner.tick(self.line.read_cubic(d.clamp(1.0, cap)));
+        let w = inner.iter_mut().fold(self.line.read_cubic(d.clamp(1.0, cap)), |v, ap| ap.tick(v));
         let v = self.g.mul_add(w, x);
         self.line.write(flush(v));
         (-self.g).mul_add(v, w)
@@ -345,9 +363,9 @@ impl CloudRing {
             s.taps.clear();
         }
         // Walk the line as a pulse does at zero Diffusion — each section's
-        // delay, then its short allpasses (pure delays) — and drop each
-        // tap on the delay line where that time falls. A tap that lands on
-        // the allpasses goes to the line's end.
+        // short allpasses (pure delays then), then its delay — and drop
+        // each tap on the delay line where that time falls. A tap that
+        // lands on the allpasses goes to the line's start.
         let mut start = 0.0;
         let mut section = 0;
         for &(t_ms, right, gain) in &FIRST_PASS_TAPS {
@@ -361,8 +379,9 @@ impl CloudRing {
                 section += 1;
             }
             let Some(s) = self.sections.get_mut(section) else { break };
+            let aps: f64 = s.short.iter().map(|a| a.len).sum();
             if s.taps.len() < MAX_SECTION_TAPS {
-                let pos = num::f64_to_index((t - start).round()).min(s.len);
+                let pos = num::f64_to_index((t - start - aps).max(0.0).round()).min(s.len);
                 let base = gain * TAP_GAIN;
                 s.taps.push(Tap { pos, right, base, gain: base, t_s: t / self.sample_rate });
             }
@@ -471,6 +490,12 @@ impl CloudRing {
         let mut sig = self.feedback + 0.5 * (in_l + in_r);
         let (mut out_l, mut out_r) = (0.0, 0.0);
         for (i, s) in self.sections.iter_mut().enumerate() {
+            // Diffusion first: BigSky's tank fogs within ~300 ms at Diffusion
+            // 0, before the measured input chain alone could, so its
+            // diffusers act ahead of even the first taps.
+            for ap in &mut s.short {
+                sig = ap.tick(sig);
+            }
             s.delay.write(sig);
             // `read(1)` is the sample just written: a delay of k is read(k + 1).
             for tap in &s.taps {
@@ -481,11 +506,7 @@ impl CloudRing {
                     out_l += v;
                 }
             }
-            let mut v = s.delay.read(s.len + 1);
-            for ap in &mut s.short {
-                v = ap.tick(v);
-            }
-            sig = v;
+            sig = s.delay.read(s.len + 1);
             if i + 1 == RING_SECTIONS {
                 // The loop's end: DC-block, damp if asked, the trip's one
                 // decay gain — and carry on, unrecirculated, into the

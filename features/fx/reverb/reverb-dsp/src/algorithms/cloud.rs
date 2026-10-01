@@ -394,10 +394,11 @@ impl ReverbAlgorithm for Cloud {
             s.diffuser.set_size(size);
             s.diffuser.set_gain(input_g);
         });
-        // Inside the tank the gain rises more slowly at the bottom of the
-        // knob: at −5 BigSky's tail levels off part-grainy (echo density
-        // ~0.65) where a linear law fogged ours over (0.96).
-        self.ring.set_diffusion(d.powf(1.5) * 0.85);
+        // Inside the tank the gain rises a little more slowly than the
+        // input chain's at the bottom of the knob: at −5 BigSky's tail
+        // levels off part-grainy (echo density ~0.67), where a linear law
+        // fogged ours over and a ^1.5 one built too slowly at 0.
+        self.ring.set_diffusion(d.powf(1.25) * 0.85);
         // BigSky gets louder as Diffusion rises past ~+4 where ours held
         // level: measured on burst and pad, ours fell 1.2 dB behind at +7
         // and 2.7 at +10. Flat below the default, so the shared wet
