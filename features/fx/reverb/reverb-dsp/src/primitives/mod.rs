@@ -5,6 +5,7 @@ pub mod allpass_diffuser;
 pub mod barr_loop;
 pub mod biquad;
 pub mod cloud_ring;
+pub mod cloud_taps;
 pub mod fdn;
 pub mod hadamard;
 pub mod householder;
