@@ -30,12 +30,29 @@ use dsp_core::num;
 use crate::algorithm::{AlgorithmParams, CLOUD_T60, CloudParams, ReverbAlgorithm, decay_to_t60};
 use crate::primitives::cloud_ring::{CloudRing, EARLY_TO_TAP, InputChain};
 use crate::primitives::one_pole::{Hp1, Lp1};
-use crate::primitives::response_curves::resp2dec;
 use audiocore_dsp::biquad::{Biquad, FilterType};
 
 /// Level of the input chain's own output (the early field), linear:
 /// BigSky's early pulse is 1.4× its first ring tap.
 const EARLY_OUT: f64 = EARLY_TO_TAP * 0.25;
+
+/// BigSky's modulation by MOD knob (0…127): how far each Diffusion allpass's
+/// delay shortens at most, ms, and its LFO's rate, Hz.
+const MOD_DEPTH_MS: [(f64, f64); 6] = [(0.0, 0.0), (64.0, 0.385), (80.0, 0.37), (96.0, 0.31), (112.0, 0.27), (127.0, 0.207)];
+const MOD_RATE_HZ: [(f64, f64); 8] =
+    [(0.0, 0.87), (72.0, 0.88), (80.0, 1.16), (88.0, 1.68), (96.0, 2.3), (104.0, 3.1), (112.0, 4.26), (127.0, 7.5)];
+
+/// Linear interpolation in a `(x, y)` table, clamped at its ends.
+fn interp<const N: usize>(table: &[(f64, f64); N], x: f64) -> f64 {
+    let (Some(first), Some(last)) = (table.first(), table.last()) else { return 0.0 };
+    if x <= first.0 {
+        return first.1;
+    }
+    table.windows(2).find(|w| x <= w[1].0).map_or(last.1, |w| {
+        let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+        (y1 - y0).mul_add((x - x0) / (x1 - x0), y0)
+    })
+}
 
 /// One side's input stage: Low End high-pass, then the diffusion chain.
 struct InputStage {
@@ -396,18 +413,22 @@ impl ReverbAlgorithm for Cloud {
         // −8 to +10 against the plug-in's own output.
         self.ring.set_diffusion(input_g);
 
-        // Modulation, the manual's two segments: up to ~72 % of travel the
-        // depth of the input chain's quadrature LFOs rises, past it their
-        // rate. Scaled to BigSky's measured spread round a held 1 kHz tone
-        // (~1 Hz at 0, ~7 at 64, ~9 at 96, ~10–13 at 127). The ring moves a
-        // little, so the tail is not frozen glass.
-        let m = params.modulation.clamp(0.0, 1.0);
-        let depth = (m / 0.72).min(1.0);
-        let rate_seg = ((m - 0.72) / 0.28).max(0.0);
-        let amount = ms(depth * 5.4);
-        let rate_hz = resp2dec(rate_seg.mul_add(0.04, 0.35)) * 5.0;
+        // Modulation, the manual's two segments, measured: every Diffusion
+        // allpass (input chain and stages; not the figure-8) shortens its
+        // delay by up to D on an LFO. D rises to ~0.385 ms by MOD 64; past
+        // ~72 the rate climbs from ~0.9 Hz to ~7.5 Hz as D eases back. Read
+        // off the plug-in's early pulse (the chain alone) and its first
+        // stage's own tap, tracked through a train of impulses.
+        let m = params.modulation.clamp(0.0, 1.0) * 127.0;
+        let depth_ms = interp(&MOD_DEPTH_MS, m);
+        let rate_hz = interp(&MOD_RATE_HZ.map(|(k, r)| (k, r.ln())), m).exp();
+        let amount = ms(depth_ms);
         self.for_inputs(|s| s.diffuser.set_modulation(amount, rate_hz));
-        self.ring.set_modulation(depth * 6.0, 0.5);
+        // The stages' depth is not as cleanly readable (their taps collide
+        // with older pulses); 1.5× the chain's lands BigSky's spread round
+        // a held 1 kHz tone (±20 % from MOD 32 to 127, against −25…−35 % at
+        // 1×).
+        self.ring.set_modulation(amount * 1.5, rate_hz);
 
         // Damping: off at zero (BigSky's Cloud decays evenly across the
         // band), otherwise a low-pass on the ring's recirculation.

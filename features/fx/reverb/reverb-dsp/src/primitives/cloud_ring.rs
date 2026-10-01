@@ -1,45 +1,39 @@
-//! Cloud's tank: allpass stages feeding one tapped line, which recirculates
-//! every 803.3 ms.
+//! Cloud's tank: allpass stages ahead of a figure-8 of two allpass loops.
 //!
 //! Built to the structure measured from Strymon BigSky's Cloud (the plug-in,
 //! with signal-analyzer's `bigsky_match`), not to `CloudSeed`'s parallel
-//! combs:
+//! combs. Every number here was read off the plug-in's impulse response at
+//! Diffusion −10 (every Diffusion allpass a pure delay) and −8/−6, and the
+//! passes were pulled apart by rendering it at eight Decay settings: the
+//! response is exactly `P1 + g·P2 + g²·P3 + …` in one per-Decay gain `g`
+//! (residual 2e-7), so each pass is known on its own.
 //!
-//! - **One loop, 803.3 ms a trip.** The plug-in's impulse response is
-//!   bit-identical across Decay settings for the first 803 ms after the
-//!   tank's input — nothing recirculates sooner — and what recirculates
-//!   carries one decay gain per trip.
-//! - **The first pass is longer than the loop.** At Decay 1000 the loop
-//!   returns at −80 dB, yet the plug-in still rings ~5 s: ~1000 sparse pulses
-//!   whose level falls ~13 dB/s. That single pass IS BigSky's 4.5 s decay
-//!   floor — not a decay process, and nothing that densifies.
-//! - **That pass is one tap pattern, six times.** Its pulses are 158 taps
-//!   ([`PATTERN_TAPS`]) applied to the tank's input and again after each of
-//!   five allpass stages in series — A, B, C, B, B, four allpasses each and
-//!   no plain delay between them — at 1, 1, 1, 1, 0.8 and 0.7. Each stage's
-//!   output also has a tap of its own. Read off the plug-in at Diffusion
-//!   −8 and −6, where each pulse carries the first-order satellites of the
-//!   allpasses ahead of it; at Diffusion −10 they are pure delays and the
-//!   copies line up to the sample (85.40, 207.48, 268.48, 390.56,
-//!   512.65 ms). A model of exactly this — the chain, the stages, the
-//!   pattern and the measured pulse shape — fits BigSky's own output to
-//!   1–3 % of its energy from Diffusion −8 to +4, with every allpass at
-//!   0.85 × Diffusion except the long two in A (and in the input chain),
-//!   which run at 0.85 × that.
-//! - **Both sides in at one point.** The response is identical across Decay
-//!   for a whole trip with input on both sides, so both enter together.
+//! - **Stages.** Five four-allpass stages in series (A, B, C, B, B); the
+//!   input and each stage's output are mixed 1, 1, 1, 1, 0.8, 0.7 into the
+//!   figure-8's input, and each stage's output has a stereo tap of its own.
+//!   (They commute with everything after them: BigSky's every pass shows
+//!   the same five copies.)
+//! - **A Dattorro figure-8.** Two halves; each is a fixed allpass (g 0.75,
+//!   217.6 ms in A, 165.3 ms in B), a tapped line, a decay gain, a second
+//!   allpass (g −0.5, 535.5 / 362.8 ms, tapped inside as Dattorro's are), a
+//!   second tapped line, a decay gain — into the OTHER half. The input
+//!   enters ahead of each half's first allpass and at the start of its
+//!   second line; that second line's taps are the plain pulses of the first
+//!   pass. Each decay edge carries a gentle one-pole low-pass (pole 0.13 at
+//!   48 kHz) — what makes every later pass a touch darker.
+//! - **One pass is the floor.** At Decay 1000 `g ≈ 0`: what is left is one
+//!   pass through both halves, ~5 s of sparse pulses falling ~13 dB/s —
+//!   BigSky's 4.5 s floor, by construction.
 //!
-//! The recirculation here is the tank's input, delayed a trip: each pass
-//! is the first again. BigSky's second pass is not — what it feeds back has
-//! been through some of the stages (its second pass correlates with the
-//! first at only ~0.1, with B's 122 ms spacing in the difference) — and is
-//! not yet modelled.
+//! A model of exactly this fits the plug-in's first four passes to 0.8–2.4 %
+//! of their energy; figure-8 against each half looping on itself was the
+//! deciding test (pass 3: 29 % against 78 % before the internal taps and the
+//! loop filter were in).
 //!
 //! Allocates in [`CloudRing::new`] only; `tick` is allocation-free.
 
 use dsp_core::num;
 
-use super::cloud_taps::PATTERN_TAPS;
 use super::one_pole::Lp1;
 use audiocore_dsp::delay_line::DelayLine;
 use audiocore_dsp::denormal::flush;
@@ -61,31 +55,33 @@ const JUNCTION_OUT: [(f64, f64); 5] = [(-1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-
 const TAP_GAIN: f64 = 0.25;
 /// BigSky's mono early pulse against its first ring tap: 0.1856 / 0.1328.
 pub const EARLY_TO_TAP: f64 = 1.4;
-/// The loop's gain per 803.3 ms trip for each decay time (T20 of the whole
-/// response): our own loop, calibrated against BigSky's measured Decay →
-/// T20 law (bigsky_match's Decay sweep, inverted). The first pass gives
-/// the ~4.5 s floor on its own; this gain is what lengthens it. BigSky's
-/// own per-trip gains are not used directly: measured off one returning
-/// pulse against its Decay-50000 render, they are relative, and its loop
-/// re-enters at more than one point.
-/// `(T20 s, loop gain per trip)`, interpolated in log time.
-const LOOP_GAIN: [(f64, f64); 11] = [
-    (4.50, 0.0672),
-    (4.53, 0.0866),
-    (4.77, 0.1766),
-    (5.60, 0.3084),
-    (8.15, 0.5105),
-    (11.39, 0.6153),
-    (19.83, 0.7603),
-    (30.60, 0.8351),
-    (57.16, 0.9137),
-    (75.19, 0.9338),
-    (93.12, 0.9462),
+/// The figure-8's decay gain `g` for each decay time (T20 of the whole
+/// response): BigSky's own, measured — its Decay knob's T20s (bigsky_match's
+/// sweep) against the `g` its second pass scales by at the same knob (Decay
+/// 1000 … 40000; 50000 is 1). `(T20 s, g)`, interpolated in log time.
+const DECAY_G: [(f64, f64); 12] = [
+    (4.50, 0.000_13),
+    (4.53, 0.0156),
+    (4.77, 0.0783),
+    (5.60, 0.1714),
+    (6.78, 0.2702),
+    (8.15, 0.3624),
+    (11.39, 0.5140),
+    (19.83, 0.7063),
+    (30.60, 0.8119),
+    (57.16, 0.9141),
+    (75.19, 0.9595),
+    (93.12, 0.9834),
 ];
+/// The two decay edges' gains at `g` = 1: back into the other half's first
+/// allpass, and on into a half's second allpass (fitted, with the taps,
+/// against BigSky's first four passes).
+const EDGE_GAIN: f64 = 1.0396;
+const EDGE_GAIN_INNER: f64 = 0.8916;
+/// The decay edges' one-pole low-pass, Hz (its pole is 0.183 at 48 kHz).
+const EDGE_LP_HZ: f64 = 12_970.0;
 /// BigSky's floor: the decay of its first pass alone.
 const FLOOR_T60: f64 = 4.5;
-/// BigSky's trip, seconds.
-const BIGSKY_TRIP_S: f64 = 0.8033;
 /// The largest size scale the buffers are sized for.
 const MAX_SCALE: f64 = 1.6;
 /// Headroom for modulation, samples.
@@ -125,7 +121,9 @@ impl RingAp {
             if self.phase >= 1.0 {
                 self.phase -= 1.0;
             }
-            d += self.depth * (self.phase * core::f64::consts::TAU).sin();
+            // One-sided, as BigSky's: the delay only ever shortens, by up
+            // to `depth` (its pulses all arrive early, never late).
+            d -= 0.5 * self.depth * (1.0 - (self.phase * core::f64::consts::TAU).cos());
         }
         let cap = num::count_to_f64(self.line.len()) - 4.0;
         // Cubic: a linear read is a gentle low-pass, and the ring applies
@@ -159,12 +157,10 @@ pub struct InputChain {
 impl InputChain {
     #[must_use]
     pub fn new(sample_rate: f64) -> Self {
-        // Quadrature: the stages' LFOs a quarter-cycle apart, so the
-        // modulation does not pump in common.
+        // In phase at the start, a touch apart in rate: BigSky's chain delay
+        // swings as one LFO slowly beating against itself.
         Self {
-            stages: core::array::from_fn(|i| {
-                RingAp::new(INPUT_STAGES.get(i).map_or(20.0, |s| s.0), sample_rate, num::count_to_f64(i) * 0.25)
-            }),
+            stages: core::array::from_fn(|i| RingAp::new(INPUT_STAGES.get(i).map_or(20.0, |s| s.0), sample_rate, 0.0)),
             sample_rate,
         }
     }
@@ -192,7 +188,7 @@ impl InputChain {
         let sr = self.sample_rate;
         for (i, ap) in self.stages.iter_mut().enumerate() {
             ap.depth = depth;
-            ap.inc = rate_hz * 0.07f64.mul_add(num::count_to_f64(i), 0.9) / sr;
+            ap.inc = rate_hz * 0.04f64.mul_add(num::count_to_f64(i), 0.94) / sr;
         }
     }
 
@@ -208,43 +204,92 @@ impl InputChain {
     }
 }
 
+/// The figure-8's elements at size 0.5, ms: per half, the fixed allpass
+/// (delay, g), its line's length to the decay edge, the second allpass
+/// (delay, g) and the second line's length to the other half.
+struct Half {
+    first: (f64, f64),
+    line1_ms: f64,
+    second: (f64, f64),
+    line2_ms: f64,
+}
+const HALVES: [Half; 2] = [
+    Half { first: (217.604, 0.75), line1_ms: 850.104, second: (535.521, -0.5), line2_ms: 762.625 },
+    Half { first: (165.312, 0.75), line1_ms: 897.812, second: (362.813, -0.5), line2_ms: 749.688 },
+];
+/// Where a tap reads.
+#[derive(Clone, Copy)]
+enum Node {
+    /// A half's first line (after its fixed allpass).
+    Line1(usize),
+    /// Inside a half's second allpass.
+    Inside(usize),
+    /// A half's second line (after its second allpass, where the input
+    /// also enters).
+    Line2(usize),
+}
+/// The output taps, `(node, ms, right?, gain re a plain pulse)`.
+const TAPS: [(Node, f64, bool, f64); 16] = [
+    (Node::Line1(0), 53.646, true, 1.0126),
+    (Node::Line1(0), 425.521, false, -1.0123),
+    (Node::Line1(0), 599.896, true, 1.0128),
+    (Node::Line1(1), 71.146, false, 1.0130),
+    (Node::Line1(1), 401.146, true, -1.0118),
+    (Node::Line1(1), 731.354, false, 1.0142),
+    (Node::Line2(0), 24.479, false, -0.9976),
+    (Node::Line2(0), 49.438, true, -0.9974),
+    (Node::Line2(0), 402.396, true, 1.0004),
+    (Node::Line2(1), 74.438, false, -0.9974),
+    (Node::Line2(1), 214.896, true, -0.9966),
+    (Node::Line2(1), 538.854, false, 0.9969),
+    (Node::Inside(0), 67.604, false, -0.7454),
+    (Node::Inside(0), 385.521, true, -0.7459),
+    (Node::Inside(1), 247.604, false, -0.7449),
+    (Node::Inside(1), 37.604, true, -0.7460),
+];
+
 struct Tap {
+    node: Node,
     pos: usize,
     right: bool,
     /// The measured gain, and the gain in use (reshaped below the floor).
     base: f64,
     gain: f64,
-    /// When the pulse comes on BigSky's first pass, seconds.
+    /// When the pulse comes on the first pass, seconds.
     t_s: f64,
+}
+
+struct HalfState {
+    first: RingAp,
+    line1: DelayLine,
+    line1_len: usize,
+    lp1: Lp1,
+    second: RingAp,
+    line2: DelayLine,
+    line2_len: usize,
+    lp2: Lp1,
 }
 
 /// The tank. Feed it the (mono-diffused) left and right inputs; it returns
 /// the tapped stereo output.
 pub struct CloudRing {
     stages: [[RingAp; 4]; 5],
-    /// The pattern's line: the input plus each stage's output.
-    line: DelayLine,
-    taps: Vec<Tap>,
-    /// The mix into the line and each stage's own tap, as in use (tilted
-    /// below the floor like the pattern), and when each stage's output
+    halves: [HalfState; 2],
+    taps: [Tap; 16],
+    /// The mix into the figure-8 and each stage's own tap, as in use
+    /// (tilted below the floor like the taps), and when each stage's output
     /// comes, seconds.
     mix: [f64; 6],
     out: [(f64, f64); 5],
     junction_s: [f64; 6],
-    /// The tank's input, held a trip for the recirculation.
-    trip: DelayLine,
-    trip_len: usize,
     sample_rate: f64,
     scale: f64,
     t60: f64,
-    loop_gain: f64,
-    /// The trip's end, carried round to the input on the next sample.
-    feedback: f64,
-    dc_x: f64,
-    dc_y: f64,
-    dc_r: f64,
-    damp: Lp1,
-    damping_on: bool,
+    /// The decay edges' gains in use.
+    edge: f64,
+    edge_inner: f64,
+    edge_lp: bool,
+    damp_hz: f64,
 }
 
 impl CloudRing {
@@ -253,65 +298,73 @@ impl CloudRing {
         let stages = core::array::from_fn(|k| {
             core::array::from_fn(|j| {
                 let ms = STAGES.get(k).and_then(|s| s.get(j)).map_or(10.0, |a| a.0);
-                RingAp::new(ms, sample_rate, num::count_to_f64(4 * k + j) * 0.19 % 1.0)
+                RingAp::new(ms, sample_rate, 0.0)
             })
         });
-        let longest = PATTERN_TAPS.iter().fold(0.0f64, |m, t| m.max(t.0));
-        let line_cap = (longest * 1e-3 * sample_rate).mul_add(MAX_SCALE, 64.0);
-        let trip_cap = (BIGSKY_TRIP_S * sample_rate).mul_add(MAX_SCALE, 64.0);
+        let line = |ms: f64| DelayLine::new(num::f64_to_index((ms * 1e-3 * sample_rate).mul_add(MAX_SCALE, 64.0)));
+        let halves = core::array::from_fn(|h| {
+            let spec = HALVES.get(h).unwrap_or(&HALVES[0]);
+            HalfState {
+                first: RingAp::new(spec.first.0, sample_rate, 0.3 * num::count_to_f64(h)),
+                line1: line(spec.line1_ms),
+                line1_len: 1,
+                lp1: Lp1::new(),
+                second: RingAp::new(spec.second.0, sample_rate, 0.3 * num::count_to_f64(h) + 0.5),
+                line2: line(spec.line2_ms),
+                line2_len: 1,
+                lp2: Lp1::new(),
+            }
+        });
+        let taps = core::array::from_fn(|i| {
+            let (node, ms, right, gain) = TAPS.get(i).copied().unwrap_or((Node::Line1(0), 1.0, false, 0.0));
+            Tap { node, pos: 1, right, base: gain * TAP_GAIN, gain: gain * TAP_GAIN, t_s: ms * 1e-3 }
+        });
         let mut ring = Self {
             stages,
-            line: DelayLine::new(num::f64_to_index(line_cap)),
-            taps: Vec::with_capacity(PATTERN_TAPS.len()),
+            halves,
+            taps,
             mix: JUNCTION_MIX,
             out: JUNCTION_OUT,
             junction_s: [0.0; 6],
-            trip: DelayLine::new(num::f64_to_index(trip_cap)),
-            trip_len: 1,
             sample_rate,
             scale: 1.0,
             t60: 4.5,
-            loop_gain: 0.0,
-            feedback: 0.0,
-            dc_x: 0.0,
-            dc_y: 0.0,
-            // ~5 Hz DC blocker on the recirculation.
-            dc_r: 1.0 - core::f64::consts::TAU * 5.0 / sample_rate,
-            damp: Lp1::new(),
-            damping_on: false,
+            edge: 0.0,
+            edge_inner: 0.0,
+            edge_lp: true,
+            damp_hz: EDGE_LP_HZ,
         };
-        ring.damp.set_freq(20_000.0, sample_rate);
+        ring.set_damping(None);
         ring.set_size(0.5);
         ring
     }
 
-    /// Size 0.5 is BigSky's tank (803 ms a trip); 0 → 0.5×, 1 → 1.5×.
-    ///
-    /// Allocation-free: the tap list is refilled within the capacity
-    /// reserved in [`Self::new`].
+    /// Size 0.5 is BigSky's tank; 0 → 0.5×, 1 → 1.5×.
     pub fn set_size(&mut self, size: f64) {
         self.scale = (size.clamp(0.0, 1.0) + 0.5).min(MAX_SCALE);
-        let ms = self.sample_rate * 1e-3 * self.scale;
+        let k = self.sample_rate * 1e-3 * self.scale;
         // Whole samples (see `InputChain::set_size`); the stages' outputs
         // come where their allpasses add up to.
         let mut at = 0.0;
-        for (k, stage) in self.stages.iter_mut().enumerate() {
+        for (s, stage) in self.stages.iter_mut().enumerate() {
             for ap in stage.iter_mut() {
-                ap.len = (ap.base_ms * ms).round();
+                ap.len = (ap.base_ms * k).round();
                 at += ap.len;
             }
-            if let Some(t) = self.junction_s.get_mut(k + 1) {
+            if let Some(t) = self.junction_s.get_mut(s + 1) {
                 *t = at / self.sample_rate;
             }
         }
-        let cap = self.line.len().saturating_sub(2);
-        self.taps.clear();
-        for &(t_ms, right, gain) in &PATTERN_TAPS {
-            let pos = num::f64_to_index((t_ms * ms).round()).min(cap);
-            let base = gain * TAP_GAIN;
-            self.taps.push(Tap { pos, right, base, gain: base, t_s: t_ms * 1e-3 * self.scale });
+        for (half, spec) in self.halves.iter_mut().zip(HALVES.iter()) {
+            half.first.len = (spec.first.0 * k).round();
+            half.second.len = (spec.second.0 * k).round();
+            half.line1_len = num::f64_to_index((spec.line1_ms * k).round()).clamp(2, half.line1.len().saturating_sub(2));
+            half.line2_len = num::f64_to_index((spec.line2_ms * k).round()).clamp(2, half.line2.len().saturating_sub(2));
         }
-        self.trip_len = num::f64_to_index((BIGSKY_TRIP_S * 1e3 * ms).round()).clamp(2, self.trip.len().saturating_sub(2));
+        for (tap, spec) in self.taps.iter_mut().zip(TAPS.iter()) {
+            tap.pos = num::f64_to_index((spec.1 * k).round()).max(1);
+            tap.t_s = spec.1 * 1e-3 * self.scale;
+        }
         self.update_gains();
     }
 
@@ -322,7 +375,7 @@ impl CloudRing {
     }
 
     /// The stages' allpass gain: 0.85 × Diffusion (each allpass at its own
-    /// share of it).
+    /// share of it). The figure-8's allpasses are fixed.
     pub fn set_diffusion(&mut self, g: f64) {
         let g = g.clamp(0.0, 0.85);
         for (stage, spec) in self.stages.iter_mut().zip(STAGES.iter()) {
@@ -330,54 +383,72 @@ impl CloudRing {
                 ap.g = g * s.1;
             }
         }
+        // `RingAp` puts −g on the instant path; the measured gains are
+        // the other sign's.
+        for (half, spec) in self.halves.iter_mut().zip(HALVES.iter()) {
+            half.first.g = -spec.first.1;
+            half.second.g = -spec.second.1;
+        }
     }
 
-    /// Slow modulation of the stages' allpasses: `depth` in samples,
-    /// `rate_hz` the mean rate — each allpass runs a little off it so they
-    /// never align.
+    /// Modulation of the stages' allpasses, as the input chain's: `depth`
+    /// in samples, `rate_hz` the chain's rate. BigSky's stages run ~10 %
+    /// faster than its chain; each allpass a little off the mean. The
+    /// figure-8 is not modulated (its pulses move only with the chain).
     pub fn set_modulation(&mut self, depth: f64, rate_hz: f64) {
         let sr = self.sample_rate;
         for (i, ap) in self.stages.iter_mut().flatten().enumerate() {
             ap.depth = depth;
-            ap.inc = rate_hz * 0.06f64.mul_add(num::count_to_f64(i), 0.8) / sr;
+            ap.inc = rate_hz * 1.1 * 0.005f64.mul_add(num::count_to_f64(i), 0.95) / sr;
         }
     }
 
-    /// In-loop damping: a one-pole low-pass on the recirculation, or off.
+    /// Extra damping on the decay edges: a lower cutoff for their low-pass,
+    /// or BigSky's own.
     pub fn set_damping(&mut self, cutoff_hz: Option<f64>) {
-        self.damping_on = cutoff_hz.is_some();
-        if let Some(fc) = cutoff_hz {
-            self.damp.set_freq(fc.clamp(200.0, 20_000.0), self.sample_rate);
+        self.damp_hz = cutoff_hz.map_or(EDGE_LP_HZ, |fc| fc.clamp(200.0, EDGE_LP_HZ));
+        let a = (-core::f64::consts::TAU * self.damp_hz / self.sample_rate).exp();
+        for half in &mut self.halves {
+            half.lp1.set_coeff(a);
+            half.lp2.set_coeff(a);
         }
     }
 
     fn update_gains(&mut self) {
         let t = self.t60;
-        // The loop's gain per trip, from BigSky's own law (log-time
-        // interpolation; past the table, the trip's T60 extends it, and
-        // Infinite holds).
-        let first = LOOP_GAIN[0];
-        let last = LOOP_GAIN[LOOP_GAIN.len() - 1];
-        let g_trip = if t >= 1.0e5 {
+        let first = DECAY_G[0];
+        let last = DECAY_G[DECAY_G.len() - 1];
+        let infinite = t >= 1.0e5;
+        let g = if infinite {
             1.0
         } else if t <= first.0 {
             first.1
         } else if t >= last.0 {
-            10f64.powf(-3.0 * BIGSKY_TRIP_S / t).max(last.1)
+            // Past the table, hold the last decade's rate: g scales as the
+            // fourth root of the per-cycle loss, which goes as 1/T.
+            last.1.powf(last.0 / t)
         } else {
-            LOOP_GAIN.windows(2).find(|w| t <= w[1].0).map_or(last.1, |w| {
+            DECAY_G.windows(2).find(|w| t <= w[1].0).map_or(last.1, |w| {
                 let ((t0, g0), (t1, g1)) = (w[0], w[1]);
                 let f = (t / t0).ln() / (t1 / t0).ln();
                 (g1 - g0).mul_add(f, g0)
             })
         };
-        // Those gains are per 803.3 ms trip; a resized ring takes the gain
-        // that keeps the same decay rate.
-        let trip_ratio = num::count_to_f64(self.trip_len) / (BIGSKY_TRIP_S * self.sample_rate);
-        self.loop_gain = g_trip.powf(trip_ratio).min(1.0);
+        // A resized tank keeps the same decay rate: a cycle's loss goes
+        // with its length.
+        let g = g.powf(self.scale);
+        if infinite {
+            // Lossless: the edges at unity and their low-pass off.
+            self.edge = 1.0;
+            self.edge_inner = 1.0;
+            self.edge_lp = false;
+        } else {
+            self.edge = EDGE_GAIN * g;
+            self.edge_inner = EDGE_GAIN_INNER * g;
+            self.edge_lp = true;
+        }
         // Shorter than BigSky's floor (which it cannot go): tilt the first
-        // pass itself down to the time asked for. A pulse comes at its
-        // stage's time plus its tap's, so the tilt splits between the two.
+        // pass itself down to the time asked for.
         let tilt = if t < FLOOR_T60 { 1.0 / t - 1.0 / FLOOR_T60 } else { 0.0 };
         let fall = |t_s: f64| 10f64.powf(-3.0 * t_s * tilt);
         for tap in &mut self.taps {
@@ -398,49 +469,60 @@ impl CloudRing {
         for ap in self.stages.iter_mut().flatten() {
             ap.line.clear();
         }
-        self.line.clear();
-        self.trip.clear();
-        self.feedback = 0.0;
-        self.dc_x = 0.0;
-        self.dc_y = 0.0;
-        self.damp.reset();
+        for half in &mut self.halves {
+            half.first.line.clear();
+            half.second.line.clear();
+            half.line1.clear();
+            half.line2.clear();
+            half.lp1.reset();
+            half.lp2.reset();
+        }
     }
 
-    /// One sample: both inputs enter at the tank's start.
+    /// One sample: both inputs enter the stages together.
     #[inline]
     pub fn tick(&mut self, in_l: f64, in_r: f64) -> (f64, f64) {
-        let x = self.feedback + 0.5 * (in_l + in_r);
-        self.trip.write(x);
+        let x0 = 0.5 * (in_l + in_r);
         let (mut out_l, mut out_r) = (0.0, 0.0);
-        let mut v = x;
-        let mut u = x * self.mix[0];
+        let mut v = x0;
+        let mut x = x0 * self.mix[0];
         for ((stage, m), o) in self.stages.iter_mut().zip(self.mix.iter().skip(1)).zip(self.out.iter()) {
             v = stage.iter_mut().fold(v, |s, ap| ap.tick(s));
-            u = m.mul_add(v, u);
+            x = m.mul_add(v, x);
             out_l = o.0.mul_add(v, out_l);
             out_r = o.1.mul_add(v, out_r);
         }
-        self.line.write(u);
+        // The figure-8. Reads first: every line still ends a sample back, so
+        // `read(k)` is k samples ago.
+        let lp = self.edge_lp;
+        let [a, b] = &mut self.halves;
+        let a_back = a.line2.read(a.line2_len);
+        let b_back = b.line2.read(b.line2_len);
+        let a_on = a.line1.read(a.line1_len);
+        let b_on = b.line1.read(b.line1_len);
+        let edge = |f: &mut Lp1, s: f64, gain: f64| gain * if lp { f.tick(s) } else { s };
+        // Each half's first allpass hears the input and the OTHER half's end.
+        let into_a = x + edge(&mut b.lp2, b_back, self.edge);
+        let into_b = x + edge(&mut a.lp2, a_back, self.edge);
+        for (half, into, on) in [(&mut *a, into_a, a_on), (&mut *b, into_b, b_on)] {
+            let y1 = half.first.tick(into);
+            half.line1.write(flush(y1));
+            let y2 = half.second.tick(edge(&mut half.lp1, on, self.edge_inner));
+            half.line2.write(flush(y2 + x));
+        }
         // `read(1)` is the sample just written: a delay of k is read(k + 1).
         for tap in &self.taps {
-            let s = self.line.read(tap.pos + 1) * tap.gain;
+            let s = match tap.node {
+                Node::Line1(h) => self.halves.get(h).map_or(0.0, |hs| hs.line1.read(tap.pos + 1)),
+                Node::Line2(h) => self.halves.get(h).map_or(0.0, |hs| hs.line2.read(tap.pos + 1)),
+                Node::Inside(h) => self.halves.get(h).map_or(0.0, |hs| hs.second.line.read(tap.pos + 1)),
+            } * tap.gain;
             if tap.right {
                 out_r += s;
             } else {
                 out_l += s;
             }
         }
-        // The trip's end: DC-block, damp if asked, the trip's one decay gain.
-        // Read for the next sample, so a trip is `trip_len` exactly.
-        let back = self.trip.read(self.trip_len);
-        let y = back - self.dc_x + self.dc_r * self.dc_y;
-        self.dc_x = back;
-        self.dc_y = flush(y);
-        let mut b = self.dc_y;
-        if self.damping_on {
-            b = self.damp.tick(b);
-        }
-        self.feedback = flush(b * self.loop_gain);
         (out_l, out_r)
     }
 }
