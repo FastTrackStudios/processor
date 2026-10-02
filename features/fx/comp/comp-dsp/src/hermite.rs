@@ -104,11 +104,11 @@ impl HermiteCubicSmoother {
             || (gr_inst - hist3).abs() >= threshold;
 
         // Step 4: Route to algorithm
-        // Smooth in dB domain for better frequency response matching
-        let gr_instant_db = audiocore_dsp::db::linear_to_db(gr_inst.max(1e-10));
-        let hist0_db = audiocore_dsp::db::linear_to_db(hist0.max(1e-10));
-
+        // Smooth in dB domain for better frequency response matching — only
+        // a transition needs the dB values (two log10s, every sample before).
         let result = if has_change {
+            let gr_instant_db = audiocore_dsp::db::linear_to_db(gr_inst.max(1e-10));
+            let hist0_db = audiocore_dsp::db::linear_to_db(hist0.max(1e-10));
             // Transition detected: smoothly interpolate between history and current GR
             // Use attack during compression increase (more negative dB), release otherwise
             let gr_change_db = gr_instant_db - hist0_db;

@@ -17,7 +17,7 @@ use anyrender::{PaintScene as _, RenderContext, Scene};
 // painters above need none of it.
 #[cfg(feature = "graph")]
 #[cfg(not(target_arch = "wasm32"))]
-use nice_plug_dioxus::widget::{ComputedStyles, UiEvent, Widget};
+use crate::widget::{ComputedStyles, UiEvent, Widget};
 
 use eq_dsp::PreparedFilter;
 

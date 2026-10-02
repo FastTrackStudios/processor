@@ -188,6 +188,13 @@ impl ReverbLine {
         }
     }
 
+    /// How much the in-loop diffuser lengthens one trip round the line,
+    /// in samples (0 when it is out).
+    #[must_use]
+    pub fn diffuser_delay(&self) -> usize {
+        if self.diffuser_enabled { self.diffuser.total_delay() } else { 0 }
+    }
+
     pub fn clear_diffuser(&mut self) {
         self.diffuser.clear();
     }

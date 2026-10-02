@@ -85,6 +85,9 @@ pub struct ChainParamSurface {
 /// Number of Post EQ bands (`fx.reverb.post-eq`).
 pub const POST_EQ_BANDS: usize = 6;
 
+/// Longest pre-delay the chain holds, in seconds — BigSky's 1.5 s.
+pub const MAX_PREDELAY_S: f64 = 1.5;
+
 /// One Post EQ band — the 6-band EQ on the final reverb sound
 /// (`fx.reverb.post-eq`, docs/spec/fx/embedded-eq.md).
 ///
@@ -152,6 +155,11 @@ impl PostEqBand {
     }
 }
 
+/// At or below this the input/output high-passes are off.
+const HP_OFF_HZ: f64 = 20.0;
+/// At or above this the input/output low-passes are off.
+const LP_OFF_HZ: f64 = 19_999.0;
+
 /// Full reverb processing chain.
 ///
 /// Signal flow:
@@ -164,8 +172,10 @@ pub struct ReverbChain {
     algorithm_type: AlgorithmType,
     variant: usize,
 
-    // Pre-delay (up to 500ms)
+    // Pre-delay (up to 500ms), one line per side: the true-stereo
+    // engines (Cloud's crossfeed, the split routings) hear both inputs.
     predelay: DelayLine,
+    predelay_r: DelayLine,
     predelay_samples: usize,
 
     // Input conditioning
@@ -395,13 +405,14 @@ impl ReverbChain {
     #[must_use]
     pub fn new() -> Self {
         let sample_rate = 48000.0;
-        let max_predelay = num::f64_to_index(sample_rate * 0.5); // 500ms
+        let max_predelay = num::f64_to_index(sample_rate * MAX_PREDELAY_S);
 
         Self {
             algorithm: algorithms::create(AlgorithmType::Room, 0, sample_rate),
             algorithm_type: AlgorithmType::Room,
             variant: 0,
             predelay: DelayLine::new(max_predelay.saturating_add(1)),
+            predelay_r: DelayLine::new(max_predelay.saturating_add(1)),
             predelay_samples: 0,
             input_hp: Biquad::new(),
             input_lp: Biquad::new(),
@@ -680,11 +691,13 @@ impl ReverbChain {
         // correspondingly longer (or shorter) time to land on the requested
         // one. Without this, "2.5 seconds with tamed lows" quietly became
         // 1.36 seconds.
-        let compensated = t60_s
-            / crate::algorithm::tilt_midband_factor(
-                self.params.low_decay_mult,
-                self.params.high_decay_mult,
-            );
+        let low = if self.algorithm_type.low_end_is_filter() {
+            1.0
+        } else {
+            self.params.low_decay_mult
+        };
+        let compensated =
+            t60_s / crate::algorithm::tilt_midband_factor(low, self.params.high_decay_mult);
         let decay = crate::algorithm::t60_to_decay(compensated, lo, hi);
         self.params.decay = decay;
         self.update_params();
@@ -1094,6 +1107,7 @@ impl Processor for ReverbChain {
     fn reset(&mut self) {
         self.algorithm.reset();
         self.predelay.clear();
+        self.predelay_r.clear();
         self.input_hp.reset();
         self.input_lp.reset();
         self.output_hp.reset();
@@ -1131,15 +1145,16 @@ impl Processor for ReverbChain {
             1.0
         };
 
-        let max_predelay = num::f64_to_index(config.sample_rate * 0.5);
+        let max_predelay = num::f64_to_index(config.sample_rate * MAX_PREDELAY_S);
         self.predelay = DelayLine::new(max_predelay.saturating_add(1));
+        self.predelay_r = DelayLine::new(max_predelay.saturating_add(1));
         self.predelay_samples = if matches!(
             self.algorithm_type,
             AlgorithmType::Magneto | AlgorithmType::NonLinear
         ) {
             0
         } else {
-            num::f64_to_index(self.predelay_ms * 0.001 * config.sample_rate)
+            num::f64_to_index(self.predelay_ms * 0.001 * config.sample_rate).min(max_predelay)
         };
 
         self.input_hp.set(
@@ -1393,9 +1408,20 @@ impl ReverbChain {
             }
         }
 
-        // Input filtering
-        let filt_l = self.input_lp.tick(self.input_hp.tick(dry_l, 0), 0);
-        let filt_r = self.input_lp.tick(self.input_hp.tick(dry_r, 1), 1);
+        // Input filtering. 20 Hz / 20 kHz mean off, as documented — and must
+        // BE off: a 2-pole low-pass at 20 kHz sits at 0.83 of Nyquist at
+        // 48 kHz, dulls the top octave and rings on every transient (it was
+        // on every reverb's input and output; measured against BigSky's
+        // Cloud pulse by pulse).
+        let (mut filt_l, mut filt_r) = (dry_l, dry_r);
+        if self.input_hp_freq > HP_OFF_HZ {
+            filt_l = self.input_hp.tick(filt_l, 0);
+            filt_r = self.input_hp.tick(filt_r, 1);
+        }
+        if self.effective_input_lp() < LP_OFF_HZ {
+            filt_l = self.input_lp.tick(filt_l, 0);
+            filt_r = self.input_lp.tick(filt_r, 1);
+        }
 
         // Freeze: kill input to the algorithm but keep feedback
         // running. Infinite keeps feeding input into the
@@ -1405,8 +1431,11 @@ impl ReverbChain {
                 (0.0, 0.0)
             } else if self.predelay_samples > 0 {
                 self.predelay.write(filt_l);
-                let delayed = self.predelay.read(self.predelay_samples);
-                (delayed, filt_r)
+                self.predelay_r.write(filt_r);
+                (
+                    self.predelay.read(self.predelay_samples),
+                    self.predelay_r.read(self.predelay_samples),
+                )
             } else {
                 (filt_l, filt_r)
             };
@@ -1573,11 +1602,15 @@ impl ReverbChain {
                 wet_r = self.sat_r.tick(wet_r);
             }
 
-            // Output band-shaping
-            wet_l = self.output_hp.tick(wet_l, 0);
-            wet_l = self.output_lp.tick(wet_l, 0);
-            wet_r = self.output_hp.tick(wet_r, 1);
-            wet_r = self.output_lp.tick(wet_r, 1);
+            // Output band-shaping (off at 20 Hz / 20 kHz — see the input's).
+            if self.output_hp_freq > HP_OFF_HZ {
+                wet_l = self.output_hp.tick(wet_l, 0);
+                wet_r = self.output_hp.tick(wet_r, 1);
+            }
+            if self.output_lp_freq < LP_OFF_HZ {
+                wet_l = self.output_lp.tick(wet_l, 0);
+                wet_r = self.output_lp.tick(wet_r, 1);
+            }
 
             // Tilt EQ (gate on the ramped tilt for the same reason)
             if self.tilt_smoother.value().abs() > 0.01 {
@@ -1644,11 +1677,14 @@ impl ReverbChain {
             // Tempo sync wins over the ms knob when both are set.
             let ms = match (self.predelay_sync_beats, self.tempo_bpm) {
                 (Some(beats), Some(bpm)) if beats > 0.0 && bpm > 0.0 => {
-                    (beats * 60_000.0 / bpm).min(490.0)
+                    (beats * 60_000.0 / bpm).min(MAX_PREDELAY_S * 1000.0)
                 }
                 _ => self.predelay_ms,
             };
-            self.predelay_samples = num::f64_to_index(ms * 0.001 * self.sample_rate);
+            // The line holds `MAX_PREDELAY_S`; a longer read would wrap (or,
+            // in a debug build, underflow) inside `DelayLine::read`.
+            self.predelay_samples = num::f64_to_index(ms * 0.001 * self.sample_rate)
+                .min(num::f64_to_index(self.sample_rate * MAX_PREDELAY_S));
         }
 
         // Re-apply the input LP here too: the Classic-voice vintage cap

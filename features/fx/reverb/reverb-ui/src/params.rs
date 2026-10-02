@@ -472,9 +472,9 @@ impl Default for ReverbParams {
                 "Pre-Delay",
                 20.0,
                 FloatRange::Skewed {
-                    min: 0.0,
-                    max: 250.0,
-                    factor: FloatRange::skew_factor(-1.0),
+                    min: MIN_PREDELAY_MS as f32,
+                    max: MAX_PREDELAY_MS as f32,
+                    factor: FloatRange::skew_factor(-2.0),
                 },
             )
             .with_unit(" ms")
@@ -583,9 +583,9 @@ impl Default for ReverbParams {
 
 /// What the pre-delay control can reach, in milliseconds — the same bounds
 /// its parameter declares. Named so the sync clamp cannot drift from them: a
-/// half note at 60 BPM is two seconds and this control stops at 250 ms.
+/// half note at 60 BPM is two seconds and this control stops at 1.5 s.
 pub const MIN_PREDELAY_MS: f64 = 0.0;
-pub const MAX_PREDELAY_MS: f64 = 250.0;
+pub const MAX_PREDELAY_MS: f64 = reverb_dsp::chain::MAX_PREDELAY_S * 1000.0;
 
 /// The note the pre-delay locks to until someone picks another.
 ///
