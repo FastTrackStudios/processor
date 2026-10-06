@@ -19,6 +19,7 @@
 use audiocore_dsp::{AudioConfig, Processor};
 
 use crate::chain::DelayChain;
+use crate::engine::DelayStyle;
 
 /// Routing for the two delays in a preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,9 +80,23 @@ impl DualRouting {
 }
 
 /// Two delay chains + routing (`TimeLine` MX dual-delay presets).
+///
+/// Chain B is built only when a routing plays it: a delay is mostly
+/// `Single`, and a rig prepares one in every patch — B's two engines, each
+/// seconds of audio, were half of every delay's memory, never heard. Its
+/// settings are kept until then ([`set_b_style`](Self::set_b_style) and
+/// friends) and applied as it is built.
 pub struct DualDelay {
     pub a: DelayChain,
-    pub b: DelayChain,
+    b: Option<Box<DelayChain>>,
+    b_style: Option<DelayStyle>,
+    b_time_ms: Option<f64>,
+    b_feedback: Option<f64>,
+    b_mix: Option<f64>,
+    /// What `update` last prepared for: a B built after it is prepared too.
+    config: Option<AudioConfig>,
+    /// Set through [`set_routing`](Self::set_routing) so B is there to
+    /// play; a routing set here with no B plays A alone.
     pub routing: DualRouting,
 
     // Pre-allocated scratch: the dry input copy and B's working buffers.
@@ -96,12 +111,95 @@ impl DualDelay {
     pub fn new() -> Self {
         Self {
             a: DelayChain::new(),
-            b: DelayChain::new(),
+            b: None,
+            b_style: None,
+            b_time_ms: None,
+            b_feedback: None,
+            b_mix: None,
+            config: None,
             routing: DualRouting::Single,
             dry_l: vec![0.0; 512],
             dry_r: vec![0.0; 512],
             b_l: vec![0.0; 512],
             b_r: vec![0.0; 512],
+        }
+    }
+
+    /// Play `routing`, building chain B if it plays it — an allocation:
+    /// a param write's, never the audio callback's.
+    pub fn set_routing(&mut self, routing: DualRouting) {
+        self.routing = routing;
+        if routing != DualRouting::Single {
+            self.b_mut();
+        }
+    }
+
+    /// Chain B, built (with its kept settings, and prepared if this is) if
+    /// it was not — an allocation.
+    pub fn b_mut(&mut self) -> &mut DelayChain {
+        let (style, time, feedback, mix, config) =
+            (self.b_style, self.b_time_ms, self.b_feedback, self.b_mix, self.config);
+        self.b.get_or_insert_with(|| {
+            let mut c = Box::new(DelayChain::new());
+            if let Some(s) = style {
+                c.set_style(s);
+            }
+            if let Some(t) = time {
+                c.delay_l.time_ms = t;
+                c.delay_r.time_ms = t;
+            }
+            if let Some(f) = feedback {
+                c.delay_l.feedback = f;
+                c.delay_r.feedback = f;
+            }
+            if let Some(m) = mix {
+                c.mix = m;
+            }
+            if let Some(cfg) = config {
+                c.update(cfg);
+            }
+            c
+        })
+    }
+
+    /// Chain B, if it has been built.
+    #[must_use]
+    pub fn b(&self) -> Option<&DelayChain> {
+        self.b.as_deref()
+    }
+
+    /// B's style: kept, and set on B if it is built (a new engine there —
+    /// an allocation, as for A).
+    pub fn set_b_style(&mut self, style: DelayStyle) {
+        self.b_style = Some(style);
+        if let Some(b) = self.b.as_deref_mut() {
+            b.set_style(style);
+        }
+    }
+
+    /// B's time (both lines), kept and set on B if it is built.
+    pub fn set_b_time_ms(&mut self, ms: f64) {
+        self.b_time_ms = Some(ms);
+        if let Some(b) = self.b.as_deref_mut() {
+            b.delay_l.time_ms = ms;
+            b.delay_r.time_ms = ms;
+        }
+    }
+
+    /// B's feedback (both lines), kept and set on B if it is built.
+    pub fn set_b_feedback(&mut self, feedback: f64) {
+        self.b_feedback = Some(feedback);
+        if let Some(b) = self.b.as_deref_mut() {
+            b.delay_l.feedback = feedback;
+            b.delay_r.feedback = feedback;
+        }
+    }
+
+    /// B's mix, kept and set on B if it is built.
+    pub fn set_b_mix(&mut self, mix: f64) {
+        self.b_mix = Some(mix);
+        if let Some(b) = self.b.as_deref_mut() {
+            b.mix = mix;
         }
     }
 
@@ -115,16 +213,22 @@ impl DualDelay {
         reason = "scratch buffers are pre-sized in update() to hold max_buffer_size, so slicing [..left.len()] is safe"
     )]
     fn process_chunk(&mut self, left: &mut [f64], right: &mut [f64]) {
+        // No B (a routing set without `set_routing`): A alone — B is never
+        // built here.
+        let Some(b) = self.b.as_deref_mut() else {
+            self.a.process(left, right);
+            return;
+        };
         match self.routing {
             DualRouting::Single => {
                 self.a.process(left, right);
             }
             DualRouting::Series12 => {
                 self.a.process(left, right);
-                self.b.process(left, right);
+                b.process(left, right);
             }
             DualRouting::Series21 => {
-                self.b.process(left, right);
+                b.process(left, right);
                 self.a.process(left, right);
             }
             DualRouting::Parallel => {
@@ -143,8 +247,7 @@ impl DualDelay {
                 }
 
                 self.a.process(left, right);
-                self.b
-                    .process(&mut self.b_l[..left.len()], &mut self.b_r[..left.len()]);
+                b.process(&mut self.b_l[..left.len()], &mut self.b_r[..left.len()]);
 
                 // Sum of both chains' mix laws, dry counted once:
                 // out = dry·(1 − mixA − mixB) + wetA·mixA + wetB·mixB.
@@ -169,8 +272,7 @@ impl DualDelay {
                 }
 
                 self.a.process(left, right);
-                self.b
-                    .process(&mut self.b_l[..left.len()], &mut self.b_r[..left.len()]);
+                b.process(&mut self.b_l[..left.len()], &mut self.b_r[..left.len()]);
 
                 let swapped = self.routing == DualRouting::SplitSwapped;
                 for (((l, r), bl), br) in left
@@ -203,12 +305,20 @@ impl Default for DualDelay {
 impl Processor for DualDelay {
     fn reset(&mut self) {
         self.a.reset();
-        self.b.reset();
+        if let Some(b) = self.b.as_deref_mut() {
+            b.reset();
+        }
     }
 
     fn update(&mut self, config: AudioConfig) {
+        self.config = Some(config);
         self.a.update(config);
-        self.b.update(config);
+        if self.routing != DualRouting::Single {
+            self.b_mut();
+        }
+        if let Some(b) = self.b.as_deref_mut() {
+            b.update(config);
+        }
 
         let cap = config.max_buffer_size.max(64);
         if self.dry_l.len() < cap {
@@ -255,8 +365,8 @@ mod tests {
     /// delayed impulses at distinct times (A = 100 ms, B = 150 ms).
     fn make_dual(routing: DualRouting) -> DualDelay {
         let mut d = DualDelay::new();
-        d.routing = routing;
-        for (chain, ms) in [(&mut d.a, 100.0), (&mut d.b, 150.0)] {
+        d.set_routing(routing);
+        let set = |chain: &mut DelayChain, ms: f64| {
             chain.set_style(DelayStyle::Clean);
             chain.delay_l.time_ms = ms;
             chain.delay_r.time_ms = ms;
@@ -264,7 +374,9 @@ mod tests {
             chain.delay_r.feedback = 0.0;
             chain.mix = 1.0;
             chain.lr_offset_ms = 0.0;
-        }
+        };
+        set(&mut d.a, 100.0);
+        set(d.b_mut(), 150.0);
         d.update(config());
         d
     }

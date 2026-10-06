@@ -3344,6 +3344,9 @@ impl ParallelMix {
 
 pub struct NativeReverb {
     rev: reverb::DualReverb,
+    /// Writes for chain B before it is built (`DualReverb` builds B only for
+    /// a routing that plays it), in order — replayed onto it as it is.
+    b_log: Vec<(u32, f64)>,
     prepared: bool,
     /// Chain A in parallel with the dry (see [`ParallelMix`]).
     par: ParallelMix,
@@ -3370,14 +3373,10 @@ impl NativeReverb {
         rev.a.params.decay = 0.45;
         rev.a.params.size = 0.5;
         rev.a.update_params();
-        // B seeds as a plate so engaging a dual routing is immediately
-        // audible before any params are set.
-        rev.b.set_algorithm(reverb::AlgorithmType::Plate);
-        rev.b.mix = 0.08;
-        rev.b.params.decay = 0.45;
-        rev.b.update_params();
+        // B (a plate, see `seed_b`) is built when a routing plays it.
         Self {
             rev,
+            b_log: Vec::new(),
             prepared: false,
             par: ParallelMix::new(0.08),
             #[cfg(not(target_arch = "wasm32"))]
@@ -3429,21 +3428,92 @@ impl NativeReverb {
         // Ids < 100: chain A + the dual block. Ids 100+: the same
         // chain-scoped param on chain B (`r2_*` names, id − 100).
         match id {
-            3 => self.rev.routing = reverb::DualRouting::from_index(v.round().max(0.0) as usize),
-            // Legacy dual block (kept for preset compat; equivalent to
-            // r2_algorithm / r2_decay / r2_mix / r2_pan).
-            4 => self.rev.b.set_algorithm(reverb::AlgorithmType::from_index(
-                v.round().max(0.0) as usize
-            )),
-            5 => {
-                self.rev.b.params.decay = v;
-                self.rev.b.update_params();
+            3 => {
+                self.rev.routing = reverb::DualRouting::from_index(v.round().max(0.0) as usize);
+                // A routing that plays B builds it — here, a param write.
+                if self.rev.routing != reverb::DualRouting::Single {
+                    self.ensure_b();
+                }
             }
-            6 => self.rev.b.mix = v.clamp(0.0, 1.0),
-            8 => self.rev.b.pan = v.clamp(-1.0, 1.0),
-            _ if id >= 100 => Self::set_chain(&mut self.rev.b, id - 100, v),
+            4 | 5 | 6 | 8 => self.write_b(id, v),
+            _ if id >= 100 => self.write_b(id, v),
             _ => Self::set_chain(&mut self.rev.a, id, v),
         }
+    }
+
+    /// A write for chain B: to it, or kept for when it is built.
+    fn write_b(&mut self, id: u32, v: f64) {
+        if self.rev.b().is_some() {
+            Self::apply_b(self.rev.b_mut(), id, v);
+            return;
+        }
+        // A drag on one of B's knobs is a run of writes to one param: the
+        // last stands for it.
+        match self.b_log.last_mut() {
+            Some(last) if last.0 == id => last.1 = v,
+            _ => self.b_log.push((id, v)),
+        }
+        // A long session of edits to a B that never plays: each param's
+        // last write, in the order those were made.
+        if self.b_log.len() > 1024 {
+            let mut seen = std::collections::HashSet::new();
+            let mut kept: Vec<(u32, f64)> =
+                self.b_log.iter().rev().filter(|(i, _)| seen.insert(*i)).copied().collect();
+            kept.reverse();
+            self.b_log = kept;
+        }
+    }
+
+    /// One of B's params, as `set_engine` addresses it: the legacy dual
+    /// block (4 algorithm, 5 decay, 6 mix, 8 pan — equivalent to
+    /// r2_algorithm / r2_decay / r2_mix / r2_pan) or `r2_*` (id − 100).
+    fn apply_b(b: &mut reverb::ReverbChain, id: u32, v: f64) {
+        match id {
+            4 => b.set_algorithm(reverb::AlgorithmType::from_index(v.round().max(0.0) as usize)),
+            5 => {
+                b.params.decay = v;
+                b.update_params();
+            }
+            6 => b.mix = v.clamp(0.0, 1.0),
+            8 => b.pan = v.clamp(-1.0, 1.0),
+            _ => Self::set_chain(b, id.saturating_sub(100), v),
+        }
+    }
+
+    /// Build chain B: seeded as a plate (so engaging a dual routing is
+    /// immediately audible before any params are set), then every write it
+    /// was sent, in order — as if it had been there all along.
+    fn ensure_b(&mut self) {
+        if self.rev.b().is_some() {
+            return;
+        }
+        let log = std::mem::take(&mut self.b_log);
+        let b = self.rev.b_mut();
+        b.set_algorithm(reverb::AlgorithmType::Plate);
+        b.mix = 0.08;
+        b.params.decay = 0.45;
+        b.update_params();
+        for (id, v) in log {
+            Self::apply_b(b, id, v);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.prepared {
+            self.wire_b_reshaper();
+        }
+    }
+
+    /// B's Impulse re-prepare worker (see `reshaper_a`), once B exists.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wire_b_reshaper(&mut self) {
+        if self.reshaper_b.is_some() || self.rev.b().is_none() {
+            return;
+        }
+        let (reshaper, rx) = reverb::ir::ImpulseReshaper::new();
+        let b = self.rev.b_mut();
+        b.set_prepared_ir_receiver(rx);
+        b.set_reshape_sender(reshaper.sender());
+        b.set_ir_trash_sender(reshaper.trash_sender());
+        self.reshaper_b = Some(reshaper);
     }
 
     /// Apply a chain-scoped param (everything in `REVERB_PARAMS` except
@@ -3802,6 +3872,9 @@ impl PluginInstance for NativeReverb {
         0
     }
     fn prepare(&mut self, sample_rate: f64, block_size: u32) -> Result<(), PluginError> {
+        if self.rev.routing != reverb::DualRouting::Single {
+            self.ensure_b();
+        }
         self.rev.update(AudioConfig {
             sample_rate: sample_rate.max(1.0),
             max_buffer_size: block_size.max(1) as usize,
@@ -3820,13 +3893,8 @@ impl PluginInstance for NativeReverb {
                 self.rev.a.set_ir_trash_sender(reshaper.trash_sender());
                 self.reshaper_a = Some(reshaper);
             }
-            if self.reshaper_b.is_none() {
-                let (reshaper, rx) = reverb::ir::ImpulseReshaper::new();
-                self.rev.b.set_prepared_ir_receiver(rx);
-                self.rev.b.set_reshape_sender(reshaper.sender());
-                self.rev.b.set_ir_trash_sender(reshaper.trash_sender());
-                self.reshaper_b = Some(reshaper);
-            }
+            // B's only once B exists (a routing that plays it).
+            self.wire_b_reshaper();
         }
         self.scratch_l = vec![0.0; block_size.max(1) as usize];
         self.scratch_r = vec![0.0; block_size.max(1) as usize];
@@ -4390,20 +4458,22 @@ impl NativeDelay {
     #[must_use]
     pub fn new(_sample_rate: f64) -> Self {
         let mut dly = delay::DualDelay::new();
-        for chain in [&mut dly.a, &mut dly.b] {
-            chain.set_style(delay::DelayStyle::Clean);
-            chain.mix = 0.08;
-            chain.delay_l.time_ms = 400.0;
-            chain.delay_r.time_ms = 400.0;
-            chain.delay_l.feedback = 0.30;
-            chain.delay_r.feedback = 0.30;
-        }
+        let chain = &mut dly.a;
+        chain.set_style(delay::DelayStyle::Clean);
+        chain.mix = 0.08;
+        chain.delay_l.time_ms = 400.0;
+        chain.delay_r.time_ms = 400.0;
+        chain.delay_l.feedback = 0.30;
+        chain.delay_r.feedback = 0.30;
+        // B's, kept until a routing plays it (see `DualDelay`).
+        dly.set_b_style(delay::DelayStyle::Clean);
+        dly.set_b_mix(0.08);
+        dly.set_b_feedback(0.30);
         // Fully wet: single routing sums the dry itself (`ParallelMix`).
         dly.a.mix = 1.0;
         // B seeds slightly shorter so engaging a dual routing is
         // immediately audible before any params are set.
-        dly.b.delay_l.time_ms = 300.0;
-        dly.b.delay_r.time_ms = 300.0;
+        dly.set_b_time_ms(300.0);
         Self {
             sample_rate: 48000.0,
             block_size: 512,
@@ -4535,20 +4605,16 @@ impl NativeDelay {
                 a.delay_l.pitch_blend = v;
                 a.delay_r.pitch_blend = v;
             }
-            17 => self.dly.routing = delay::DualRouting::from_index(v.round().max(0.0) as usize),
+            // A routing that plays B builds it here (a param write).
+            17 => self
+                .dly
+                .set_routing(delay::DualRouting::from_index(v.round().max(0.0) as usize)),
             18 => self
                 .dly
-                .b
-                .set_style(delay::DelayStyle::from_index(v.round().max(0.0) as usize)),
-            19 => {
-                self.dly.b.delay_l.time_ms = v;
-                self.dly.b.delay_r.time_ms = v;
-            }
-            20 => {
-                self.dly.b.delay_l.feedback = v;
-                self.dly.b.delay_r.feedback = v;
-            }
-            21 => self.dly.b.mix = v.clamp(0.0, 1.0),
+                .set_b_style(delay::DelayStyle::from_index(v.round().max(0.0) as usize)),
+            19 => self.dly.set_b_time_ms(v),
+            20 => self.dly.set_b_feedback(v),
+            21 => self.dly.set_b_mix(v.clamp(0.0, 1.0)),
             22 => {
                 let shape = match v.round().max(0.0) as usize {
                     1 => delay::GrainShape::Swell,
@@ -4994,7 +5060,8 @@ impl NativeMod {
             0 => self.ch.mix = v,
             1 => self.ch.depth = v,
             2 => self.ch.rate_hz = v,
-            // Allocation-free: the chain holds every engine and crossfades.
+            // The chain builds an engine the first time it is picked (this
+            // write), then crossfades to it.
             3 => self
                 .ch
                 .set_engine(modulation::chorus::engine::EngineType::from_index(
@@ -5334,9 +5401,15 @@ const PITCH_PARAMS: &[ParamSpec] = &[
 pub struct NativePitch {
     chain_l: pitch_dsp::chain::PitchChain,
     chain_r: pitch_dsp::chain::PitchChain,
-    /// Voice B's shifters — processed only while `b_level` > 0.
-    chain_bl: pitch_dsp::chain::PitchChain,
-    chain_br: pitch_dsp::chain::PitchChain,
+    /// Voice B's shifters — processed only while `b_level` > 0, and built
+    /// only once it is: each chain holds only the engine it plays, and a
+    /// rig prepares a pitch block in every patch, mostly with B silent.
+    voice_b: Option<Box<[pitch_dsp::chain::PitchChain; 2]>>,
+    /// Voice B's settings, kept for when it is built.
+    algorithm: pitch_dsp::chain::Algorithm,
+    live: bool,
+    b_semitones: f64,
+    sample_rate: f64,
     semitones: f64,
     cents: f64,
     mix: f64,
@@ -5356,10 +5429,9 @@ pub struct NativePitch {
 
 impl NativePitch {
     #[must_use]
-    pub fn new(_sample_rate: f64) -> Self {
+    pub fn new(sample_rate: f64) -> Self {
         let mk = || {
-            let mut c = pitch_dsp::chain::PitchChain::new();
-            c.algorithm = pitch_dsp::chain::Algorithm::Spectral;
+            let mut c = pitch_dsp::chain::PitchChain::only(pitch_dsp::chain::Algorithm::Spectral);
             c.live = false;
             c.mix = 1.0;
             c
@@ -5367,8 +5439,11 @@ impl NativePitch {
         let mut p = Self {
             chain_l: mk(),
             chain_r: mk(),
-            chain_bl: mk(),
-            chain_br: mk(),
+            voice_b: None,
+            algorithm: pitch_dsp::chain::Algorithm::Spectral,
+            live: false,
+            b_semitones: -12.0,
+            sample_rate,
             semitones: 12.0,
             cents: 0.0,
             mix: 0.5,
@@ -5383,10 +5458,32 @@ impl NativePitch {
             b_r: Vec::new(),
             discard: Vec::new(),
         };
-        p.chain_bl.semitones = -12.0;
-        p.chain_br.semitones = -12.0;
         p.apply_shift();
         p
+    }
+
+    /// Voice B's two chains, built (an allocation: from a param write or
+    /// `prepare`, never `process`) to match voice A's engine and mode.
+    fn build_voice_b(&mut self) {
+        if self.voice_b.is_some() {
+            return;
+        }
+        let mk = || {
+            let mut c = pitch_dsp::chain::PitchChain::only(self.algorithm);
+            c.live = self.live;
+            c.mix = 1.0;
+            c.semitones = self.b_semitones;
+            if self.prepared {
+                c.update(AudioConfig {
+                    sample_rate: self.sample_rate.max(1.0),
+                    max_buffer_size: self.wet_l.len().max(1),
+                });
+                c.reset();
+            }
+            c
+        };
+        self.voice_b = Some(Box::new([mk(), mk()]));
+        self.b_idle = true;
     }
 
     fn apply_shift(&mut self) {
@@ -5414,22 +5511,43 @@ impl NativePitch {
                     3 => Algorithm::PolyOctave,
                     _ => Algorithm::Spectral,
                 };
-                for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
-                    c.algorithm = algo;
+                // A new engine is built here, as a reverb's new algorithm
+                // is: a param write, not the audio callback.
+                self.algorithm = algo;
+                self.chain_l.select(algo);
+                self.chain_r.select(algo);
+                if let Some(b) = self.voice_b.as_deref_mut() {
+                    for c in b.iter_mut() {
+                        c.select(algo);
+                    }
                 }
             }
             4 => {
-                for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
-                    c.live = v >= 0.5;
+                self.live = v >= 0.5;
+                for c in [&mut self.chain_l, &mut self.chain_r] {
+                    c.live = self.live;
+                }
+                if let Some(b) = self.voice_b.as_deref_mut() {
+                    for c in b.iter_mut() {
+                        c.live = self.live;
+                    }
                 }
             }
             5 => self.a_level = v.clamp(0.0, 1.0),
             6 => {
-                let st = v.clamp(-24.0, 24.0);
-                self.chain_bl.semitones = st;
-                self.chain_br.semitones = st;
+                self.b_semitones = v.clamp(-24.0, 24.0);
+                if let Some(b) = self.voice_b.as_deref_mut() {
+                    for c in b.iter_mut() {
+                        c.semitones = self.b_semitones;
+                    }
+                }
             }
-            7 => self.b_level = v.clamp(0.0, 1.0),
+            7 => {
+                self.b_level = v.clamp(0.0, 1.0);
+                if self.b_level > 0.0 && self.prepared {
+                    self.build_voice_b();
+                }
+            }
             8 => self.dry = v.clamp(0.0, 1.0),
             _ => {}
         }
@@ -5474,9 +5592,16 @@ impl PluginInstance for NativePitch {
             sample_rate: sample_rate.max(1.0),
             max_buffer_size: block_size.max(1) as usize,
         };
-        for c in [&mut self.chain_l, &mut self.chain_r, &mut self.chain_bl, &mut self.chain_br] {
+        self.sample_rate = cfg.sample_rate;
+        for c in [&mut self.chain_l, &mut self.chain_r] {
             c.update(cfg);
             c.reset();
+        }
+        if let Some(b) = self.voice_b.as_deref_mut() {
+            for c in b.iter_mut() {
+                c.update(cfg);
+                c.reset();
+            }
         }
         self.b_idle = true;
         let n = block_size.max(1) as usize;
@@ -5486,6 +5611,9 @@ impl PluginInstance for NativePitch {
         self.b_r = vec![0.0; n];
         self.discard = vec![0.0; n];
         self.prepared = true;
+        if self.b_level > 0.0 {
+            self.build_voice_b();
+        }
         Ok(())
     }
     fn is_prepared(&self) -> bool {
@@ -5513,19 +5641,19 @@ impl PluginInstance for NativePitch {
             self.wet_r[i] = f64::from(in_r[i]);
         }
         // Voice B from the same input, before voice A overwrites it.
-        let b_on = self.b_level > 0.0;
-        if b_on {
+        // Built when B was turned up (a write, or `prepare`): never here.
+        let b_on = self.b_level > 0.0 && self.voice_b.is_some();
+        if let (true, Some(b)) = (b_on, self.voice_b.as_deref_mut()) {
+            let [bl, br] = b;
             if self.b_idle {
-                self.chain_bl.reset();
-                self.chain_br.reset();
+                bl.reset();
+                br.reset();
                 self.b_idle = false;
             }
             self.b_l[..n].copy_from_slice(&self.wet_l[..n]);
             self.b_r[..n].copy_from_slice(&self.wet_r[..n]);
-            self.chain_bl
-                .process(&mut self.b_l[..n], &mut self.discard[..n]);
-            self.chain_br
-                .process(&mut self.b_r[..n], &mut self.discard[..n]);
+            bl.process(&mut self.b_l[..n], &mut self.discard[..n]);
+            br.process(&mut self.b_r[..n], &mut self.discard[..n]);
         } else {
             self.b_idle = true;
         }
@@ -6566,13 +6694,15 @@ mod param_table_tests {
         r.set_named("cloud_ensemble", 0.8);
         r.set_named("r2_cloud_ensemble", 0.3);
         assert!((r.rev.a.cloud.ensemble - 0.8).abs() < 1e-9);
-        assert!((r.rev.b.cloud.ensemble - 0.3).abs() < 1e-9);
+        // B is built when a routing plays it; built now, it has every write.
+        r.set_named("routing", 3.0);
+        assert!((r.rev.b().unwrap().cloud.ensemble - 0.3).abs() < 1e-9);
 
         r.set_named("r2_mix", 0.77);
-        assert!((r.rev.b.mix - 0.77).abs() < 1e-9);
+        assert!((r.rev.b().unwrap().mix - 0.77).abs() < 1e-9);
 
         r.set_named("r2_algorithm", 6.0); // Shimmer
-        assert_eq!(r.rev.b.algorithm_type(), reverb::AlgorithmType::Shimmer);
+        assert_eq!(r.rev.b().unwrap().algorithm_type(), reverb::AlgorithmType::Shimmer);
         assert_ne!(r.rev.a.algorithm_type(), reverb::AlgorithmType::Shimmer);
 
         // The advertised param list contains the mirrors exactly once.

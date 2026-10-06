@@ -101,7 +101,14 @@ enum Switch {
 
 /// Complete stereo chorus/flanger/vibrato processor.
 pub struct ChorusChain {
-    engines: Vec<Box<dyn StereoEngine>>,
+    /// By `EngineType::index`: built when first picked ([`Self::set_engine`])
+    /// and kept, so switching back and forth stays allocation-free. Every
+    /// engine built up front was ~0.5 MB a chain, in every mod block of
+    /// every prepared patch, for the one that plays.
+    engines: Vec<Option<Box<dyn StereoEngine>>>,
+    /// The rate `update` last prepared for: an engine built after it is
+    /// prepared too.
+    prepared_sr: Option<f64>,
 
     /// Number of active voices per channel (1–4; the original five engines).
     pub num_voices: usize,
@@ -142,7 +149,11 @@ impl ChorusChain {
     pub fn new() -> Self {
         let engine = EngineType::Cubic;
         let mut c = Self {
-            engines: EngineType::ALL.iter().map(|e| make_engine(*e)).collect(),
+            engines: EngineType::ALL
+                .iter()
+                .map(|e| (*e == engine).then(|| make_engine(*e)))
+                .collect(),
+            prepared_sr: None,
             num_voices: 2,
             rate_hz: 1.0,
             depth: 0.5,
@@ -170,10 +181,34 @@ impl ChorusChain {
         c
     }
 
-    /// Switch the chorus engine. Allocation-free: the engines already exist,
-    /// and the chain crossfades to the new one over ~25 ms.
-    pub const fn set_engine(&mut self, engine: EngineType) {
+    /// Switch the chorus engine; the chain crossfades to it over ~25 ms.
+    /// Builds the engine the first time it is picked — an allocation, as a
+    /// param write's (never the audio callback's); after that, free.
+    pub fn set_engine(&mut self, engine: EngineType) {
         self.engine = engine;
+        if let Some(slot) = self.engines.get_mut(engine.index())
+            && slot.is_none()
+        {
+            let mut e = make_engine(engine);
+            if let Some(sr) = self.prepared_sr {
+                e.update(sr);
+            }
+            e.reset();
+            *slot = Some(e);
+        }
+    }
+
+    /// Whether `engine` has been built (it plays only once it has).
+    fn has(&self, engine: EngineType) -> bool {
+        self.engines.get(engine.index()).is_some_and(Option::is_some)
+    }
+
+    /// One frame from `engine`, or silence if it was never built.
+    fn tick_engine(&mut self, engine: EngineType, l: f64, r: f64, f: &Frame) -> (f64, f64) {
+        match self.engines.get_mut(engine.index()).and_then(Option::as_deref_mut) {
+            Some(e) => e.tick(l, r, f),
+            None => (0.0, 0.0),
+        }
     }
 
     /// The engine actually playing (differs from [`Self::engine`] only
@@ -186,7 +221,10 @@ impl ChorusChain {
     /// The delay the playing engine's first voice is reading at, in ms.
     #[must_use]
     pub fn delay_ms(&self) -> f64 {
-        self.engines[self.playing.index()].delay_ms()
+        self.engines
+            .get(self.playing.index())
+            .and_then(Option::as_deref)
+            .map_or(0.0, |e| e.delay_ms())
     }
 
     fn set_times(&mut self, sr: f64) {
@@ -221,7 +259,7 @@ impl Default for ChorusChain {
 
 impl Processor for ChorusChain {
     fn reset(&mut self) {
-        for e in &mut self.engines {
+        for e in self.engines.iter_mut().flatten() {
             e.reset();
         }
         self.switch = Switch::None;
@@ -229,7 +267,8 @@ impl Processor for ChorusChain {
     }
 
     fn update(&mut self, config: AudioConfig) {
-        for e in &mut self.engines {
+        self.prepared_sr = Some(config.sample_rate);
+        for e in self.engines.iter_mut().flatten() {
             e.update(config.sample_rate);
         }
         self.set_times(config.sample_rate);
@@ -259,8 +298,11 @@ impl Processor for ChorusChain {
         }
 
         // Start a switch (one at a time; a second waits for the first).
+        // An engine set without `set_engine` (never built) is not switched
+        // to: building it is not the audio callback's to do.
         if matches!(self.switch, Switch::None)
             && (self.engine != self.playing || self.effect_type != self.playing_effect)
+            && self.has(self.engine)
         {
             if self.engine == self.playing {
                 self.switch = Switch::Dip {
@@ -272,7 +314,9 @@ impl Processor for ChorusChain {
                     from: self.playing,
                     effect: self.playing_effect,
                 };
-                self.engines[self.engine.index()].reset();
+                if let Some(e) = self.engines.get_mut(self.engine.index()).and_then(Option::as_deref_mut) {
+                    e.reset();
+                }
                 self.playing = self.engine;
                 self.playing_effect = self.effect_type;
             }
@@ -296,15 +340,15 @@ impl Processor for ChorusChain {
             match self.switch {
                 Switch::None => {
                     let f = self.frame(self.playing_effect);
-                    (wl, wr) = self.engines[self.playing.index()].tick(dl, dr, &f);
+                    (wl, wr) = self.tick_engine(self.playing, dl, dr, &f);
                     wl *= makeup;
                     wr *= makeup;
                 }
                 Switch::Cross { from, effect } => {
                     let f_new = self.frame(self.playing_effect);
                     let f_old = self.frame(effect);
-                    let (nl, nr) = self.engines[self.playing.index()].tick(dl, dr, &f_new);
-                    let (ol, or) = self.engines[from.index()].tick(dl, dr, &f_old);
+                    let (nl, nr) = self.tick_engine(self.playing, dl, dr, &f_new);
+                    let (ol, or) = self.tick_engine(from, dl, dr, &f_old);
                     let theta = self.fade * std::f64::consts::FRAC_PI_2;
                     let (gn, go) = (
                         theta.sin() * makeup,
@@ -323,14 +367,16 @@ impl Processor for ChorusChain {
                     } else {
                         effect
                     });
-                    let (el, er) = self.engines[self.playing.index()].tick(dl, dr, &f);
+                    let (el, er) = self.tick_engine(self.playing, dl, dr, &f);
                     // Out over the first half, back over the second.
                     let g = (self.fade * std::f64::consts::PI).cos().abs() * makeup;
                     wl = el * g;
                     wr = er * g;
                     self.fade += self.fade_step;
                     if !switched && self.fade >= 0.5 {
-                        self.engines[self.playing.index()].reset();
+                        if let Some(e) = self.engines.get_mut(self.playing.index()).and_then(Option::as_deref_mut) {
+                            e.reset();
+                        }
                         self.playing_effect = self.effect_type;
                         self.switch = Switch::Dip {
                             effect,

@@ -81,9 +81,18 @@ impl DualRouting {
 }
 
 /// Two reverb chains + routing (`BigSky` MX dual-reverb presets).
+///
+/// Chain B is built only when it is needed ([`b_mut`](Self::b_mut), or a
+/// routing that plays it through [`set_routing`](Self::set_routing)): a
+/// reverb is mostly `Single`, and a rig prepares one in every patch — B's
+/// delay network was half of every reverb's memory, never heard.
 pub struct DualReverb {
     pub a: ReverbChain,
-    pub b: ReverbChain,
+    b: Option<Box<ReverbChain>>,
+    /// What `update` last prepared for: a B built after it is prepared too.
+    config: Option<AudioConfig>,
+    /// Set through [`set_routing`](Self::set_routing) so B is there to play;
+    /// a routing set here with no B plays A alone.
     pub routing: DualRouting,
 
     // Pre-allocated scratch: the dry input copy and B's working buffers.
@@ -98,7 +107,8 @@ impl DualReverb {
     pub fn new() -> Self {
         Self {
             a: ReverbChain::new(),
-            b: ReverbChain::new(),
+            b: None,
+            config: None,
             routing: DualRouting::Single,
             dry_l: vec![0.0; 512],
             dry_r: vec![0.0; 512],
@@ -113,14 +123,42 @@ impl DualReverb {
     /// carry one slot's settings onto a different engine. Call
     /// `update()` (or `update_params()` on the destination) afterwards
     /// so filters and smoothers pick the values up.
-    pub const fn copy_params(&mut self, from_a: bool) {
-        let (src, dst) = if from_a {
-            (&self.a, &mut self.b)
-        } else {
-            (&self.b, &mut self.a)
-        };
-        let surface = src.param_surface();
-        dst.apply_surface(&surface);
+    pub fn copy_params(&mut self, from_a: bool) {
+        if from_a {
+            let surface = self.a.param_surface();
+            self.b_mut().apply_surface(&surface);
+        } else if let Some(b) = self.b.as_deref() {
+            let surface = b.param_surface();
+            self.a.apply_surface(&surface);
+        }
+    }
+
+    /// Chain B, built (and prepared, if this is) if it was not — an
+    /// allocation: a param write's or a preparation's, never the audio
+    /// callback's.
+    pub fn b_mut(&mut self) -> &mut ReverbChain {
+        let config = self.config;
+        self.b.get_or_insert_with(|| {
+            let mut c = Box::new(ReverbChain::new());
+            if let Some(cfg) = config {
+                c.update(cfg);
+            }
+            c
+        })
+    }
+
+    /// Chain B, if it has been built.
+    #[must_use]
+    pub fn b(&self) -> Option<&ReverbChain> {
+        self.b.as_deref()
+    }
+
+    /// Play `routing`, building B if it plays it.
+    pub fn set_routing(&mut self, routing: DualRouting) {
+        self.routing = routing;
+        if routing != DualRouting::Single {
+            self.b_mut();
+        }
     }
 
     /// Max samples per inner chunk (scratch capacity).
@@ -134,16 +172,22 @@ impl DualReverb {
         // always long enough. Clamping rather than asserting keeps the render
         // callback panic-free if that ever stops holding.
         let n = n.min(self.chunk_capacity()).min(right.len());
+        // No B (a routing set without `set_routing`): A alone — B is never
+        // built here.
+        let Some(b) = self.b.as_deref_mut() else {
+            self.a.process(left, right);
+            return;
+        };
         match self.routing {
             DualRouting::Single => {
                 self.a.process(left, right);
             }
             DualRouting::Series12 => {
                 self.a.process(left, right);
-                self.b.process(left, right);
+                b.process(left, right);
             }
             DualRouting::Series21 => {
-                self.b.process(left, right);
+                b.process(left, right);
                 self.a.process(left, right);
             }
             DualRouting::Parallel => {
@@ -163,7 +207,7 @@ impl DualReverb {
                 b_r.copy_from_slice(head_r);
 
                 self.a.process(left, right);
-                self.b.process(b_l, b_r);
+                b.process(b_l, b_r);
 
                 // Sum of both chains' mix laws, dry counted once:
                 // out = dry·(1 − mixA − mixB) + wetA·mixA + wetB·mixB.
@@ -189,7 +233,7 @@ impl DualReverb {
                 b_r.copy_from_slice(head_r);
 
                 self.a.process(left, right);
-                self.b.process(b_l, b_r);
+                b.process(b_l, b_r);
 
                 let swapped = self.routing == DualRouting::SplitSwapped;
                 for ((l, r), (bl, br)) in left
@@ -220,12 +264,17 @@ impl Default for DualReverb {
 impl Processor for DualReverb {
     fn reset(&mut self) {
         self.a.reset();
-        self.b.reset();
+        if let Some(b) = self.b.as_deref_mut() {
+            b.reset();
+        }
     }
 
     fn update(&mut self, config: AudioConfig) {
+        self.config = Some(config);
         self.a.update(config);
-        self.b.update(config);
+        if let Some(b) = self.b.as_deref_mut() {
+            b.update(config);
+        }
 
         let cap = config.max_buffer_size.max(64);
         if self.dry_l.len() < cap {
@@ -271,19 +320,19 @@ mod tests {
     /// clearly distinguishable series/parallel behavior.
     fn make_dual(routing: DualRouting) -> DualReverb {
         let mut d = DualReverb::new();
-        d.routing = routing;
+        d.set_routing(routing);
         d.a.set_algorithm(AlgorithmType::Magneto);
         d.a.mix = 1.0;
         // Magneto knob remap: PRE-DELAY drives the engine's feedback —
         // give the taps some recirculation so the series/parallel
         // energy contrast is audible.
         d.a.predelay_ms = 120.0;
-        d.b.set_algorithm(AlgorithmType::Hall);
-        d.b.mix = 1.0;
+        d.b_mut().set_algorithm(AlgorithmType::Hall);
+        d.b_mut().mix = 1.0;
         // Moderate T60 (the Jot-shelf mapping reaches tens of seconds
         // at high decay values — the series/parallel energy contrast
         // needs the hall tail shorter than the render window).
-        d.b.params.decay = 0.45;
+        d.b_mut().params.decay = 0.45;
         d.update(config());
         d
     }
@@ -415,11 +464,13 @@ mod tests {
         // walkthrough's dual-impulse chapel patch. Must run without
         // panics/allocation issues and produce distinct sides in Split.
         let mut d = DualReverb::new();
-        d.routing = DualRouting::Split;
-        for chain in [&mut d.a, &mut d.b] {
+        d.set_routing(DualRouting::Split);
+        let convolve = |chain: &mut ReverbChain| {
             chain.set_algorithm(AlgorithmType::Convolution);
             chain.mix = 1.0;
-        }
+        };
+        convolve(&mut d.a);
+        convolve(d.b_mut());
         d.update(config());
 
         // Distinct custom IRs.
@@ -430,7 +481,7 @@ mod tests {
             .map(|i| if i % 973 == 0 { 0.4 } else { 0.0 })
             .collect();
         assert!(d.a.load_convolution_ir(&ir_a, &ir_a));
-        assert!(d.b.load_convolution_ir(&ir_b, &ir_b));
+        assert!(d.b_mut().load_convolution_ir(&ir_b, &ir_b));
 
         let (l, r) = render(&mut d, 24000);
         for v in l.iter().chain(r.iter()) {
@@ -444,18 +495,18 @@ mod tests {
     fn copy_params_carries_surface_not_algorithm() {
         let mut d = DualReverb::new();
         d.a.set_algorithm(AlgorithmType::Magneto);
-        d.b.set_algorithm(AlgorithmType::Hall);
+        d.b_mut().set_algorithm(AlgorithmType::Hall);
         d.a.mix = 0.77;
         d.a.pan = -0.5;
         d.a.params.decay = 0.9;
         d.a.trem_depth = 0.4;
         d.copy_params(true);
-        assert_eq!(d.b.mix.to_bits(), 0.77_f64.to_bits());
-        assert_eq!(d.b.pan.to_bits(), (-0.5_f64).to_bits());
-        assert_eq!(d.b.params.decay.to_bits(), 0.9_f64.to_bits());
-        assert_eq!(d.b.trem_depth.to_bits(), 0.4_f64.to_bits());
+        assert_eq!(d.b_mut().mix.to_bits(), 0.77_f64.to_bits());
+        assert_eq!(d.b_mut().pan.to_bits(), (-0.5_f64).to_bits());
+        assert_eq!(d.b_mut().params.decay.to_bits(), 0.9_f64.to_bits());
+        assert_eq!(d.b_mut().trem_depth.to_bits(), 0.4_f64.to_bits());
         assert_eq!(
-            d.b.algorithm_type(),
+            d.b_mut().algorithm_type(),
             AlgorithmType::Hall,
             "algorithm untouched"
         );
