@@ -1981,6 +1981,48 @@ pub mod comp_meter {
     }
 }
 
+/// What the time and modulation effects are doing — for a remote's glow
+/// behind a knob while its effect works.
+///
+/// Each delay, reverb, modulation or tremolo block publishes the peak of
+/// what it adds to the signal (its output less its input) each block; the
+/// rig reads and clears it at meter rate ([`take`]). Several blocks of a
+/// kind publish their loudest.
+pub mod fx_meter {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    /// Delay, reverb, modulation, tremolo.
+    pub const KINDS: usize = 4;
+    pub const DELAY: usize = 0;
+    pub const REVERB: usize = 1;
+    pub const MODULATION: usize = 2;
+    pub const TREMOLO: usize = 3;
+
+    static PEAKS: [AtomicU32; KINDS] = [const { AtomicU32::new(0) }; KINDS];
+
+    /// Publish a block's added peak (linear, ≥ 0). Positive `f32` bits order
+    /// as the values do, so `fetch_max` on the bits keeps the loudest.
+    pub fn publish(kind: usize, peak: f32) {
+        if let Some(p) = PEAKS.get(kind) {
+            p.fetch_max(peak.max(0.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// The loudest added peak of `kind` since the last take, and clear it.
+    #[must_use]
+    pub fn take(kind: usize) -> f32 {
+        PEAKS.get(kind).map_or(0.0, |p| f32::from_bits(p.swap(0, Ordering::Relaxed)))
+    }
+
+    /// The peak a block adds: its output less its input.
+    #[must_use]
+    pub fn added(in_l: &[f32], in_r: &[f32], out_l: &[f32], out_r: &[f32]) -> f32 {
+        let l = in_l.iter().zip(out_l).fold(0.0f32, |m, (a, b)| m.max((b - a).abs()));
+        let r = in_r.iter().zip(out_r).fold(0.0f32, |m, (a, b)| m.max((b - a).abs()));
+        l.max(r)
+    }
+}
+
 /// Global DI sidechain — the rig's input probe publishes the clean guitar peak per block.
 ///
 /// The gate keys off it so gating stays tight regardless of what the tone (amp/EQ/drive)
@@ -3928,6 +3970,7 @@ impl PluginInstance for NativeReverb {
         if matches!(self.rev.routing, reverb::DualRouting::Single) {
             self.par.apply(in_l, in_r, out_l, out_r);
         }
+        fx_meter::publish(fx_meter::REVERB, fx_meter::added(in_l, in_r, out_l, out_r));
         Ok(())
     }
     fn deactivate(&mut self) {
@@ -4939,6 +4982,7 @@ impl PluginInstance for NativeDelay {
         if matches!(self.dly.routing, delay::DualRouting::Single) {
             self.par.apply(in_l, in_r, out_l, out_r);
         }
+        fx_meter::publish(fx_meter::DELAY, fx_meter::added(in_l, in_r, out_l, out_r));
         Ok(())
     }
     fn deactivate(&mut self) {
@@ -5135,6 +5179,7 @@ impl PluginInstance for NativeMod {
             out_r,
             |l, r| ch.process(l, r),
         );
+        fx_meter::publish(fx_meter::MODULATION, fx_meter::added(in_l, in_r, out_l, out_r));
         Ok(())
     }
     fn deactivate(&mut self) {
@@ -5289,6 +5334,7 @@ impl PluginInstance for NativeTrem {
             out_r,
             |l, r| tr.process(l, r),
         );
+        fx_meter::publish(fx_meter::TREMOLO, fx_meter::added(in_l, in_r, out_l, out_r));
         Ok(())
     }
     fn deactivate(&mut self) {
@@ -6709,5 +6755,25 @@ mod param_table_tests {
         let infos = r.params();
         let r2: Vec<_> = infos.iter().filter(|i| i.name.starts_with("r2_")).collect();
         assert_eq!(r2.len(), REVERB_PARAMS.len() - 5);
+    }
+}
+
+#[cfg(test)]
+mod fx_meter_tests {
+    use super::fx_meter;
+
+    #[test]
+    fn the_loudest_is_kept_until_taken() {
+        fx_meter::publish(fx_meter::TREMOLO, 0.2);
+        fx_meter::publish(fx_meter::TREMOLO, 0.5);
+        fx_meter::publish(fx_meter::TREMOLO, 0.1);
+        assert!((fx_meter::take(fx_meter::TREMOLO) - 0.5).abs() < 1e-6);
+        assert_eq!(fx_meter::take(fx_meter::TREMOLO), 0.0);
+    }
+
+    #[test]
+    fn what_a_block_adds() {
+        let (a, b) = ([0.1f32, 0.2], [0.1f32, 0.2]);
+        assert!((fx_meter::added(&a, &b, &[0.4, 0.2], &[0.1, 0.0]) - 0.3).abs() < 1e-6);
     }
 }
