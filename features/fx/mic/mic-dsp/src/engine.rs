@@ -515,17 +515,20 @@ impl StereoMic {
 
     pub fn set(&mut self, s: StereoSettings) {
         let p = s.pan.clamp(-1.0, 1.0);
-        let g1 = (1.0 - p).min(1.0);
-        let g2 = (1.0 + p).min(1.0);
-        self.gains = [g1 * g1, g2 * g2];
+        // Each mic's pan gain is applied twice, before its curve and after
+        // it: the level falls as g², its second harmonic as g and its third
+        // as g² relative to it (measured; a gain on the output alone misses
+        // by −55 dB at −80 %).
+        self.gains = [(1.0 - p).min(1.0), (1.0 + p).min(1.0)];
         let w = s.width.clamp(0.0, 2.0);
         self.mix = if w <= 1.0 { [f64::midpoint(1.0, w), w.mul_add(-w, 1.0) / 2.0] } else { [1.0, -(w - 1.0) / 2.0] };
     }
 
     /// One capsule-pair sample in, `(left, right)` out.
     pub fn process(&mut self, front: f64, rear: f64) -> (f64, f64) {
-        let m1 = self.forward.process(front, rear) * self.gains[0];
-        let m2 = self.backward.process(front, rear) * self.gains[1];
+        let [g1, g2] = self.gains;
+        let m1 = self.forward.process(front * g1, rear * g1) * g1;
+        let m2 = self.backward.process(front * g2, rear * g2) * g2;
         let [a, b] = self.mix;
         (a.mul_add(m1, b * m2), b.mul_add(m1, a * m2))
     }
