@@ -513,7 +513,11 @@ impl DualMic {
             let g2 = m * self.mic2.model().dual_weight.get(p2).copied().unwrap_or(1.0);
             let total = g1 + g2;
             let (b1, b2) = if total > 0.0 { (g1 / total, g2 / total) } else { (1.0 - m, m) };
-            let same = law1 == law2 && p1 == p2;
+            // Validated between Corner and Shelf models; a Dynamic one (flat
+            // base) needs a leaky inverse that blows up the kernels' residual
+            // low end, and its dual block is not identified yet.
+            let dynamic = |l: crate::model::ProximityLaw| matches!(l, crate::model::ProximityLaw::Dynamic { .. });
+            let same = (law1 == law2 && p1 == p2) || dynamic(law1) || dynamic(law2);
             let cross1 = (!same).then_some((law2, p2, [b1, b2]));
             let cross2 = (!same).then_some((law1, p1, [b2, b1]));
             let end_1 = self.mic1.model().low_end_corner(self.mic1.settings().low_cut);
