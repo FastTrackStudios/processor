@@ -1,0 +1,376 @@
+//! FTS Mic — CLAP/VST3 dual-capsule microphone modeller.
+//!
+//! Input is a Sphere-style capsule pair (left = front capsule, right =
+//! rear); output is the modelled mic, mono on both channels. The engine is
+//! [`mic_dsp`]; this crate is the host shell: parameters, latency, and
+//! loading the models (≈30 MB each) on a loader thread so the audio thread
+//! never touches the disk or the allocator.
+//!
+//! Models are `.micm` files in `$FTS_MIC_MODELS/<sample rate>[-LX]/`
+//! (default `~/.local/share/fts/mic-models`), one per mic, named as the
+//! mic list below with spaces as underscores.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crossbeam_channel::{Receiver, Sender, bounded};
+use mic_dsp::{DualMic, DualSettings, LATENCY, MicChain, MicModel, Settings, Solo};
+use nice_plug::prelude::*;
+
+const PLUGIN_NAME: &str = "FTS Mic";
+
+/// The modelled mics, in the reference's order.
+pub const MICS: [&str; 40] = [
+    "LD-47K", "LD-49K", "LD-67", "LD-67 NOS", "LD-87 Vintage", "LD-87 Modern", "LD-87 TK", "LD-103", "LD-12",
+    "LD-251", "LD-800", "LD-37A", "LD-37P", "LD-BV1", "LD-414 Brass", "LD-414 Nylon", "LD-414 US", "LD-414 T2",
+    "LD-563", "LD-017T", "SD-451", "SD-416", "RB-4038", "RB-77DX Satin", "RB-77DX Umber", "RB-121", "RB-160",
+    "DN-57", "DN-7", "DN-20", "DN-409N", "DN-409U", "DN-421N", "DN-421S", "DN-421B", "DN-12A", "DN-12E",
+    "Sphere Linear", "Sphere Diffuse", "Sphere Direct",
+];
+const PATTERNS: [&str; 9] =
+    ["Omni", "Sub-Omni", "Wide-Card", "Sub-Card", "Cardioid", "Super-Card", "Hyper-Card", "Sub-8", "Figure-8"];
+const FILTERS: [&str; 4] = ["Off", "Low", "Med", "High"];
+const SOURCES: [&str; 2] = ["L22/DLX", "LX"];
+
+type ToText = Arc<dyn Fn(i32) -> String + Send + Sync>;
+type FromText = Arc<dyn Fn(&str) -> Option<i32> + Send + Sync>;
+
+fn named(names: &'static [&'static str]) -> (ToText, FromText) {
+    (
+        Arc::new(move |v| usize::try_from(v).ok().and_then(|i| names.get(i)).map_or_else(String::new, |s| (*s).to_string())),
+        Arc::new(move |s| names.iter().position(|n| n.eq_ignore_ascii_case(s.trim())).and_then(|i| i32::try_from(i).ok())),
+    )
+}
+
+fn choice(name: &str, default: i32, names: &'static [&'static str]) -> IntParam {
+    let (to_s, from_s) = named(names);
+    let max = i32::try_from(names.len()).unwrap_or(1).saturating_sub(1);
+    IntParam::new(name, default, IntRange::Linear { min: 0, max }).with_value_to_string(to_s).with_string_to_value(from_s)
+}
+
+#[derive(Params)]
+pub struct MicParams {
+    #[id = "type1"]
+    pub type1: IntParam,
+    #[id = "pattern1"]
+    pub pattern1: IntParam,
+    #[id = "filter1"]
+    pub filter1: IntParam,
+    #[id = "axis1"]
+    pub axis1: FloatParam,
+    #[id = "dual"]
+    pub dual: BoolParam,
+    #[id = "mix"]
+    pub mix: FloatParam,
+    #[id = "type2"]
+    pub type2: IntParam,
+    #[id = "pattern2"]
+    pub pattern2: IntParam,
+    #[id = "filter2"]
+    pub filter2: IntParam,
+    #[id = "axis2"]
+    pub axis2: FloatParam,
+    #[id = "align"]
+    pub align: FloatParam,
+    #[id = "solo"]
+    pub solo: IntParam,
+    #[id = "proximity"]
+    pub proximity: FloatParam,
+    #[id = "output"]
+    pub output: FloatParam,
+    #[id = "phase"]
+    pub phase: BoolParam,
+    #[id = "rear_trim"]
+    pub rear_trim: FloatParam,
+    #[id = "swap"]
+    pub swap: BoolParam,
+    #[id = "source"]
+    pub source: IntParam,
+}
+
+fn float(name: &str, default: f32, min: f32, max: f32, unit: &'static str, digits: usize) -> FloatParam {
+    FloatParam::new(name, default, FloatRange::Linear { min, max })
+        .with_unit(unit)
+        .with_value_to_string(formatters::v2s_f32_rounded(digits))
+        .with_string_to_value(Arc::new(|s: &str| s.trim().trim_end_matches(|c: char| c.is_alphabetic() || c == '%' || c == '°').trim().parse().ok()))
+}
+
+impl Default for MicParams {
+    fn default() -> Self {
+        Self {
+            type1: choice("Mic1 Type", 0, &MICS),
+            pattern1: choice("Mic1 Pattern", 4, &PATTERNS),
+            filter1: choice("Mic1 Filter", 0, &FILTERS),
+            axis1: float("Mic1 Axis", 0.0, 0.0, 180.0, "°", 1),
+            dual: BoolParam::new("Dual", false),
+            mix: float("Mic Mix", 0.0, 0.0, 100.0, "%", 1),
+            type2: choice("Mic2 Type", 2, &MICS),
+            pattern2: choice("Mic2 Pattern", 4, &PATTERNS),
+            filter2: choice("Mic2 Filter", 0, &FILTERS),
+            axis2: float("Mic2 Axis", 0.0, 0.0, 180.0, "°", 1),
+            align: float("Mic2 Align", 0.0, -2.0, 2.0, " cm", 2),
+            solo: choice("Mic Solo", 0, &["Off", "Mic1", "Mic2"]),
+            proximity: float("Proximity", 0.0, -100.0, 100.0, "%", 1),
+            output: float("Output", 0.0, -12.0, 12.0, " dB", 1),
+            phase: BoolParam::new("Phase Invert", false),
+            rear_trim: float("Rear Trim", 0.0, -6.0, 6.0, " dB", 2),
+            swap: BoolParam::new("Swap Capsules", false),
+            source: choice("Source Mic", 0, &SOURCES),
+        }
+    }
+}
+
+/// Which models a chain needs, and at what rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Want {
+    mic1: usize,
+    mic2: usize,
+    dual: bool,
+    source: usize,
+    sample_rate: u32,
+}
+
+/// What the loader hands the audio thread.
+enum Loaded {
+    Single(Box<MicChain>),
+    Dual(Box<DualMic>),
+}
+
+fn models_dir() -> PathBuf {
+    std::env::var_os("FTS_MIC_MODELS").map_or_else(
+        || {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+                .unwrap_or_default()
+                .join("fts/mic-models")
+        },
+        PathBuf::from,
+    )
+}
+
+fn load_model(mic: usize, source: usize, sample_rate: u32) -> Option<MicModel> {
+    let name = MICS.get(mic)?.replace(' ', "_");
+    let dir = if source == 1 { format!("{sample_rate}-LX") } else { format!("{sample_rate}") };
+    let bytes = std::fs::read(models_dir().join(dir).join(format!("{name}.micm"))).ok()?;
+    MicModel::from_bytes(&bytes).ok()
+}
+
+/// The loader thread: builds chains off the audio thread, and drops the
+/// ones the audio thread retires.
+fn loader(requests: &Receiver<Want>, ready: &Sender<(Want, Loaded)>, trash: &Receiver<Loaded>, alive: &AtomicBool) {
+    while alive.load(Ordering::Relaxed) {
+        while trash.try_recv().is_ok() {}
+        let Ok(mut want) = requests.recv_timeout(std::time::Duration::from_millis(50)) else { continue };
+        // Only the newest request matters.
+        while let Ok(newer) = requests.try_recv() {
+            want = newer;
+        }
+        let Some(m1) = load_model(want.mic1, want.source, want.sample_rate) else { continue };
+        let loaded = if want.dual {
+            let Some(m2) = load_model(want.mic2, want.source, want.sample_rate) else { continue };
+            Loaded::Dual(Box::new(DualMic::new(MicChain::new(m1), MicChain::new(m2))))
+        } else {
+            Loaded::Single(Box::new(MicChain::new(m1)))
+        };
+        if ready.send((want, loaded)).is_err() {
+            break;
+        }
+    }
+}
+
+pub struct FtsMic {
+    params: Arc<MicParams>,
+    engine: Option<Loaded>,
+    have: Option<Want>,
+    asked: Option<Want>,
+    sample_rate: u32,
+    requests: Sender<Want>,
+    ready: Receiver<(Want, Loaded)>,
+    trash: Sender<Loaded>,
+    alive: Arc<AtomicBool>,
+}
+
+impl Default for FtsMic {
+    fn default() -> Self {
+        let (req_tx, req_rx) = bounded(16);
+        let (ready_tx, ready_rx) = bounded(2);
+        let (trash_tx, trash_rx) = bounded(4);
+        let alive = Arc::new(AtomicBool::new(true));
+        let flag = alive.clone();
+        // The thread lives as long as the plugin; a failed spawn leaves the
+        // plugin silent rather than crashing the host.
+        let _ = std::thread::Builder::new().name("fts-mic-loader".into()).spawn(move || loader(&req_rx, &ready_tx, &trash_rx, &flag));
+        Self {
+            params: Arc::new(MicParams::default()),
+            engine: None,
+            have: None,
+            asked: None,
+            sample_rate: 48_000,
+            requests: req_tx,
+            ready: ready_rx,
+            trash: trash_tx,
+            alive,
+        }
+    }
+}
+
+impl Drop for FtsMic {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
+    }
+}
+
+fn index(p: &IntParam) -> usize {
+    usize::try_from(p.value()).unwrap_or(0)
+}
+
+impl FtsMic {
+    fn want(&self) -> Want {
+        Want {
+            mic1: index(&self.params.type1),
+            mic2: index(&self.params.type2),
+            dual: self.params.dual.value(),
+            source: index(&self.params.source),
+            sample_rate: self.sample_rate,
+        }
+    }
+
+    fn settings(&self, second: bool) -> Settings {
+        let p = &self.params;
+        let (pattern, filter, axis) = if second { (&p.pattern2, &p.filter2, &p.axis2) } else { (&p.pattern1, &p.filter1, &p.axis1) };
+        Settings {
+            pattern: index(pattern),
+            axis_deg: f64::from(axis.value()),
+            low_cut: index(filter),
+            proximity: f64::from(p.proximity.value()),
+            output_db: f64::from(p.output.value()),
+            phase_invert: p.phase.value(),
+            rear_trim_db: f64::from(p.rear_trim.value()),
+            swap: p.swap.value(),
+        }
+    }
+
+    /// Ask for different models if the selection changed; take delivered
+    /// ones; push the current controls into whatever is running.
+    fn sync(&mut self) {
+        let want = self.want();
+        if self.asked != Some(want) && self.requests.try_send(want).is_ok() {
+            self.asked = Some(want);
+        }
+        if let Ok((got, loaded)) = self.ready.try_recv() {
+            if let Some(old) = self.engine.replace(loaded) {
+                let _ = self.trash.try_send(old);
+            }
+            self.have = Some(got);
+        }
+        let (s1, s2) = (self.settings(false), self.settings(true));
+        let dual = DualSettings {
+            mix: f64::from(self.params.mix.value()) / 100.0,
+            align_cm: f64::from(self.params.align.value()),
+            solo: match self.params.solo.value() {
+                1 => Solo::Mic1,
+                2 => Solo::Mic2,
+                _ => Solo::Off,
+            },
+        };
+        match self.engine.as_mut() {
+            Some(Loaded::Single(c)) => {
+                if c.settings() != s1 {
+                    c.apply(s1, false);
+                }
+            }
+            Some(Loaded::Dual(d)) => {
+                if d.mic1.settings() != s1 {
+                    d.mic1.apply(s1, false);
+                }
+                if d.mic2.settings() != s2 {
+                    d.mic2.apply(s2, false);
+                }
+                d.set(dual);
+            }
+            None => {}
+        }
+    }
+}
+
+impl Plugin for FtsMic {
+    const NAME: &'static str = PLUGIN_NAME;
+    const VENDOR: &'static str = "FastTrackStudio";
+    const URL: &'static str = "https://fasttrackstudio.com";
+    const EMAIL: &'static str = "";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    /// Capsule pair in (front, rear), mic out on both channels.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(2),
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
+
+    type Editor = ();
+    type SysExMessage = ();
+    type BackgroundTask = ();
+
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
+    }
+
+    fn activate(&mut self, _layout: &AudioIOLayout, buffer_config: &BufferConfig, context: &mut impl ActivateContext<Self>) -> bool {
+        // The sample rate is a whole number of hertz in every host.
+        self.sample_rate = u32::try_from(dsp_core::f32_to_index(buffer_config.sample_rate.round())).unwrap_or(48_000);
+        context.set_latency_samples(u32::try_from(LATENCY).unwrap_or(24));
+        self.asked = None;
+        true
+    }
+
+    fn reset(&mut self) {
+        match self.engine.as_mut() {
+            Some(Loaded::Single(c)) => c.reset(),
+            Some(Loaded::Dual(d)) => {
+                d.mic1.reset();
+                d.mic2.reset();
+            }
+            None => {}
+        }
+    }
+
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &mut impl ProcessContext<Self>) -> ProcessStatus {
+        self.sync();
+        let ready = self.have.is_some_and(|h| h.sample_rate == self.sample_rate);
+        for mut frame in buffer.iter_samples() {
+            let mut it = frame.iter_mut();
+            let (Some(l), Some(r)) = (it.next(), it.next()) else { continue };
+            let y = if ready {
+                match self.engine.as_mut() {
+                    Some(Loaded::Single(c)) => c.process(f64::from(*l), f64::from(*r)),
+                    Some(Loaded::Dual(d)) => d.process(f64::from(*l), f64::from(*r)),
+                    None => 0.0,
+                }
+            } else {
+                0.0
+            };
+            let out = dsp_core::num::f64_to_f32(y);
+            *l = out;
+            *r = out;
+        }
+        ProcessStatus::Normal
+    }
+}
+
+impl ClapPlugin for FtsMic {
+    const CLAP_ID: &'static str = "com.fasttrackstudio.mic";
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("Dual-capsule microphone modelling");
+    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_SUPPORT_URL: Option<&'static str> = None;
+    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::AudioEffect, ClapFeature::Stereo];
+}
+
+impl Vst3Plugin for FtsMic {
+    const VST3_CLASS_ID: [u8; 16] = *b"FtsMicModeller01";
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Fx, Vst3SubCategory::Tools];
+}
+
+nice_export_clap!(FtsMic);
+nice_export_vst3!(FtsMic);

@@ -7,6 +7,7 @@ members = [
     "apps/plugins/gate",
     "apps/plugins/host",
     "apps/plugins/level",
+    "apps/plugins/mic",
     "apps/plugins/limiter",
     "apps/plugins/meter",
     "apps/plugins/modulation",
