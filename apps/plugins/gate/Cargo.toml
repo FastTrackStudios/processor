@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "FTS Gate — CLAP/VST3 classic noise gate over the level engine's gate stage"
+description = "FTS Gate — CLAP/VST3 noise gate (classic, over the level engine's gate stage) and drum gate (the gate engine)"
 
 [lib]
 # cdylib → the loadable CLAP/VST3 binary; lib → tests + a future standalone host.
@@ -22,3 +22,5 @@ nice-plug = { workspace = true, features = ["vst3"] }
 # The DSP facade (re-exports level-dsp, including the standalone `Gate` stage).
 # Never depend on level-dsp directly.
 level.workspace = true
+# The Drum style's engine (facade over gate-dsp).
+gate.workspace = true

@@ -3287,6 +3287,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate"
+version = "0.1.0"
+dependencies = [
+ "gate-dsp",
+]
+
+[[package]]
 name = "gate-dsp"
 version = "0.1.0"
 dependencies = [
@@ -3299,6 +3306,7 @@ dependencies = [
 name = "gate-plugin"
 version = "0.1.0"
 dependencies = [
+ "gate",
  "level",
  "nice-plug",
 ]
