@@ -40,6 +40,11 @@
 //!                            mode crossfades (same weight; 0 = none, default 10)
 //!                            (the measured response, curve's high-passes
 //!                            included; the engine derives the curve's input)
+//! u32 low_ends               (optional) bit k: low-cut position k's low-end block
+//!                            follows, ascending: f64 gain, u32 n,
+//!                            n × (u32 kind, f64 p[2]) — kind 0 high-pass (Hz),
+//!                            1 second-order high-pass (Hz, Q), 2 first-order
+//!                            shelf (zero Hz, pole Hz)
 //! ```
 
 /// Pattern steps, Omni (0) to Figure-8 (8).
@@ -182,6 +187,40 @@ impl ProximityLaw {
     }
 }
 
+/// One section of a low-end block, an analog prototype (bilinear,
+/// prewarped to its corners).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LowSection {
+    /// `s / (s + ω)`.
+    HighPass(f64),
+    /// `s² / (s² + s ω/q + ω²)`.
+    HighPass2 { hz: f64, q: f64 },
+    /// `(s + ω_zero) / (s + ω_pole)`: unity at the top, `zero/pole` at DC.
+    Shelf { zero: f64, pole: f64 },
+}
+
+/// Most sections in a low-end block.
+pub const MAX_LOW: usize = 3;
+
+/// The low end a response carries at one low-cut position.
+///
+/// Dual mode crossfades it plainly, both paths alike, after the curve. It
+/// is the built-in high-pass for a model whose switch is a corner move,
+/// the switch's own filter for one measured at every position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LowEnd {
+    pub gain: f64,
+    pub sections: [Option<LowSection>; MAX_LOW],
+}
+
+impl LowEnd {
+    /// A first-order high-pass at `hz`.
+    #[must_use]
+    pub const fn high_pass(hz: f64) -> Self {
+        Self { gain: 1.0, sections: [Some(LowSection::HighPass(hz)), None, None] }
+    }
+}
+
 /// One modelled mic.
 #[derive(Clone, Debug)]
 pub struct MicModel {
@@ -205,6 +244,8 @@ pub struct MicModel {
     /// Dual mode's pressure-path block: a high-pass at this corner (0: none)
     /// crossfaded with the same weights (Sphere Linear's is 10 Hz).
     pub dual_pressure_hz: f64,
+    /// The low-end block per low-cut position, where the file gives one.
+    low_ends: [Option<LowEnd>; LOW_CUTS],
 }
 
 /// One section after the output curve.
@@ -277,6 +318,36 @@ impl Reader<'_> {
         self.at = end;
         Ok(s.chunks_exact(4).map(|c| f32::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)])).collect())
     }
+}
+
+/// The optional low-end blocks: for each bit of `mask`, ascending, a gain
+/// and up to [`MAX_LOW`] sections.
+fn read_low_ends(r: &mut Reader<'_>, mask: u32) -> Result<[Option<LowEnd>; LOW_CUTS], ModelError> {
+    let mut low_ends: [Option<LowEnd>; LOW_CUTS] = Default::default();
+    let mut bit = 1u32;
+    for slot in &mut low_ends {
+        if mask & bit != 0 {
+            let gain = r.f64()?;
+            let n = dsp_core::u32_to_index(r.u32()?);
+            if n > MAX_LOW {
+                return Err(ModelError::BadShape);
+            }
+            let mut sections = [None; MAX_LOW];
+            for section in sections.iter_mut().take(n) {
+                let kind = r.u32()?;
+                let (a, b) = (r.f64()?, r.f64()?);
+                *section = Some(match kind {
+                    0 => LowSection::HighPass(a),
+                    1 => LowSection::HighPass2 { hz: a, q: b },
+                    2 => LowSection::Shelf { zero: a, pole: b },
+                    _ => return Err(ModelError::BadShape),
+                });
+            }
+            *slot = Some(LowEnd { gain, sections });
+        }
+        bit = bit.wrapping_shl(1);
+    }
+    Ok(low_ends)
 }
 
 impl MicModel {
@@ -381,7 +452,8 @@ impl MicModel {
             dual_weight = table;
         }
         let dual_pressure_hz = r.f64().unwrap_or(10.0);
-        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay, dual_weight, dual_pressure_hz })
+        let low_ends = r.u32().map_or_else(|_| Ok(Default::default()), |mask| read_low_ends(&mut r, mask))?;
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay, dual_weight, dual_pressure_hz, low_ends })
     }
 
     /// The output stage at a low-cut position.
@@ -397,14 +469,24 @@ impl MicModel {
         self.sets.get(low_cut).is_some_and(Option::is_some)
     }
 
-    /// The high-pass the response carries at a low-cut position, as dual
-    /// mode crossfades it: the built-in corner (moved by the switch) for a
-    /// model whose low cut is a corner move, 10 Hz for one measured with its
-    /// own kernels at every position.
+    /// The low-end block at a low-cut position, as dual mode crossfades
+    /// it: the file's, else the built-in corner (moved by the switch) — or
+    /// 10 Hz for a model measured with its own kernels at every position
+    /// whose file predates the blocks.
     #[must_use]
-    pub fn low_end_corner(&self, position: usize) -> f64 {
+    pub fn low_end(&self, position: usize) -> LowEnd {
+        if let Some(block) = self.low_ends.get(position).copied().flatten() {
+            return block;
+        }
         let measured = (1..LOW_CUTS).any(|k| self.has_set(k));
-        if measured { 10.0 } else { self.low_cut_hz.get(position).copied().unwrap_or(10.0).max(1.0) }
+        LowEnd::high_pass(if measured { 10.0 } else { self.low_cut_hz.get(position).copied().unwrap_or(10.0).max(1.0) })
+    }
+
+    /// The low-end block the kernels at a low-cut position carry: the
+    /// position's own where it has anchors, else the off set's.
+    #[must_use]
+    pub fn carried_low_end(&self, position: usize) -> LowEnd {
+        self.low_end(if self.has_set(position) { position } else { 0 })
     }
 
     /// The `(P, G)` kernels at one low-cut position, pattern step and axis

@@ -114,6 +114,70 @@ impl Biquad {
         }
     }
 
+    /// First-order shelf `(s + ω_z)/(s + ω_p)`, bilinear prewarped to both
+    /// corners: unity at Nyquist, `zero/pole` at DC.
+    #[must_use]
+    pub fn shelf(zero_hz: f64, pole_hz: f64, sample_rate: f64) -> Self {
+        let warp = |hz: f64| (PI * hz.max(0.0) / sample_rate).min(1.5).tan();
+        let (wz, wp) = (warp(zero_hz), warp(pole_hz));
+        let a0 = 1.0 + wp;
+        Self { b: [(1.0 + wz) / a0, -(1.0 - wz) / a0, 0.0], a: [-(1.0 - wp) / a0, 0.0], s1: 0.0, s2: 0.0 }
+    }
+
+    /// A flat gain.
+    #[must_use]
+    pub const fn gain(g: f64) -> Self {
+        Self { b: [g, 0.0, 0.0], a: [0.0, 0.0], s1: 0.0, s2: 0.0 }
+    }
+
+    /// Divide an impulse response by this section, in place: `h · a(z)/b(z)`.
+    ///
+    /// The section's zeros at z = 1 (a high-pass's) must be in `h` already;
+    /// what little DC each step leaves is taken out first (spread evenly,
+    /// so the correction stays below the first bin), and the division is
+    /// then an exact running sum. Other zeros must lie inside the unit
+    /// circle (a shelf's do).
+    pub fn divide(&self, h: &mut [f64]) {
+        let [b0, b1, b2] = self.b;
+        let [a1, a2] = self.a;
+        // × a(z), back to front so each step reads unchanged input
+        for n in (0..h.len()).rev() {
+            let x1 = n.checked_sub(1).and_then(|i| h.get(i)).copied().unwrap_or(0.0);
+            let x2 = n.checked_sub(2).and_then(|i| h.get(i)).copied().unwrap_or(0.0);
+            if let Some(v) = h.get_mut(n) {
+                *v = a2.mul_add(x2, a1.mul_add(x1, *v));
+            }
+        }
+        let tol = 1e-12 * b0.abs();
+        let dc = |h: &mut [f64]| {
+            let mean = h.iter().sum::<f64>() / dsp_core::count_to_f64(h.len().max(1));
+            let mut acc = 0.0;
+            for v in h.iter_mut() {
+                acc += *v - mean;
+                *v = acc;
+            }
+        };
+        // ÷ b(z) = b0 (1 − z⁻¹)^m · rest
+        let (rest1, rest2) = if (b2 - b0).abs() < tol && 2.0f64.mul_add(b0, b1).abs() < tol {
+            dc(h);
+            dc(h);
+            (0.0, 0.0)
+        } else if (b0 + b1 + b2).abs() < tol {
+            dc(h);
+            // b0 (1 − z⁻¹)(1 − r z⁻¹): r = b2 / b0
+            (-b2 / b0, 0.0)
+        } else {
+            (b1 / b0, b2 / b0)
+        };
+        let (mut y1, mut y2) = (0.0, 0.0);
+        for v in h.iter_mut() {
+            let y = rest2.mul_add(-y2, rest1.mul_add(-y1, *v));
+            y2 = y1;
+            y1 = y;
+            *v = y / b0;
+        }
+    }
+
     /// Peaking EQ (the RBJ cookbook form): `gain_db` at `centre_hz`,
     /// bandwidth set by `q`.
     #[must_use]
@@ -156,6 +220,12 @@ impl Biquad {
     pub const fn reset(&mut self) {
         self.s1 = 0.0;
         self.s2 = 0.0;
+    }
+
+    /// Take another section's coefficients, keeping this one's state.
+    pub const fn retune(&mut self, to: Self) {
+        self.b = to.b;
+        self.a = to.a;
     }
 
     pub fn process(&mut self, x: f64) -> f64 {
