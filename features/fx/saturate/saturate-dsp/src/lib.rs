@@ -25,14 +25,15 @@ use dsp_core::num;
 
 pub mod bluebox;
 #[rustfmt::skip]
-#[allow(clippy::unreadable_literal, clippy::excessive_precision, reason = "generated measurement tables")]
+#[expect(clippy::unreadable_literal, reason = "generated measurement tables")]
 pub mod bluebox_tables;
 pub mod deluxe;
 #[rustfmt::skip]
-#[allow(clippy::unreadable_literal, clippy::excessive_precision, reason = "generated measurement tables")]
+#[expect(clippy::unreadable_literal, reason = "generated measurement tables")]
 pub mod deluxe_tables;
 pub mod digital;
 pub mod emphasis;
+pub mod oversample;
 pub mod preamp;
 pub mod table;
 

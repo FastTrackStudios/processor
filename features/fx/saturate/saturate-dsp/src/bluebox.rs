@@ -275,6 +275,10 @@ struct Channel {
     hp_y: f64,
     dc_x: f64,
     dc_y: f64,
+    /// The tubes run at 4×: the main signal and the saturation band are
+    /// interpolated separately and meet at the high rate.
+    os_main: crate::oversample::Oversample4,
+    os_band: crate::oversample::Oversample4,
     band: [Biquad; 2],
     cal: Biquad,
     air: Biquad,
@@ -286,6 +290,8 @@ impl Channel {
         self.hp_y = 0.0;
         self.dc_x = 0.0;
         self.dc_y = 0.0;
+        self.os_main.reset();
+        self.os_band.reset();
         for b in &mut self.band {
             b.reset();
         }
@@ -432,15 +438,21 @@ impl Bluebox {
         let main = hb * (driven - ch.hp_x) + ha * ch.hp_y;
         ch.hp_x = driven;
         ch.hp_y = main;
-        let mut into = main;
-        if self.sat_on {
+        let (g_p, lo, w, level, makeup, rest) = (self.g_p, self.triode_lo, self.triode_w, self.triode_level, self.makeup, self.rest);
+        let stages = |into: f64| {
+            let pentode = crate::table::hermite_warped(&t::PENTODE, &t::PENTODE_SLOPE, t::PENTODE_UMAX, t::WARP, g_p * into);
+            triode(lo, w, pentode) * level * makeup - rest
+        };
+        let stages = if self.sat_on {
             let banded = ch.band.iter_mut().fold(main, |s, b| b.run(s));
-            if let Some(curve) = self.sat_curve.get(self.sat_alt) {
-                into += self.sat_out * curve.shape(self.sat_in * banded);
-            }
-        }
-        let pentode = crate::table::hermite_warped(&t::PENTODE, &t::PENTODE_SLOPE, t::PENTODE_UMAX, t::WARP, self.g_p * into);
-        let stages = triode(self.triode_lo, self.triode_w, pentode) * self.triode_level * self.makeup - self.rest;
+            let (sat_in, sat_out) = (self.sat_in, self.sat_out);
+            let tube = self.sat_curve.get(self.sat_alt).copied();
+            ch.os_main.process2(&mut ch.os_band, main, banded, |m, b| {
+                stages(m + tube.map_or(0.0, |c| sat_out * c.shape(sat_in * b)))
+            })
+        } else {
+            ch.os_main.process(main, stages)
+        };
         // the stages hand on their operating point; the output coupling
         // blocks it (same corner as the input transformer)
         let y = hb * (stages - ch.dc_x) + ha * ch.dc_y;

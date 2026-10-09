@@ -208,6 +208,9 @@ fn realise(zeros: &[(f64, f64)], poles: &[(f64, f64)], gain_1k: f64, sr: f64) ->
 struct Channel {
     pre: Vec<Biquad>,
     dark: Vec<Vec<Biquad>>,
+    /// The curve runs at 4× (the reference oversamples it too: a clipped
+    /// 7 kHz tone's aliases sit 47–80 dB down there).
+    os: crate::oversample::Oversample4,
     hp_x: f64,
     hp_y: f64,
 }
@@ -215,12 +218,13 @@ struct Channel {
 impl Channel {
     fn new(sr: f64) -> Self {
         let dark = t::DARK.iter().map(|p| realise(p.zeros, p.poles, p.gain_1k, sr)).collect();
-        Self { pre: pre_filter(&t::PRE, sr), dark, hp_x: 0.0, hp_y: 0.0 }
+        Self { pre: pre_filter(&t::PRE, sr), dark, os: crate::oversample::Oversample4::new(), hp_x: 0.0, hp_y: 0.0 }
     }
 
     fn reset(&mut self) {
         self.pre.iter_mut().for_each(Biquad::reset);
         self.dark.iter_mut().flatten().for_each(Biquad::reset);
+        self.os.reset();
         self.hp_x = 0.0;
         self.hp_y = 0.0;
     }
@@ -378,8 +382,10 @@ impl Deluxe {
         // the sidechain's current limit: the cap charges at most this fast
         self.vc = self.vc * self.rel + (self.charge * excess).min(self.charge_max);
         let (wet, dry, hb, ha, k) = (self.wet, self.dry, self.hp_b, self.hp_a, self.crunch);
-        let yl = cl.post(curve(k * dl), hb, ha);
-        let yr = cr.post(curve(k * dr), hb, ha);
+        let shaped_l = cl.os.process(k * dl, curve);
+        let shaped_r = cr.os.process(k * dr, curve);
+        let yl = cl.post(shaped_l, hb, ha);
+        let yr = cr.post(shaped_r, hb, ha);
         let (yl, yr) = (cl.dark(yl, lo, w), cr.dark(yr, lo, w));
         (yl * wet + left * dry, yr * wet + right * dry)
     }
