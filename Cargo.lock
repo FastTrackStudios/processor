@@ -3287,6 +3287,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-dsp"
+version = "0.1.0"
+dependencies = [
+ "dsp-core",
+ "hound",
+ "libm",
+]
+
+[[package]]
 name = "gate-plugin"
 version = "0.1.0"
 dependencies = [
