@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use mic_dsp::{DualMic, DualSettings, LATENCY, MicChain, MicModel, Settings, Solo};
+use mic_dsp::{DualMic, DualSettings, MicChain, MicModel, Settings, Solo, latency};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let num = |k: &str, d: f64| kv(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
     let bytes = std::fs::read(model)?;
     let model = MicModel::from_bytes(&bytes).map_err(|e| format!("{e:?}"))?;
+    let lat = latency(model.sample_rate);
     let index = |k: &str, d: usize| kv(k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(d);
     let settings = Settings {
         pattern: index("pattern", 4),
@@ -61,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channels = usize::from(spec.channels);
     let samples: Vec<f32> = reader.samples::<f32>().collect::<Result<_, _>>()?;
     let frames = samples.chunks_exact(channels.max(1));
-    let tail = core::iter::repeat_n([0.0f32, 0.0], LATENCY);
+    let tail = core::iter::repeat_n([0.0f32, 0.0], lat);
     let pairs = frames.map(|c| [c.first().copied().unwrap_or(0.0), c.get(1).copied().unwrap_or(0.0)]).chain(tail);
     let out: Vec<f32> = pairs
         .map(|[f, r]| match (dual.as_mut(), single.as_mut()) {
@@ -69,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (None, Some(c)) => c.process(f64::from(f), f64::from(r)),
             (None, None) => 0.0,
         })
-        .skip(LATENCY)
+        .skip(lat)
         .map(|y| {
             #[expect(clippy::cast_possible_truncation, clippy::as_conversions, reason = "WAV output is f32")]
             let s = y as f32;

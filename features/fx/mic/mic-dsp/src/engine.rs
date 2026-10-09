@@ -27,8 +27,16 @@ use crate::model::{MAX_POLY, MAX_POST, PostSection};
 use crate::section::{Biquad, CornerShift};
 
 
-/// Samples of latency, as the reference reports.
+/// Samples of latency at 48 kHz, as the reference reports.
 pub const LATENCY: usize = 24;
+
+/// Samples of latency at a sample rate: the reference looks ahead a fixed
+/// 0.5 ms (22, 24, 44 and 48 samples at 44.1, 48, 88.2 and 96 kHz), and
+/// the kernels carry that look-ahead.
+#[must_use]
+pub fn latency(sample_rate: f64) -> usize {
+    dsp_core::num::f64_to_index((sample_rate * 0.0005).round())
+}
 
 /// Every control of one mic.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -261,6 +269,12 @@ impl MicChain {
     #[must_use]
     pub const fn model(&self) -> &MicModel {
         &self.model
+    }
+
+    /// Samples of latency: the look-ahead the model's kernels carry.
+    #[must_use]
+    pub fn latency(&self) -> usize {
+        latency(self.model.sample_rate)
     }
 
     /// Set the dual-mode adjustment (rebuilds the kernels if it changed).

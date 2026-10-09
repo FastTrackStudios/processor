@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
-use mic_dsp::{DualMic, DualSettings, LATENCY, MicChain, Settings, Solo};
+use mic_dsp::{DualMic, DualSettings, MicChain, Settings, Solo, latency};
 use nice_plug::prelude::*;
 
 const PLUGIN_NAME: &str = "FTS Mic";
@@ -264,7 +264,7 @@ impl Plugin for FtsMic {
     fn activate(&mut self, _layout: &AudioIOLayout, buffer_config: &BufferConfig, context: &mut impl ActivateContext<Self>) -> bool {
         // The sample rate is a whole number of hertz in every host.
         self.sample_rate = u32::try_from(dsp_core::f32_to_index(buffer_config.sample_rate.round())).unwrap_or(48_000);
-        context.set_latency_samples(u32::try_from(LATENCY).unwrap_or(24));
+        context.set_latency_samples(u32::try_from(latency(f64::from(self.sample_rate))).unwrap_or(24));
         self.asked = None;
         true
     }

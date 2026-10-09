@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
-use mic_dsp::{LATENCY, MicChain, Settings, StereoMic, StereoSettings};
+use mic_dsp::{MicChain, Settings, StereoMic, StereoSettings, latency};
 use nice_plug::prelude::*;
 
 #[path = "../../mic/src/common.rs"]
@@ -232,7 +232,7 @@ impl Plugin for FtsMic180 {
 
     fn activate(&mut self, _layout: &AudioIOLayout, buffer_config: &BufferConfig, context: &mut impl ActivateContext<Self>) -> bool {
         self.sample_rate = u32::try_from(dsp_core::f32_to_index(buffer_config.sample_rate.round())).unwrap_or(48_000);
-        context.set_latency_samples(u32::try_from(LATENCY).unwrap_or(24));
+        context.set_latency_samples(u32::try_from(latency(f64::from(self.sample_rate))).unwrap_or(24));
         self.asked = None;
         true
     }
