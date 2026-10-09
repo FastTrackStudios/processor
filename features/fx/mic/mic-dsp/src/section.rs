@@ -124,6 +124,26 @@ impl Biquad {
         Self { b: [(1.0 + wz) / a0, -(1.0 - wz) / a0, 0.0], a: [-(1.0 - wp) / a0, 0.0], s1: 0.0, s2: 0.0 }
     }
 
+    /// Analog peaking section `(s² + s·√g·ω/q + ω²) / (s² + s·ω/(√g·q) + ω²)`,
+    /// bilinear prewarped to its centre: `gain` (linear) there, unity at DC
+    /// and Nyquist.
+    #[must_use]
+    pub fn peak_analog(centre_hz: f64, q: f64, gain: f64, sample_rate: f64) -> Self {
+        let w = (PI * centre_hz.max(0.0) / sample_rate).min(1.5).tan();
+        let root = gain.max(1e-9).sqrt();
+        let q = q.abs().max(1e-6);
+        let (bn, bd) = (root * w / q, w / (root * q));
+        let ww = w * w;
+        // s = (1 − z⁻¹)/(1 + z⁻¹): s² + b s + ω² → (1 + b + ω²) + 2(ω² − 1) z⁻¹ + (1 − b + ω²) z⁻²
+        let a0 = 1.0 + bd + ww;
+        Self {
+            b: [(1.0 + bn + ww) / a0, 2.0 * (ww - 1.0) / a0, (1.0 - bn + ww) / a0],
+            a: [2.0 * (ww - 1.0) / a0, (1.0 - bd + ww) / a0],
+            s1: 0.0,
+            s2: 0.0,
+        }
+    }
+
     /// A flat gain.
     #[must_use]
     pub const fn gain(g: f64) -> Self {

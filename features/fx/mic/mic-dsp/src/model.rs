@@ -36,15 +36,22 @@
 //! f64 shelf_k[9]             (optional, Shelf law only) its k at each pattern step
 //! f64 dual_weight[9]         (optional) the weight dual mode gives this model's
 //!                            proximity filter when crossfading it with another's
+//!                            (a 180 backward model: the share v of its own
+//!                            gradient block against mic 1's)
 //! f64 dual_pressure_hz       (optional) the pressure path's high-pass corner dual
 //!                            mode crossfades (same weight; 0 = none, default 10)
 //!                            (the measured response, curve's high-passes
 //!                            included; the engine derives the curve's input)
 //! u32 low_ends               (optional) bit k: low-cut position k's low-end block
 //!                            follows, ascending: f64 gain, u32 n,
-//!                            n × (u32 kind, f64 p[2]) — kind 0 high-pass (Hz),
+//!                            n × (u32 kind, f64 p[3]) — kind 0 high-pass (Hz),
 //!                            1 second-order high-pass (Hz, Q), 2 first-order
-//!                            shelf (zero Hz, pole Hz)
+//!                            shelf (zero Hz, pole Hz), 3 peak (Hz, Q, gain)
+//! u32 dual_blocks            (optional) bit 0: the pressure block follows (as a
+//!                            low-end block; replaces dual_pressure_hz), bit 1:
+//!                            the gradient block dual mode crossfades in place of
+//!                            the proximity law's base, bit 2: nine pressure
+//!                            blocks, one per pattern step (replace bit 0's)
 //! ```
 
 /// Pattern steps, Omni (0) to Figure-8 (8).
@@ -197,6 +204,9 @@ pub enum LowSection {
     HighPass2 { hz: f64, q: f64 },
     /// `(s + ω_zero) / (s + ω_pole)`: unity at the top, `zero/pole` at DC.
     Shelf { zero: f64, pole: f64 },
+    /// `(s² + s·√g·ω/q + ω²) / (s² + s·ω/(√g·q) + ω²)`: `gain` (linear) at
+    /// `hz`, unity away from it.
+    Peak { hz: f64, q: f64, gain: f64 },
 }
 
 /// Most sections in a low-end block.
@@ -214,6 +224,9 @@ pub struct LowEnd {
 }
 
 impl LowEnd {
+    /// No filter.
+    pub const FLAT: Self = Self { gain: 1.0, sections: [None; MAX_LOW] };
+
     /// A first-order high-pass at `hz`.
     #[must_use]
     pub const fn high_pass(hz: f64) -> Self {
@@ -246,6 +259,12 @@ pub struct MicModel {
     pub dual_pressure_hz: f64,
     /// The low-end block per low-cut position, where the file gives one.
     low_ends: [Option<LowEnd>; LOW_CUTS],
+    /// The pressure block per pattern step, where the file gives more than
+    /// a corner.
+    pressure_blocks: Option<[LowEnd; PATTERNS]>,
+    /// Dual mode's gradient block, where it is not the proximity law's
+    /// base (the dynamics': a shelf).
+    pub dual_gradient: Option<LowEnd>,
 }
 
 /// One section after the output curve.
@@ -320,30 +339,53 @@ impl Reader<'_> {
     }
 }
 
-/// The optional low-end blocks: for each bit of `mask`, ascending, a gain
-/// and up to [`MAX_LOW`] sections.
+/// One block: a gain and up to [`MAX_LOW`] sections.
+fn read_block(r: &mut Reader<'_>) -> Result<LowEnd, ModelError> {
+    let gain = r.f64()?;
+    let n = dsp_core::u32_to_index(r.u32()?);
+    if n > MAX_LOW {
+        return Err(ModelError::BadShape);
+    }
+    let mut sections = [None; MAX_LOW];
+    for section in sections.iter_mut().take(n) {
+        let kind = r.u32()?;
+        let (first, second, third) = (r.f64()?, r.f64()?, r.f64()?);
+        *section = Some(match kind {
+            0 => LowSection::HighPass(first),
+            1 => LowSection::HighPass2 { hz: first, q: second },
+            2 => LowSection::Shelf { zero: first, pole: second },
+            3 => LowSection::Peak { hz: first, q: second, gain: third },
+            _ => return Err(ModelError::BadShape),
+        });
+    }
+    Ok(LowEnd { gain, sections })
+}
+
+/// Pressure blocks per pattern step, and a gradient block.
+type DualBlocks = (Option<[LowEnd; PATTERNS]>, Option<LowEnd>);
+
+/// Dual mode's pressure blocks (one for every pattern step, or one each)
+/// and gradient block, as `mask` says.
+fn read_dual_blocks(r: &mut Reader<'_>, mask: u32) -> Result<DualBlocks, ModelError> {
+    let mut pressure = if mask & 1 != 0 { Some([read_block(r)?; PATTERNS]) } else { None };
+    let gradient = if mask & 2 != 0 { Some(read_block(r)?) } else { None };
+    if mask & 4 != 0 {
+        let mut table = [LowEnd::FLAT; PATTERNS];
+        for block in &mut table {
+            *block = read_block(r)?;
+        }
+        pressure = Some(table);
+    }
+    Ok((pressure, gradient))
+}
+
+/// The optional low-end blocks: one for each bit of `mask`, ascending.
 fn read_low_ends(r: &mut Reader<'_>, mask: u32) -> Result<[Option<LowEnd>; LOW_CUTS], ModelError> {
     let mut low_ends: [Option<LowEnd>; LOW_CUTS] = Default::default();
     let mut bit = 1u32;
     for slot in &mut low_ends {
         if mask & bit != 0 {
-            let gain = r.f64()?;
-            let n = dsp_core::u32_to_index(r.u32()?);
-            if n > MAX_LOW {
-                return Err(ModelError::BadShape);
-            }
-            let mut sections = [None; MAX_LOW];
-            for section in sections.iter_mut().take(n) {
-                let kind = r.u32()?;
-                let (a, b) = (r.f64()?, r.f64()?);
-                *section = Some(match kind {
-                    0 => LowSection::HighPass(a),
-                    1 => LowSection::HighPass2 { hz: a, q: b },
-                    2 => LowSection::Shelf { zero: a, pole: b },
-                    _ => return Err(ModelError::BadShape),
-                });
-            }
-            *slot = Some(LowEnd { gain, sections });
+            *slot = Some(read_block(r)?);
         }
         bit = bit.wrapping_shl(1);
     }
@@ -453,7 +495,9 @@ impl MicModel {
         }
         let dual_pressure_hz = r.f64().unwrap_or(10.0);
         let low_ends = r.u32().map_or_else(|_| Ok(Default::default()), |mask| read_low_ends(&mut r, mask))?;
-        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay, dual_weight, dual_pressure_hz, low_ends })
+        let mask = r.u32().unwrap_or(0);
+        let (pressure_blocks, dual_gradient) = read_dual_blocks(&mut r, mask)?;
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay, dual_weight, dual_pressure_hz, low_ends, pressure_blocks, dual_gradient })
     }
 
     /// The output stage at a low-cut position.
@@ -480,6 +524,15 @@ impl MicModel {
         }
         let measured = (1..LOW_CUTS).any(|k| self.has_set(k));
         LowEnd::high_pass(if measured { 10.0 } else { self.low_cut_hz.get(position).copied().unwrap_or(10.0).max(1.0) })
+    }
+
+    /// Dual mode's pressure block at a pattern step: the file's, else a
+    /// high-pass at `dual_pressure_hz` (none at 0).
+    #[must_use]
+    pub fn dual_pressure(&self, pattern: usize) -> LowEnd {
+        self.pressure_blocks
+            .and_then(|table| table.get(pattern).copied())
+            .unwrap_or_else(|| if self.dual_pressure_hz > 0.0 { LowEnd::high_pass(self.dual_pressure_hz) } else { LowEnd::FLAT })
     }
 
     /// The low-end block the kernels at a low-cut position carry: the

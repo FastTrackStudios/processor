@@ -87,9 +87,13 @@ struct Path {
     /// Dual mode: the other mic's proximity filter over this kernel's own
     /// base, and the weights the two branches are crossfaded with.
     cross: [CornerShift; 3],
+    /// … the gradient blocks run with those moves where a model's dual
+    /// gradient block is not its law's base …
+    gradient_own: LowChain,
+    gradient_cross: LowChain,
     /// … and the pressure path's blocks, this mic's and the other's.
-    pressure_own: CornerShift,
-    pressure_cross: CornerShift,
+    pressure_own: LowChain,
+    pressure_cross: LowChain,
     weights: Option<[f64; 2]>,
 }
 
@@ -100,8 +104,10 @@ impl Path {
             conv_g: Convolver::new(taps),
             proximity: [CornerShift::identity(); 3],
             cross: [CornerShift::identity(); 3],
-            pressure_own: CornerShift::identity(),
-            pressure_cross: CornerShift::identity(),
+            gradient_own: LowChain::identity(),
+            gradient_cross: LowChain::identity(),
+            pressure_own: LowChain::identity(),
+            pressure_cross: LowChain::identity(),
             weights: None,
         }
     }
@@ -112,7 +118,9 @@ impl Path {
         let p = self.conv_p.process(sum);
         match self.weights {
             Some([a, b]) => {
-                let gradient = a.mul_add(own, b * self.cross.iter_mut().fold(g, |x, sec| sec.process(x)));
+                let own = self.gradient_own.process(own);
+                let cross = self.gradient_cross.process(self.cross.iter_mut().fold(g, |x, sec| sec.process(x)));
+                let gradient = a.mul_add(own, b * cross);
                 a.mul_add(self.pressure_own.process(p), b * self.pressure_cross.process(p)) + gradient
             }
             None => p + own,
@@ -124,6 +132,8 @@ impl Path {
         self.conv_g.reset();
         self.proximity.iter_mut().for_each(CornerShift::reset);
         self.cross.iter_mut().for_each(CornerShift::reset);
+        self.gradient_own.reset();
+        self.gradient_cross.reset();
         self.pressure_own.reset();
         self.pressure_cross.reset();
     }
@@ -148,6 +158,7 @@ impl LowChain {
                 Some(LowSection::HighPass(hz)) => Biquad::high_pass(hz, sample_rate),
                 Some(LowSection::HighPass2 { hz, q }) => Biquad::high_pass2(hz, q, sample_rate),
                 Some(LowSection::Shelf { zero, pole }) => Biquad::shelf(zero, pole, sample_rate),
+                Some(LowSection::Peak { hz, q, gain }) => Biquad::peak_analog(hz, q, gain, sample_rate),
                 None => Biquad::identity(),
             };
         }
@@ -288,14 +299,16 @@ pub struct DualAdjust {
     /// The kernels then run with their own low end divided out, and the
     /// mix crossfades the two blocks.
     pub cross_low: Option<LowEnd>,
-    /// Dual mode: the other mic's pressure-path corner.
-    pub cross_pressure: Option<f64>,
+    /// Dual mode: the other mic's pressure-path block …
+    pub cross_pressure: Option<LowEnd>,
+    /// … and its gradient block, where that is not its law's base.
+    pub cross_gradient: Option<LowEnd>,
 }
 
 impl DualAdjust {
     #[must_use]
     pub const fn none(own_delay: f64) -> Self {
-        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None, foreign: None, cross: None, cross_low: None, cross_pressure: None }
+        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None, foreign: None, cross: None, cross_low: None, cross_pressure: None, cross_gradient: None }
     }
 }
 
@@ -428,7 +441,7 @@ impl MicChain {
         let moves = match (self.dual.foreign, self.dual.centre) {
             // dual mode, blocks crossfaded: the kernels run without the
             // base, so this is the mic's whole proximity filter
-            _ if self.dual.cross.is_some() => pad(law.filter(s.proximity, s.pattern)),
+            _ if self.dual.cross.is_some() => pad(if self.model.dual_gradient.is_some() { law.moves(s.proximity, s.pattern) } else { law.filter(s.proximity, s.pattern) }),
             (Some((other, pattern)), _) => {
                 // the kernels' own base out, the other mic's whole filter in
                 merge(law.base_inverse(s.pattern, BASE_LEAK_HZ), other.filter(s.proximity, pattern))
@@ -445,22 +458,19 @@ impl MicChain {
             }
         }
         path.weights = self.dual.cross.map(|(_, _, w)| w);
-        // dual mode: the pressure path's block, this mic's and the other's
-        // (the kernels run without theirs); 0 Hz is none
-        let block = |section: &mut CornerShift, hz: f64| if hz > 0.0 { section.set(0.0, hz, sr) } else { section.make_identity() };
-        match self.dual.cross_pressure {
-            Some(target) if self.dual.cross.is_some() => {
-                block(&mut path.pressure_own, self.model.dual_pressure_hz);
-                block(&mut path.pressure_cross, target);
-            }
-            _ => {
-                path.pressure_own.make_identity();
-                path.pressure_cross.make_identity();
-            }
-        }
+        // dual mode: the pressure path's and the gradient path's blocks,
+        // this mic's and the other's (the kernels run without theirs)
+        let flat = LowChain::identity();
+        let crossed = self.dual.cross.is_some();
+        let pick = |block: Option<LowEnd>| if crossed { block.map_or(flat, |b| LowChain::design(b, sr)) } else { flat };
+        path.pressure_own.retune(pick(Some(self.model.dual_pressure(s.pattern))));
+        path.pressure_cross.retune(pick(self.dual.cross_pressure));
+        path.gradient_own.retune(pick(self.model.dual_gradient));
+        path.gradient_cross.retune(pick(self.dual.cross_gradient));
         if let Some((other, pattern, _)) = self.dual.cross {
-            // the kernels run without their base: the other mic's whole filter
-            let steps = pad(other.filter(s.proximity, pattern));
+            // the kernels run without their base: the other mic's whole
+            // filter (its moves, where its gradient block runs alongside)
+            let steps = pad(if self.dual.cross_gradient.is_some() { other.moves(s.proximity, pattern) } else { other.filter(s.proximity, pattern) });
             for (section, step) in path.cross.iter_mut().zip(steps) {
                 match step {
                     Some((zero, pole)) => section.set(zero, pole, sr),
@@ -531,20 +541,20 @@ impl MicChain {
         if self.dual.cross.is_some() {
             // so do the proximity base and the pressure block, crossfaded
             // with weights in the paths
-            let base = match self.model.proximity {
-                ProximityLaw::Corner { .. } => Some(Biquad::high_pass(self.model.proximity.f0(pattern), sr)),
-                ProximityLaw::Shelf { k, .. } => {
+            let base = match (self.model.dual_gradient, self.model.proximity) {
+                (Some(block), _) => Some(LowChain::design(block, sr)),
+                (None, ProximityLaw::Corner { .. }) => Some(LowChain::design(LowEnd::high_pass(self.model.proximity.f0(pattern)), sr)),
+                (None, ProximityLaw::Shelf { k, .. }) => {
                     let f0 = self.model.proximity.f0(pattern);
-                    Some(Biquad::shelf(k.get(pattern).copied().unwrap_or(1.0) * f0, f0, sr))
+                    let zero = k.get(pattern).copied().unwrap_or(1.0) * f0;
+                    Some(LowChain::design(LowEnd { gain: 1.0, sections: [Some(LowSection::Shelf { zero, pole: f0 }), None, None] }, sr))
                 }
-                ProximityLaw::Dynamic { .. } => None,
+                (None, ProximityLaw::Dynamic { .. }) => None,
             };
             if let Some(base) = base {
                 base.divide(&mut self.kernel_g);
             }
-            if self.model.dual_pressure_hz > 0.0 {
-                Biquad::high_pass(self.model.dual_pressure_hz, sr).divide(&mut self.kernel_p);
-            }
+            LowChain::design(self.model.dual_pressure(pattern), sr).divide(&mut self.kernel_p);
         }
         self.linear.conv_p.set_kernel(&self.kernel_p);
         self.linear.conv_g.set_kernel(&self.kernel_g);
@@ -653,12 +663,13 @@ impl DualMic {
             let same = law1 == law2 && p1 == p2;
             let cross1 = (!same).then_some((law2, p2, [b1, b2]));
             let cross2 = (!same).then_some((law1, p1, [b2, b1]));
-            let (pr1, pr2) = (self.mic1.model().dual_pressure_hz, self.mic2.model().dual_pressure_hz);
+            let (pr1, pr2) = (self.mic1.model().dual_pressure(p1), self.mic2.model().dual_pressure(p2));
+            let (gr1, gr2) = (self.mic1.model().dual_gradient, self.mic2.model().dual_gradient);
             let end_1 = self.mic1.model().low_end(self.mic1.settings().low_cut);
             let end_2 = self.mic2.model().low_end(self.mic2.settings().low_cut);
             let align = s.align_cm / 100.0 / 340.0 * sr;
-            self.mic1.set_dual(DualAdjust { delay, align: (-align).max(0.0), cross: cross1, cross_low: Some(end_2), cross_pressure: (!same).then_some(pr2), ..DualAdjust::none(d1) });
-            self.mic2.set_dual(DualAdjust { delay, align: align.max(0.0), cross: cross2, cross_low: Some(end_1), cross_pressure: (!same).then_some(pr1), ..DualAdjust::none(d2) });
+            self.mic1.set_dual(DualAdjust { delay, align: (-align).max(0.0), cross: cross1, cross_low: Some(end_2), cross_pressure: (!same).then_some(pr2), cross_gradient: gr2.filter(|_| !same), ..DualAdjust::none(d1) });
+            self.mic2.set_dual(DualAdjust { delay, align: align.max(0.0), cross: cross2, cross_low: Some(end_1), cross_pressure: (!same).then_some(pr1), cross_gradient: gr1.filter(|_| !same), ..DualAdjust::none(d2) });
         } else {
             self.mic1.set_dual(DualAdjust::none(d1));
             self.mic2.set_dual(DualAdjust::none(d2));
@@ -718,19 +729,21 @@ impl StereoMic {
     }
 
     /// Apply the 180 controls; call it again after changing either mic's
-    /// settings (the backward mic takes the forward mic's proximity base).
+    /// settings (the backward mic's gradient block follows mic 1's).
     pub fn set(&mut self, s: StereoSettings) {
         let own = self.backward.model().delay;
-        let forward = self.forward.settings().pattern;
-        // the backward mic runs the forward mic's proximity filter (measured:
-        // its gradient low end follows mic 1's model, law and pattern)
-        let law = self.forward.model().proximity;
-        let adjust = if law == self.backward.model().proximity {
-            // one model: its own law at mic 1's step, nothing to cancel
-            DualAdjust { law_pattern: Some(forward), ..DualAdjust::none(own) }
-        } else {
-            // two models: −20..−50 dB; the coupling is not fully identified
-            DualAdjust { foreign: Some((law, forward)), ..DualAdjust::none(own) }
+        let (front, back) = (self.forward.model(), self.backward.model());
+        let (p1, p2) = (self.forward.settings().pattern, self.backward.settings().pattern);
+        // The backward mic's gradient block is a fixed blend of its own and
+        // mic 1's — (1 − v)·F₁ + v·F₂, no model weights — with v per backward
+        // model and pattern step (≈ ½ at figure-8, its file's dual weights);
+        // the pressure path keeps its own block.
+        let v = back.dual_weight.get(p2).copied().unwrap_or(1.0);
+        let adjust = DualAdjust {
+            cross: Some((front.proximity, p1, [v, 1.0 - v])),
+            cross_pressure: Some(back.dual_pressure(p2)),
+            cross_gradient: front.dual_gradient,
+            ..DualAdjust::none(own)
         };
         self.backward.set_dual(adjust);
         let p = s.pan.clamp(-1.0, 1.0);

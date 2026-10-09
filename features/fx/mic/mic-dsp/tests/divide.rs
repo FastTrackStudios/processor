@@ -33,6 +33,7 @@ fn division_undoes_each_section_shape() {
         ("high-pass", Biquad::high_pass(30.0, sr)),
         ("second-order high-pass", Biquad::high_pass2(75.0, 0.71, sr)),
         ("shelf", Biquad::shelf(50.6, 160.0, sr)),
+        ("peak", Biquad::peak_analog(146.0, 1.2, 1.25, sr)),
     ] {
         let worst = worst_after_round_trip(section);
         assert!(worst < 1e-6, "{name}: worst error {worst:e}");
