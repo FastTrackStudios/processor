@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use mic_dsp::{LATENCY, MicChain, MicModel, Settings};
+use mic_dsp::{DualMic, DualSettings, LATENCY, MicChain, MicModel, Settings, Solo};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,6 +37,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut chain = MicChain::new(model);
     chain.apply(settings, true);
+    // Dual mode: `model2=<path>` plus pattern2/axis2/low_cut2, mix (0–100),
+    // align (cm), solo (0/1/2). Mic 2 shares mic 1's other controls.
+    let mut dual = match kv("model2") {
+        Some(path) => {
+            let m2 = MicModel::from_bytes(&std::fs::read(path)?).map_err(|e| format!("{e:?}"))?;
+            let mut c2 = MicChain::new(m2);
+            c2.apply(Settings { pattern: index("pattern2", 4), axis_deg: num("axis2", 0.0), low_cut: index("low_cut2", 0), ..settings }, true);
+            let solo = match index("solo", 0) { 1 => Solo::Mic1, 2 => Solo::Mic2, _ => Solo::Off };
+            let mut d = DualMic::new(chain, c2);
+            d.set(DualSettings { mix: num("mix", 0.0) / 100.0, align_cm: num("align", 0.0), solo });
+            Some(d)
+        }
+        None => None,
+    };
+    let mut single = if dual.is_none() { Some(MicChain::new(MicModel::from_bytes(&bytes).map_err(|e| format!("{e:?}"))?)) } else { None };
+    if let Some(c) = single.as_mut() {
+        c.apply(settings, true);
+    }
 
     let mut reader = hound::WavReader::open(input)?;
     let spec = reader.spec();
@@ -46,7 +64,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tail = core::iter::repeat_n([0.0f32, 0.0], LATENCY);
     let pairs = frames.map(|c| [c.first().copied().unwrap_or(0.0), c.get(1).copied().unwrap_or(0.0)]).chain(tail);
     let out: Vec<f32> = pairs
-        .map(|[f, r]| chain.process(f64::from(f), f64::from(r)))
+        .map(|[f, r]| match (dual.as_mut(), single.as_mut()) {
+            (Some(d), _) => d.process(f64::from(f), f64::from(r)),
+            (None, Some(c)) => c.process(f64::from(f), f64::from(r)),
+            (None, None) => 0.0,
+        })
         .skip(LATENCY)
         .map(|y| {
             #[expect(clippy::cast_possible_truncation, clippy::as_conversions, reason = "WAV output is f32")]

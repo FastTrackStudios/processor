@@ -31,6 +31,7 @@
 //! u32 kernel_sets            bit k: low-cut position k has its own anchor set
 //!                            (bit 0, the switch off, is always set)
 //! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
+//! f64 delay                  (optional) the model's own fractional delay
 //!                            (the measured response, curve's high-passes
 //!                            included; the engine derives the curve's input)
 //! ```
@@ -68,6 +69,39 @@ pub enum ProximityLaw {
 pub type Move = (f64, f64);
 
 impl ProximityLaw {
+    /// The corner moves for a proximity setting in percent, around a
+    /// `centre` corner other than the mic's own (dual mode shares one
+    /// between two mics). The mic's own corner is still what is cancelled.
+    #[must_use]
+    pub fn moves_around(self, percent: f64, pattern: usize, centre: f64) -> [Option<Move>; 2] {
+        let own = self.f0(pattern);
+        let shifted = match self {
+            Self::Corner { lo, hi, .. } => Self::Corner { f0: [centre; PATTERNS], lo, hi },
+            Self::Shelf { lo, hi, k, .. } => Self::Shelf { f0: [centre; PATTERNS], lo, hi, k },
+            Self::Dynamic { up, down, .. } => Self::Dynamic { f0: [centre; PATTERNS], up, down },
+        };
+        shifted.moves(percent, pattern).map(|step| {
+            step.map(|(zero, pole)| {
+                // replace the centre where it cancels the kernel's own corner
+                let z = if (zero - centre).abs() < 1e-9 { own } else { zero };
+                let p = match self {
+                    Self::Shelf { k, .. } if k.mul_add(-centre, pole).abs() < 1e-9 => k * own,
+                    _ => pole,
+                };
+                (z, p)
+            })
+        })
+    }
+
+    /// The mic's own corner at a pattern step.
+    #[must_use]
+    pub fn f0(self, pattern: usize) -> f64 {
+        let table = match self {
+            Self::Corner { f0, .. } | Self::Shelf { f0, .. } | Self::Dynamic { f0, .. } => f0,
+        };
+        table.get(pattern).copied().unwrap_or(100.0)
+    }
+
     /// The corner moves for a proximity setting in percent.
     #[must_use]
     pub fn moves(self, percent: f64, pattern: usize) -> [Option<Move>; 2] {
@@ -105,6 +139,9 @@ pub struct MicModel {
     pub proximity: ProximityLaw,
     /// The output stage per low-cut position (`None`: position 0's).
     stages: [Option<OutputStage>; LOW_CUTS],
+    /// The model's own fractional delay in samples (linear interpolation):
+    /// 0.146 for every model but Sphere Diffuse (0). Only dual mode sees it.
+    pub delay: f64,
 }
 
 /// One section after the output curve.
@@ -125,6 +162,9 @@ pub struct OutputStage {
     pub poly: [f64; MAX_POLY],
     pub post: Vec<PostSection>,
 }
+
+/// The fractional delay nearly every model carries (samples).
+pub const MODEL_DELAY: f64 = 0.146_03;
 
 /// Highest curve coefficient stored (`s⁷`).
 pub const MAX_POLY: usize = 6;
@@ -256,7 +296,8 @@ impl MicModel {
             }
             bit = bit.wrapping_shl(1);
         }
-        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages })
+        let delay = r.f64().unwrap_or(MODEL_DELAY);
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay })
     }
 
     /// The output stage at a low-cut position.

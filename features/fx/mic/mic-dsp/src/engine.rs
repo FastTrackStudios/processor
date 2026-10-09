@@ -138,6 +138,93 @@ pub struct MicChain {
     kernel_p: Vec<f64>,
     kernel_g: Vec<f64>,
     has_curve: bool,
+    /// Dual mode: what the kernels are re-timed and re-centred to.
+    dual: DualAdjust,
+}
+
+/// How dual mode changes one mic.
+///
+/// Each model carries its own fractional delay (linear interpolation;
+/// 0.146 samples for all but Sphere Diffuse), and in dual mode both are
+/// re-timed to the mix-weighted delay;
+/// Align moves one mic by distance / 340 m/s with a near-ideal fractional
+/// delay; and both share one proximity corner, the mix-weighted geometric
+/// mean of their own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DualAdjust {
+    /// The model's own delay, samples (what the kernels carry).
+    pub own_delay: f64,
+    /// The delay to re-time to (= `own_delay` when not in dual mode).
+    pub delay: f64,
+    /// Extra delay (Align), samples, ≥ 0.
+    pub align: f64,
+    /// Shared proximity corner, if any.
+    pub centre: Option<f64>,
+}
+
+impl DualAdjust {
+    #[must_use]
+    pub const fn none(own_delay: f64) -> Self {
+        Self { own_delay, delay: own_delay, align: 0.0, centre: None }
+    }
+}
+
+/// Linear-interpolation delay `(1 − d) + d z⁻¹` re-timed from `from` to
+/// `to` (both in 0 … 1), run over a kernel in place.
+fn retime(kernel: &mut [f64], from: f64, to: f64) {
+    if (from - to).abs() < 1e-12 {
+        return;
+    }
+    // y[n] = ((1−to) x[n] + to x[n−1] − from y[n−1]) / (1−from)
+    let (mut px, mut py) = (0.0, 0.0);
+    for v in kernel.iter_mut() {
+        let x = *v;
+        let y = from.mul_add(-py, (1.0 - to).mul_add(x, to * px));
+        let y = y / (1.0 - from);
+        px = x;
+        py = y;
+        *v = y;
+    }
+}
+
+/// Half-length of the fractional-delay interpolator (taps each side),
+/// inside the 24 samples of look-ahead the kernels carry.
+const SHIFT_HALF: usize = 20;
+
+/// Delay a kernel by `samples` (≥ 0) with a Blackman-windowed sinc, in
+/// place.
+fn shift(kernel: &mut [f64], scratch: &mut [f64], samples: f64) {
+    use core::f64::consts::PI;
+    if samples.abs() < 1e-12 {
+        return;
+    }
+    let whole = dsp_core::f64_to_index(samples.floor());
+    let frac = samples - samples.floor();
+    let span = dsp_core::count_to_f64(SHIFT_HALF.saturating_add(1));
+    // taps[j] weights input n − whole − (j − SHIFT_HALF)
+    let taps: Vec<f64> = (0..=2 * SHIFT_HALF)
+        .map(|j| {
+            let t = dsp_core::count_to_f64(j) - dsp_core::count_to_f64(SHIFT_HALF) - frac;
+            let w = 0.08f64.mul_add((2.0 * PI * t / span).cos(), 0.5f64.mul_add((PI * t / span).cos(), 0.42));
+            let sinc = if t.abs() < 1e-12 { 1.0 } else { (PI * t).sin() / (PI * t) };
+            sinc * w
+        })
+        .collect();
+    for (n, out) in scratch.iter_mut().enumerate() {
+        *out = taps
+            .iter()
+            .enumerate()
+            .filter_map(|(j, h)| {
+                let back = whole.checked_add(j)?.checked_sub(SHIFT_HALF);
+                let src = match back {
+                    Some(b) => n.checked_sub(b)?,
+                    None => n.checked_add(SHIFT_HALF.checked_sub(whole.checked_add(j)?)?)?,
+                };
+                kernel.get(src).map(|x| h * x)
+            })
+            .sum();
+    }
+    kernel.copy_from_slice(scratch);
 }
 
 impl MicChain {
@@ -157,6 +244,7 @@ impl MicChain {
             kernel_g: vec![0.0; taps],
             settings: Settings::default(),
             has_curve,
+            dual: DualAdjust::none(0.0),
             model,
         };
         chain.apply(Settings::default(), true);
@@ -166,6 +254,19 @@ impl MicChain {
     #[must_use]
     pub const fn settings(&self) -> Settings {
         self.settings
+    }
+
+    #[must_use]
+    pub const fn model(&self) -> &MicModel {
+        &self.model
+    }
+
+    /// Set the dual-mode adjustment (rebuilds the kernels if it changed).
+    pub fn set_dual(&mut self, dual: DualAdjust) {
+        if dual != self.dual {
+            self.dual = dual;
+            self.apply(self.settings, true);
+        }
     }
 
     /// Change controls. Kernels are rebuilt only when pattern, axis or low
@@ -180,7 +281,10 @@ impl MicChain {
             self.rebuild_kernels();
         }
         let sr = self.model.sample_rate;
-        let moves = self.model.proximity.moves(s.proximity, s.pattern);
+        let moves = match self.dual.centre {
+            Some(centre) => self.model.proximity.moves_around(s.proximity, s.pattern, centre),
+            None => self.model.proximity.moves(s.proximity, s.pattern),
+        };
         for path in [&mut self.linear, &mut self.pre] {
             for (section, step) in path.proximity.iter_mut().zip(moves) {
                 match step {
@@ -223,6 +327,13 @@ impl MicChain {
                 *k = (f64::from(*b) - f64::from(*a)).mul_add(t, f64::from(*a));
             }
         }
+        if self.dual.delay.to_bits() != self.dual.own_delay.to_bits() || self.dual.align != 0.0 {
+            retime(&mut self.kernel_p, self.dual.own_delay, self.dual.delay);
+            retime(&mut self.kernel_g, self.dual.own_delay, self.dual.delay);
+            let mut scratch = vec![0.0; self.kernel_p.len()];
+            shift(&mut self.kernel_p, &mut scratch, self.dual.align);
+            shift(&mut self.kernel_g, &mut scratch, self.dual.align);
+        }
         self.linear.conv_p.set_kernel(&self.kernel_p);
         self.linear.conv_g.set_kernel(&self.kernel_g);
         if self.has_curve {
@@ -259,5 +370,79 @@ impl MicChain {
             y += self.post.iter_mut().fold(terms, |x, sec| sec.process(x));
         }
         self.low_cut.process(y) * self.out_gain
+    }
+}
+
+
+/// Two modelled mics, mixed — the reference's dual mode.
+pub struct DualMic {
+    pub mic1: MicChain,
+    pub mic2: MicChain,
+    mix: f64,
+    solo: Solo,
+}
+
+/// Which mic is heard alone, if either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Solo {
+    Off,
+    Mic1,
+    Mic2,
+}
+
+/// Dual-mode controls.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DualSettings {
+    /// 0 … 1 (mic 1 … mic 2).
+    pub mix: f64,
+    /// Mic 2's position relative to mic 1, cm (−2 … +2).
+    pub align_cm: f64,
+    pub solo: Solo,
+}
+
+impl DualMic {
+    #[must_use]
+    pub fn new(mic1: MicChain, mic2: MicChain) -> Self {
+        let mut dual = Self { mic1, mic2, mix: 0.0, solo: Solo::Off };
+        dual.set(DualSettings { mix: 0.0, align_cm: 0.0, solo: Solo::Off });
+        dual
+    }
+
+    /// Apply dual controls (each mic's own settings go through
+    /// [`MicChain::apply`]; mic 2 should share mic 1's proximity, output,
+    /// phase, rear trim and swap).
+    pub fn set(&mut self, s: DualSettings) {
+        self.mix = s.mix.clamp(0.0, 1.0);
+        self.solo = s.solo;
+        let d1 = self.mic1.model().delay;
+        let d2 = self.mic2.model().delay;
+        let sr = self.mic1.model().sample_rate;
+        if s.solo == Solo::Off {
+            let m = self.mix;
+            let delay = (1.0 - m).mul_add(d1, m * d2);
+            let p1 = self.mic1.settings().pattern;
+            let p2 = self.mic2.settings().pattern;
+            let f1 = self.mic1.model().proximity.f0(p1);
+            let f2 = self.mic2.model().proximity.f0(p2);
+            let centre = f1.powf(1.0 - m) * f2.powf(m);
+            let align = s.align_cm / 100.0 / 340.0 * sr;
+            self.mic1.set_dual(DualAdjust { own_delay: d1, delay, align: (-align).max(0.0), centre: Some(centre) });
+            self.mic2.set_dual(DualAdjust { own_delay: d2, delay, align: align.max(0.0), centre: Some(centre) });
+        } else {
+            self.mic1.set_dual(DualAdjust::none(d1));
+            self.mic2.set_dual(DualAdjust::none(d2));
+        }
+    }
+
+    pub fn process(&mut self, front: f64, rear: f64) -> f64 {
+        match self.solo {
+            Solo::Mic1 => self.mic1.process(front, rear),
+            Solo::Mic2 => self.mic2.process(front, rear),
+            Solo::Off => {
+                let a = self.mic1.process(front, rear);
+                let b = self.mic2.process(front, rear);
+                (1.0 - self.mix).mul_add(a, self.mix * b)
+            }
+        }
     }
 }

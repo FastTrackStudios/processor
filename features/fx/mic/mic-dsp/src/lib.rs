@@ -18,5 +18,5 @@ pub mod engine;
 pub mod model;
 pub mod section;
 
-pub use engine::{LATENCY, MicChain, Settings};
+pub use engine::{DualAdjust, DualMic, DualSettings, LATENCY, MicChain, Settings, Solo};
 pub use model::{MicModel, ModelError, ProximityLaw};
