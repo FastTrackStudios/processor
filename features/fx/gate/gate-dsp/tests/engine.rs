@@ -30,6 +30,7 @@ fn latency_is_the_mode_lookahead() {
     assert_eq!(DrumGate::latency_for(Mode::SnareTop, SR), 72);
     assert_eq!(DrumGate::latency_for(Mode::Toms, 96_000.0), 480);
     assert_eq!(DrumGate::latency_for(Mode::SnareTop, 44_100.0), 66);
+    assert_eq!(DrumGate::latency_for(Mode::Kick, 44_100.0), 220);
 }
 
 #[test]
@@ -134,4 +135,21 @@ fn hf_band_expands_2_to_1_below_the_debleed_threshold() {
         let want = peak + (peak - a * thr);
         assert!((db(out) - want).abs() < 0.1, "peak {peak}: {:.2} vs {want:.2}", db(out));
     }
+}
+
+#[test]
+fn sidechain_key_replaces_the_input_for_detection() {
+    let settings = Settings { threshold_db: -30.0, debleed: -100.0, ..Settings::default() };
+    // Loud input, silent key: stays closed.
+    let mut gate = DrumGate::new(SR, 2, settings);
+    for v in sine(4_800, 300.0, 0.5) {
+        gate.process_frame(&mut [v, v], Some(&[0.0, 0.0]));
+    }
+    assert!(gate.gain() < 1e-3, "a silent key must keep the gate shut");
+    // Quiet input, loud key: opens.
+    let mut gate = DrumGate::new(SR, 2, settings);
+    for v in sine(4_800, 300.0, 0.5) {
+        gate.process_frame(&mut [1e-4, 1e-4], Some(&[v, v]));
+    }
+    assert!(gate.gain() > 0.99, "a loud key must open the gate");
 }

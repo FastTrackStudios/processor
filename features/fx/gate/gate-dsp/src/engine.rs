@@ -172,12 +172,18 @@ impl PeakFollower {
     }
 }
 
-/// Fixed-capacity delay line (allocated once, never on the hot path).
+/// Fixed-capacity delay line with a fractional, linearly interpolated
+/// length (allocated once, never on the hot path).
+///
+/// The reference's look-ahead is a time, not a sample count: 5 ms at
+/// 44.1 kHz is 220.5 samples, read as the mean of two neighbours — so its
+/// open path is `cos(πf/SR)`-dull there, and this reproduces that.
 #[derive(Clone, Debug, Default)]
 struct Delay {
     buf: Vec<f64>,
     pos: usize,
     len: usize,
+    frac: f64,
 }
 
 impl Delay {
@@ -186,11 +192,14 @@ impl Delay {
             buf: vec![0.0; capacity.max(1)],
             pos: 0,
             len: 0,
+            frac: 0.0,
         }
     }
 
-    fn set_len(&mut self, len: usize) {
-        self.len = len.min(self.buf.len().saturating_sub(1));
+    fn set_len(&mut self, samples: f64) {
+        let whole = num::f64_to_index(samples);
+        self.len = whole.min(self.buf.len().saturating_sub(2));
+        self.frac = samples - num::count_to_f64(self.len);
     }
 
     #[inline]
@@ -199,11 +208,19 @@ impl Delay {
         if let Some(slot) = self.buf.get_mut(self.pos) {
             *slot = x;
         }
-        let read = self
-            .pos
-            .checked_sub(self.len)
-            .unwrap_or_else(|| self.pos.wrapping_add(cap).wrapping_sub(self.len));
-        let y = self.buf.get(read).copied().unwrap_or(0.0);
+        let at = |back: usize| {
+            let i = self
+                .pos
+                .checked_sub(back)
+                .unwrap_or_else(|| self.pos.wrapping_add(cap).wrapping_sub(back));
+            self.buf.get(i).copied().unwrap_or(0.0)
+        };
+        let y0 = at(self.len);
+        let y = if self.frac > 0.0 {
+            (1.0 - self.frac) * y0 + self.frac * at(self.len.wrapping_add(1))
+        } else {
+            y0
+        };
         let next = self.pos.wrapping_add(1);
         self.pos = if next >= cap { 0 } else { next };
         y
@@ -230,6 +247,9 @@ pub struct DrumGate {
     settings: Settings,
     channels: PerChannel<ChannelState>,
     delays: Vec<Delay>,
+    /// Look-ahead delays for an external key: with a sidechain, the
+    /// de-bleed detector reads the (delayed) key instead of the input.
+    key_delays: Vec<Delay>,
     key_hp_on: bool,
     detector: PeakFollower,
     debleed_det: PeakFollower,
@@ -251,12 +271,15 @@ impl DrumGate {
     #[must_use]
     pub fn new(sample_rate: f64, channels: usize, settings: Settings) -> Self {
         let sample_rate = sample_rate.max(1.0);
-        let capacity = num::f64_to_index(libm::ceil(MAX_LOOKAHEAD_MS * 0.001 * sample_rate)).saturating_add(2);
+        let capacity = num::f64_to_index(libm::ceil(MAX_LOOKAHEAD_MS * 0.001 * sample_rate)).saturating_add(3);
         let mut gate = Self {
             sample_rate,
             settings,
             channels: PerChannel::default(),
             delays: (0..channels.clamp(1, dsp_core::channel::MAX_CHANNELS))
+                .map(|_| Delay::new(capacity))
+                .collect(),
+            key_delays: (0..channels.clamp(1, dsp_core::channel::MAX_CHANNELS))
                 .map(|_| Delay::new(capacity))
                 .collect(),
             key_hp_on: false,
@@ -276,10 +299,12 @@ impl DrumGate {
         gate
     }
 
-    /// Latency in samples for `mode` at `sample_rate` (the look-ahead).
+    /// Latency in samples for `mode` at `sample_rate` (the look-ahead):
+    /// the time truncated to whole samples, as the reference does
+    /// (5 ms at 44.1 kHz is 220, not 221).
     #[must_use]
     pub fn latency_for(mode: Mode, sample_rate: f64) -> usize {
-        num::f64_to_index(libm::round(mode.lookahead_ms() * 0.001 * sample_rate))
+        num::f64_to_index(mode.lookahead_ms() * 0.001 * sample_rate)
     }
 
     /// Current latency in samples.
@@ -309,8 +334,9 @@ impl DrumGate {
                 ch.xover = Bw5::new(sr, s.mode.crossover_hz(), false);
             }
             self.lookahead = Self::latency_for(s.mode, sr);
-            for d in &mut self.delays {
-                d.set_len(self.lookahead);
+            let exact = s.mode.lookahead_ms() * 0.001 * sr;
+            for d in self.delays.iter_mut().chain(&mut self.key_delays) {
+                d.set_len(exact);
             }
         }
         // Ghost lowers the effective threshold, and the de-bleed threshold
@@ -331,7 +357,7 @@ impl DrumGate {
             ch.key_hp.reset();
             ch.xover.reset();
         }
-        for d in &mut self.delays {
+        for d in self.delays.iter_mut().chain(&mut self.key_delays) {
             d.reset();
         }
         self.detector.env = 0.0;
@@ -373,12 +399,20 @@ impl DrumGate {
         }
         let g = self.gain();
 
-        // Audio side: delay, split, de-bleed.
+        // Audio side: delay, split, de-bleed. The de-bleed detector hears
+        // the gated key — the input itself unless a sidechain is given.
         let mut hf_peak = 0.0f64;
         for (i, s) in frame.iter_mut().take(n).enumerate() {
             let xd = self.delays.get_mut(i).map_or(0.0, |d| d.tick(*s));
+            let heard = match key {
+                Some(k) => {
+                    let k_in = k.get(i).copied().unwrap_or(0.0);
+                    self.key_delays.get_mut(i).map_or(0.0, |d| d.tick(k_in))
+                }
+                None => xd,
+            };
             *s = xd;
-            hf_peak = hf_peak.max((g * xd).abs());
+            hf_peak = hf_peak.max((g * heard).abs());
         }
         let hf_env = self.debleed_det.tick(hf_peak);
         let g_hf = (hf_env / self.hf_threshold).min(1.0);
