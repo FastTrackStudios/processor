@@ -14,17 +14,21 @@
 //! ways no post-EQ reproduces, and those positions carry their own set of
 //! anchors.
 //!
-//! Asset format (`.micm`, little-endian), version 3:
+//! Asset format (`.micm`, little-endian), version 4:
 //!
 //! ```text
-//! b"MICM" u32 version=3 u32 sample_rate u32 taps u32 patterns=9 u32 axes=5
+//! b"MICM" u32 version=4 u32 sample_rate u32 taps u32 patterns=9 u32 axes=5
 //! f64 low_cut_hz[4]          built-in corner, then the three switch positions
 //! f64 proximity_f0[9]        the mic's own gradient corner at each pattern step
 //! u32 proximity_law          0 = Corner, 1 = Shelf, 2 = Dynamic
 //! f64 proximity_params[4]    Corner: lo hi · Shelf: lo hi k · Dynamic: up down
+//! u32 poly_len, f64 poly[]   the output stage's curve: s + poly[0] s² + poly[1] s³ + …
+//! u32 post_len, f64 post_hz[] first-order high-passes after the curve (prewarped)
 //! u32 kernel_sets            bit k: low-cut position k has its own anchor set
 //!                            (bit 0, the switch off, is always set)
 //! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
+//!                            (the measured response, curve's high-passes
+//!                            included; the engine derives the curve's input)
 //! ```
 
 /// Pattern steps, Omni (0) to Figure-8 (8).
@@ -95,7 +99,16 @@ pub struct MicModel {
     /// positions it moves to.
     pub low_cut_hz: [f64; LOW_CUTS],
     pub proximity: ProximityLaw,
+    /// The output stage's curve: `y = s + poly[0] s² + poly[1] s³ + …`.
+    pub poly: [f64; MAX_POLY],
+    /// First-order high-pass corners after the curve.
+    pub post_hz: Vec<f64>,
 }
+
+/// Highest curve coefficient stored (`s⁷`).
+pub const MAX_POLY: usize = 6;
+/// Most high-passes after the curve.
+pub const MAX_POST: usize = 4;
 
 /// Why an asset was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,14 +156,14 @@ impl MicModel {
     /// Parse a `.micm` asset.
     ///
     /// # Errors
-    /// The asset is not version 3 of the format, does not have the
+    /// The asset is not version 4 of the format, does not have the
     /// 9 × 5 layout, or is shorter than its header says.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
         let mut r = Reader { bytes, at: 0 };
         if r.take::<4>()? != *b"MICM" {
             return Err(ModelError::BadMagic);
         }
-        if r.u32()? != 3 {
+        if r.u32()? != 4 {
             return Err(ModelError::BadVersion);
         }
         let sample_rate = f64::from(r.u32()?);
@@ -178,6 +191,22 @@ impl MicModel {
             2 => ProximityLaw::Dynamic { f0, up: first, down: second },
             _ => return Err(ModelError::BadShape),
         };
+        let mut poly = [0.0; MAX_POLY];
+        let poly_len = dsp_core::u32_to_index(r.u32()?);
+        if poly_len > MAX_POLY {
+            return Err(ModelError::BadShape);
+        }
+        for v in poly.iter_mut().take(poly_len) {
+            *v = r.f64()?;
+        }
+        let mut post_hz = [0.0; MAX_POST];
+        let post_len = dsp_core::u32_to_index(r.u32()?);
+        if post_len > MAX_POST {
+            return Err(ModelError::BadShape);
+        }
+        for v in post_hz.iter_mut().take(post_len) {
+            *v = r.f64()?;
+        }
         let mask = r.u32()? | 1;
         let count = PATTERNS
             .checked_mul(AXES)
@@ -192,7 +221,7 @@ impl MicModel {
             }
             bit = bit.wrapping_shl(1);
         }
-        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity })
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, poly, post_hz: post_hz.into_iter().take(post_len).collect() })
     }
 
     /// Whether a low-cut position has its own anchors (otherwise it is the
