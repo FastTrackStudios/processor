@@ -75,28 +75,29 @@ pub enum ProximityLaw {
 pub type Move = (f64, f64);
 
 impl ProximityLaw {
-    /// The corner moves for a proximity setting in percent, around a
-    /// `centre` corner other than the mic's own (dual mode shares one
-    /// between two mics). The mic's own corner is still what is cancelled.
+    /// The corner moves for a proximity setting in percent, with the law
+    /// evaluated around a `centre` corner and at `law_pattern`'s shelf
+    /// depth, while what is cancelled is the kernel's own base (`pattern`'s
+    /// corner and depth). Dual mode shares one centre between two mics; the
+    /// 180 variant's backward mic takes the forward mic's pattern.
     #[must_use]
-    pub fn moves_around(self, percent: f64, pattern: usize, centre: f64) -> [Option<Move>; 2] {
+    pub fn moves_around(self, percent: f64, pattern: usize, centre: f64, law_pattern: usize) -> [Option<Move>; 2] {
         let own = self.f0(pattern);
+        let k_at = |p: usize| match self {
+            Self::Shelf { k, .. } => k.get(p).copied().unwrap_or(1.0),
+            _ => 1.0,
+        };
+        let (k_own, k_law) = (k_at(pattern), k_at(law_pattern));
         let shifted = match self {
             Self::Corner { lo, hi, .. } => Self::Corner { f0: [centre; PATTERNS], lo, hi },
-            Self::Shelf { lo, hi, k, .. } => Self::Shelf { f0: [centre; PATTERNS], lo, hi, k },
+            Self::Shelf { lo, hi, .. } => Self::Shelf { f0: [centre; PATTERNS], lo, hi, k: [k_law; PATTERNS] },
             Self::Dynamic { up, down, cap, .. } => Self::Dynamic { f0: [centre; PATTERNS], up, down, cap },
         };
-        shifted.moves(percent, pattern).map(|step| {
+        shifted.moves(percent, law_pattern).map(|step| {
             step.map(|(zero, pole)| {
-                // replace the centre where it cancels the kernel's own corner
+                // replace the base where it cancels the kernel's own
                 let z = if (zero - centre).abs() < 1e-9 { own } else { zero };
-                let p = match self {
-                    Self::Shelf { k, .. } => {
-                        let k = k.get(pattern).copied().unwrap_or(1.0);
-                        if k.mul_add(-centre, pole).abs() < 1e-9 { k * own } else { pole }
-                    }
-                    _ => pole,
-                };
+                let p = if matches!(self, Self::Shelf { .. }) && k_law.mul_add(-centre, pole).abs() < 1e-9 { k_own * own } else { pole };
                 (z, p)
             })
         })

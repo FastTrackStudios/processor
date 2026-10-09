@@ -110,20 +110,12 @@ fn design(section: PostSection, sample_rate: f64) -> Biquad {
     }
 }
 
-/// Where a removed high-pass's zeros go (Hz): low enough that the curve's
-/// input `K/B` is exact through the audio band (2 Hz cost LD-47K 35 dB).
+/// Where the inverted sections' zeros at DC go (Hz). The reference's curve
+/// input is `K/B` with no leak at all (its phase follows `K/B` to 2 Hz), but
+/// lower than this the kernels' residual DC drifts the curve (0.005 Hz:
+/// DN-7 −50 → −37 dB on pink noise); higher bends the audio band (2 Hz cost
+/// LD-47K 35 dB).
 const LEAK_HZ: f64 = 0.05;
-
-/// Run a section's inverse over a kernel, in place. A high-pass's zeros
-/// at DC become poles at [`LEAK_HZ`], so the result stays bounded however
-/// the measured kernel was truncated.
-fn remove(kernel: &mut [f64], section: Biquad, sample_rate: f64) {
-    let leak = core::f64::consts::TAU * LEAK_HZ / sample_rate;
-    let mut inv = section.inverse(leak);
-    for v in kernel.iter_mut() {
-        *v = inv.process(*v);
-    }
-}
 
 /// A mic model running.
 ///
@@ -138,11 +130,11 @@ pub struct MicChain {
     model: MicModel,
     settings: Settings,
     linear: Path,
-    /// Only run when the model has a curve.
-    pre: Path,
     low_cut: CornerShift,
     /// The sections after the curve, on the distortion terms.
     post: [Biquad; MAX_POST],
+    /// Their inverses, run on the linear output: the curve's input.
+    inverse: [Biquad; MAX_POST],
     /// The curve's coefficients at the current low-cut position.
     poly: [f64; MAX_POLY],
     out_gain: f64,
@@ -174,12 +166,15 @@ pub struct DualAdjust {
     pub align: f64,
     /// Shared proximity corner, if any.
     pub centre: Option<f64>,
+    /// The pattern step whose proximity base (corner, shelf depth) the mic
+    /// takes, if not its own (the 180 variant's backward mic: mic 1's).
+    pub law_pattern: Option<usize>,
 }
 
 impl DualAdjust {
     #[must_use]
     pub const fn none(own_delay: f64) -> Self {
-        Self { own_delay, delay: own_delay, align: 0.0, centre: None }
+        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None }
     }
 }
 
@@ -247,7 +242,7 @@ impl MicChain {
         let has_curve = (0..crate::model::LOW_CUTS).any(|k| model.stage(k).is_some_and(|s| s.poly.iter().any(|&a| a != 0.0)));
         let mut chain = Self {
             linear: Path::new(taps),
-            pre: Path::new(if has_curve { taps } else { 0 }),
+            inverse: [Biquad::identity(); MAX_POST],
             low_cut: CornerShift::identity(),
             post: [Biquad::identity(); MAX_POST],
             poly: [0.0; MAX_POLY],
@@ -301,11 +296,14 @@ impl MicChain {
             self.rebuild_kernels();
         }
         let sr = self.model.sample_rate;
+        let law = self.model.proximity;
+        let law_pattern = self.dual.law_pattern.unwrap_or(s.pattern);
         let moves = match self.dual.centre {
-            Some(centre) => self.model.proximity.moves_around(s.proximity, s.pattern, centre),
+            Some(centre) => law.moves_around(s.proximity, s.pattern, centre, law_pattern),
+            None if law_pattern != s.pattern => law.moves_around(s.proximity, s.pattern, law.f0(law_pattern), law_pattern),
             None => self.model.proximity.moves(s.proximity, s.pattern),
         };
-        for path in [&mut self.linear, &mut self.pre] {
+        for path in [&mut self.linear] {
             for (section, step) in path.proximity.iter_mut().zip(moves) {
                 match step {
                     Some((zero, pole)) => section.set(zero, pole, sr),
@@ -325,8 +323,10 @@ impl MicChain {
         // By reference: this runs on the audio thread when a control moves.
         let stage = self.model.stage(s.low_cut);
         self.poly = stage.map_or([0.0; MAX_POLY], |st| st.poly);
-        for (i, section) in self.post.iter_mut().enumerate() {
+        let leak = core::f64::consts::TAU * LEAK_HZ / sr;
+        for (i, (section, inverse)) in self.post.iter_mut().zip(&mut self.inverse).enumerate() {
             *section = stage.and_then(|st| st.post.get(i)).map_or_else(Biquad::identity, |&p| design(p, sr));
+            *inverse = section.inverse(leak);
         }
         let sign = if s.phase_invert { -1.0 } else { 1.0 };
         self.out_gain = sign * db_to_gain(s.output_db);
@@ -356,22 +356,11 @@ impl MicChain {
         }
         self.linear.conv_p.set_kernel(&self.kernel_p);
         self.linear.conv_g.set_kernel(&self.kernel_g);
-        if self.has_curve {
-            let sr = self.model.sample_rate;
-            if let Some(stage) = self.model.stage(cut) {
-                for &section in &stage.post {
-                    remove(&mut self.kernel_p, design(section, sr), sr);
-                    remove(&mut self.kernel_g, design(section, sr), sr);
-                }
-            }
-            self.pre.conv_p.set_kernel(&self.kernel_p);
-            self.pre.conv_g.set_kernel(&self.kernel_g);
-        }
     }
 
     pub fn reset(&mut self) {
         self.linear.reset();
-        self.pre.reset();
+        self.inverse.iter_mut().for_each(Biquad::reset);
         self.low_cut.reset();
         self.post.iter_mut().for_each(Biquad::reset);
     }
@@ -389,7 +378,11 @@ impl MicChain {
         let (fr, rr) = if self.settings.swap { (rear, front) } else { (front, rear) };
         let mut y = self.linear.process(fr + rr, fr - rr);
         if self.has_curve {
-            let level = self.pre.process(fr + rr, fr - rr);
+            // The curve sees the response with the sections after it undone
+            // (`K/B`), as a running filter: a kernel truncated to the
+            // measured window got its sub-audio gain wrong, and program
+            // material's content below 5 Hz then cost dynamics 30 dB.
+            let level = self.inverse.iter_mut().fold(y, |x, sec| sec.process(x));
             // a₂s² + a₃s³ + … by Horner, through the high-passes after
             // the curve.
             let higher = self.poly.iter().rev().fold(0.0_f64, |acc, &a| acc.mul_add(level, a));
@@ -453,8 +446,8 @@ impl DualMic {
             let f2 = self.mic2.model().proximity.f0(p2);
             let centre = (1.0 - m).mul_add(f1, m * f2);
             let align = s.align_cm / 100.0 / 340.0 * sr;
-            self.mic1.set_dual(DualAdjust { own_delay: d1, delay, align: (-align).max(0.0), centre: Some(centre) });
-            self.mic2.set_dual(DualAdjust { own_delay: d2, delay, align: align.max(0.0), centre: Some(centre) });
+            self.mic1.set_dual(DualAdjust { own_delay: d1, delay, align: (-align).max(0.0), centre: Some(centre), law_pattern: None });
+            self.mic2.set_dual(DualAdjust { own_delay: d2, delay, align: align.max(0.0), centre: Some(centre), law_pattern: None });
         } else {
             self.mic1.set_dual(DualAdjust::none(d1));
             self.mic2.set_dual(DualAdjust::none(d2));
@@ -513,7 +506,12 @@ impl StereoMic {
         s
     }
 
+    /// Apply the 180 controls; call it again after changing either mic's
+    /// settings (the backward mic takes the forward mic's proximity base).
     pub fn set(&mut self, s: StereoSettings) {
+        let own = self.backward.model().delay;
+        let forward = self.forward.settings().pattern;
+        self.backward.set_dual(DualAdjust { law_pattern: Some(forward), ..DualAdjust::none(own) });
         let p = s.pan.clamp(-1.0, 1.0);
         // Each mic's pan gain is applied twice, before its curve and after
         // it: the level falls as g², its second harmonic as g and its third
