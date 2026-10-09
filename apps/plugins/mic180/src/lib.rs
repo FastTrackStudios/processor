@@ -12,75 +12,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use mic_dsp::{MicChain, Settings, StereoMic, StereoSettings, latency};
 use nice_plug::prelude::*;
+use nice_plug_dioxus::{DioxusState, create_dioxus_editor_with_state};
+pub use mic_ui::params::Mic180Params;
+use mic_ui::params::Mic180UiState;
 
 #[path = "../../mic/src/common.rs"]
 mod common;
-use common::{FILTERS, MICS, PATTERNS, SOURCES, choice, float, index, load_model, load_model_variant};
+use common::{index, load_model, load_model_variant};
 
 const PLUGIN_NAME: &str = "FTS Mic 180";
 
-#[derive(Params)]
-pub struct Mic180Params {
-    #[id = "type1"]
-    pub type1: IntParam,
-    #[id = "pattern1"]
-    pub pattern1: IntParam,
-    #[id = "filter1"]
-    pub filter1: IntParam,
-    #[id = "axis1"]
-    pub axis1: FloatParam,
-    #[id = "type2"]
-    pub type2: IntParam,
-    #[id = "pattern2"]
-    pub pattern2: IntParam,
-    #[id = "filter2"]
-    pub filter2: IntParam,
-    #[id = "axis2"]
-    pub axis2: FloatParam,
-    /// Mic 2 follows mic 1's type, pattern, filter and axis.
-    #[id = "link"]
-    pub link: BoolParam,
-    #[id = "pan"]
-    pub pan: FloatParam,
-    #[id = "width"]
-    pub width: FloatParam,
-    #[id = "proximity"]
-    pub proximity: FloatParam,
-    #[id = "output"]
-    pub output: FloatParam,
-    #[id = "phase"]
-    pub phase: BoolParam,
-    #[id = "rear_trim"]
-    pub rear_trim: FloatParam,
-    #[id = "swap"]
-    pub swap: BoolParam,
-    #[id = "source"]
-    pub source: IntParam,
-}
-
-impl Default for Mic180Params {
-    fn default() -> Self {
-        Self {
-            type1: choice("Mic1 Type", 0, &MICS),
-            pattern1: choice("Mic1 Pattern", 4, &PATTERNS),
-            filter1: choice("Mic1 Filter", 0, &FILTERS),
-            axis1: float("Mic1 Axis", 0.0, 0.0, 180.0, "°", 1),
-            type2: choice("Mic2 Type", 0, &MICS),
-            pattern2: choice("Mic2 Pattern", 4, &PATTERNS),
-            filter2: choice("Mic2 Filter", 0, &FILTERS),
-            axis2: float("Mic2 Axis", 0.0, 0.0, 180.0, "°", 1),
-            link: BoolParam::new("Mic Link", true),
-            pan: float("Mic Pan", 0.0, -100.0, 100.0, "%", 1),
-            width: float("Stereo Width", 100.0, 0.0, 200.0, "%", 1),
-            proximity: float("Proximity", 0.0, -100.0, 100.0, "%", 1),
-            output: float("Output", 0.0, -12.0, 12.0, " dB", 1),
-            phase: BoolParam::new("Phase Invert", false),
-            rear_trim: float("Rear Trim", 0.0, -6.0, 6.0, " dB", 2),
-            swap: BoolParam::new("Swap Capsules", false),
-            source: choice("Source Mic", 0, &SOURCES),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Want {
@@ -112,6 +53,8 @@ fn loader(requests: &Receiver<Want>, ready: &Sender<(Want, Box<StereoMic>)>, tra
 
 pub struct FtsMic180 {
     params: Arc<Mic180Params>,
+    ui_state: Arc<Mic180UiState>,
+    editor_state: Arc<DioxusState>,
     engine: Option<Box<StereoMic>>,
     have: Option<Want>,
     asked: Option<Want>,
@@ -130,8 +73,11 @@ impl Default for FtsMic180 {
         let alive = Arc::new(AtomicBool::new(true));
         let flag = alive.clone();
         let _ = std::thread::Builder::new().name("fts-mic180-loader".into()).spawn(move || loader(&req_rx, &ready_tx, &trash_rx, &flag));
+        let params = Arc::new(Mic180Params::default());
         Self {
-            params: Arc::new(Mic180Params::default()),
+            params: params.clone(),
+            ui_state: Arc::new(Mic180UiState::new(params)),
+            editor_state: DioxusState::new(|| (mic_ui::view::EDITOR_W, mic_ui::view::EDITOR_H)).with_resize_hint(mic_ui::view::resize_hint()),
             engine: None,
             have: None,
             asked: None,
@@ -222,12 +168,16 @@ impl Plugin for FtsMic180 {
         ..AudioIOLayout::const_default()
     }];
 
-    type Editor = ();
+    type Editor = nice_plug_dioxus::editor::DioxusEditor;
     type SysExMessage = ();
     type BackgroundTask = ();
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
+        create_dioxus_editor_with_state(self.editor_state.clone(), self.ui_state.clone(), mic_ui::view::App180)
     }
 
     fn activate(&mut self, _layout: &AudioIOLayout, buffer_config: &BufferConfig, context: &mut impl ActivateContext<Self>) -> bool {
