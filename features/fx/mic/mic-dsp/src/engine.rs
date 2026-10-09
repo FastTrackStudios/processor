@@ -446,3 +446,53 @@ impl DualMic {
         }
     }
 }
+
+/// The reference's 180 variant: one capsule pair, two mics — mic 1 facing
+/// forward (the ordinary model) and mic 2 facing back (its own measured
+/// models) — on the left and right.
+///
+/// `Mic Pan` is a balance: mic 1 is scaled by `min(1, 1 − p)²`, mic 2 by
+/// `min(1, 1 + p)²`. `Stereo Width` crossfeeds: `L = α m1 + β m2`,
+/// `R = β m1 + α m2`, with `α = (1 + w)/2`, `β = (1 − w²)/2` up to 100 %
+/// and `α = 1`, `β = −(w − 1)/2` beyond. Both exact against the reference.
+pub struct StereoMic {
+    pub forward: MicChain,
+    pub backward: MicChain,
+    gains: [f64; 2],
+    mix: [f64; 2],
+}
+
+/// The 180 variant's own controls.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StereoSettings {
+    /// −1 … +1 (mic 1 … mic 2).
+    pub pan: f64,
+    /// 0 … 2 (0 … 200 %).
+    pub width: f64,
+}
+
+impl StereoMic {
+    #[must_use]
+    pub fn new(forward: MicChain, backward: MicChain) -> Self {
+        let mut s = Self { forward, backward, gains: [1.0; 2], mix: [1.0, 0.0] };
+        s.set(StereoSettings { pan: 0.0, width: 1.0 });
+        s
+    }
+
+    pub fn set(&mut self, s: StereoSettings) {
+        let p = s.pan.clamp(-1.0, 1.0);
+        let g1 = (1.0 - p).min(1.0);
+        let g2 = (1.0 + p).min(1.0);
+        self.gains = [g1 * g1, g2 * g2];
+        let w = s.width.clamp(0.0, 2.0);
+        self.mix = if w <= 1.0 { [f64::midpoint(1.0, w), w.mul_add(-w, 1.0) / 2.0] } else { [1.0, -(w - 1.0) / 2.0] };
+    }
+
+    /// One capsule-pair sample in, `(left, right)` out.
+    pub fn process(&mut self, front: f64, rear: f64) -> (f64, f64) {
+        let m1 = self.forward.process(front, rear) * self.gains[0];
+        let m2 = self.backward.process(front, rear) * self.gains[1];
+        let [a, b] = self.mix;
+        (a.mul_add(m1, b * m2), b.mul_add(m1, a * m2))
+    }
+}
