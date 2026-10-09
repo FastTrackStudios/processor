@@ -84,6 +84,19 @@ pub fn curve(u: f64) -> f64 {
     crate::table::hermite(&t::CURVE, &t::CURVE_SLOPE, t::CURVE_UMAX, u)
 }
 
+/// The static picture of the stage, for a display.
+///
+/// The curve as driven by Crush and Crunch, for an input `x` in −1..1 (full
+/// scale), normalised to the curve's rail. The limiter's gain riding is
+/// dynamics, not a curve, so it is left out — this is what one cycle of a
+/// transient meets.
+#[must_use]
+pub fn static_curve(p: &DeluxeParams, x: f64) -> f64 {
+    let gain = libm::pow(10.0, (crush_db(p.crush) + t::CRUNCH_DB_PER_UNIT * p.crunch.clamp(0.0, 10.0)) / 20.0);
+    let rail = curve(t::CURVE_UMAX).abs().max(curve(-t::CURVE_UMAX).abs());
+    curve(0.25 * gain * x) / rail
+}
+
 /// A complex number, just enough of one for bilinear transforms.
 #[derive(Clone, Copy, Debug)]
 struct C(f64, f64);

@@ -248,6 +248,26 @@ fn triode(lo: usize, w: f64, v: f64) -> f64 {
     if w <= 0.0 { a } else { a + w * (triode_at(lo.saturating_add(1), v) - a) }
 }
 
+/// The static picture of the two tube stages, for a display.
+///
+/// For an input `x` in −1..1 (full scale): the pentode at its knob into the
+/// triode at its, operating point taken off, normalised to the swing.
+#[must_use]
+pub fn static_curve(p: &BlueboxParams, x: f64) -> f64 {
+    let fx = {
+        let mut fx = Bluebox::new(48_000.0);
+        fx.set(*p);
+        fx
+    };
+    let stage = |u: f64| {
+        let pentode = crate::table::hermite_warped(&t::PENTODE, &t::PENTODE_SLOPE, t::PENTODE_UMAX, t::WARP, fx.g_p * u);
+        triode(fx.triode_lo, fx.triode_w, pentode) * fx.triode_level - fx.rest / fx.makeup.max(1e-9)
+    };
+    // normalise to the swing at full scale, so the picture is the shape
+    let swing = stage(1.0).abs().max(stage(-1.0).abs()).max(1e-9);
+    stage(x) / swing
+}
+
 /// One channel.
 #[derive(Clone, Debug, Default)]
 struct Channel {

@@ -26,6 +26,8 @@ use audiocore_core::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use saturate::bluebox::Bluebox;
+use saturate::deluxe::Deluxe;
 use saturate::digital::DigitalStage;
 use saturate::emphasis::EmphasisEq;
 use saturate::preamp::ClassAPreamp;
@@ -49,6 +51,12 @@ pub struct FtsSaturate {
     /// The emphasis / de-emphasis EQ pair (`fx.sat.emphasis`): applied
     /// around the whole wet path, per channel like the preamps.
     emph: [EmphasisEq; 2],
+    /// The measured models. Stereo engines (Deluxe's detector hears the
+    /// sum of both channels), built for the session's rate in `activate`
+    /// because their filters are designed there — never on the audio
+    /// thread.
+    deluxe: Deluxe,
+    bluebox: Bluebox,
 }
 
 impl Default for FtsSaturate {
@@ -67,6 +75,8 @@ impl Default for FtsSaturate {
             pre: [ClassAPreamp::new(48_000.0), ClassAPreamp::new(48_000.0)],
             quantiser: [DigitalStage::new(), DigitalStage::new()],
             emph: [EmphasisEq::new(48_000.0), EmphasisEq::new(48_000.0)],
+            deluxe: Deluxe::new(48_000.0),
+            bluebox: Bluebox::new(48_000.0),
         }
     }
 }
@@ -77,7 +87,7 @@ impl FtsSaturate {
     /// Resolved through the *persisted id* rather than the automatable index,
     /// so growing the rail never repoints an old session at a different
     /// circuit — same contract the reverb and the compressor keep.
-    fn sync_params(&mut self) -> bool {
+    fn sync_params(&mut self) -> (bool, saturate_profiles::Engine) {
         let profile = self.params.resolved_profile();
         let controls = saturate_profiles::Controls {
             drive: self.params.drive.value(),
@@ -105,7 +115,13 @@ impl FtsSaturate {
             pre.set_emphasis_sigma_gain(sigma_gain);
             saturate_profiles::apply(profile, &controls, pre, quantiser);
         }
-        profile.voicing.digital && !self.quantiser[0].is_transparent()
+        // The measured models take the same knobs through their own mapping.
+        match profile.engine {
+            saturate_profiles::Engine::Deluxe => self.deluxe.set(saturate_profiles::deluxe_params(&controls)),
+            saturate_profiles::Engine::Bluebox => self.bluebox.set(saturate_profiles::bluebox_params(&controls)),
+            saturate_profiles::Engine::Preamp => {}
+        }
+        (profile.voicing.digital && !self.quantiser[0].is_transparent(), profile.engine)
     }
 }
 
@@ -156,6 +172,8 @@ impl Plugin for FtsSaturate {
         for emph in &mut self.emph {
             emph.set_sample_rate(buffer_config.sample_rate);
         }
+        self.deluxe = Deluxe::new(f64::from(buffer_config.sample_rate));
+        self.bluebox = Bluebox::new(f64::from(buffer_config.sample_rate));
         // Land the settings before the first block, so the tilt filters and
         // the sag ballistics start on the real values rather than ramping
         // out of a default nobody chose.
@@ -171,6 +189,8 @@ impl Plugin for FtsSaturate {
         for emph in &mut self.emph {
             emph.reset();
         }
+        self.deluxe.reset();
+        self.bluebox.reset();
     }
 
     fn process(
@@ -179,12 +199,39 @@ impl Plugin for FtsSaturate {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let crushing = self.sync_params();
+        let (crushing, engine) = self.sync_params();
         let mix = self.params.mix.value();
         let output = 10.0f32.powf(self.params.output.value() / 20.0);
 
         let mut input_peak = 0.0f32;
         let mut output_peak = 0.0f32;
+
+        if engine != saturate_profiles::Engine::Preamp {
+            // A measured model is a whole stereo algorithm with its own mix
+            // law (handed over in `sync_params`); the emphasis pair still
+            // wraps what it distorts, and Output stays ours.
+            for mut frame in buffer.iter_samples() {
+                let mut io = [0.0f32; 2];
+                for ((sample, slot), emph) in frame.iter_mut().zip(io.iter_mut()).zip(self.emph.iter_mut()) {
+                    input_peak = input_peak.max(sample.abs());
+                    *slot = emph.pre(*sample);
+                }
+                let [l, r] = io;
+                let wet_pair: [f64; 2] = match engine {
+                    saturate_profiles::Engine::Deluxe => self.deluxe.process(f64::from(l), f64::from(r)),
+                    _ => self.bluebox.process(f64::from(l), f64::from(r)),
+                }
+                .into();
+                for ((sample, wet), emph) in frame.iter_mut().zip(wet_pair).zip(self.emph.iter_mut()) {
+                    let out = emph.post(to_f32(wet)) * output;
+                    output_peak = output_peak.max(out.abs());
+                    *sample = out;
+                }
+            }
+            store_peak(&self.ui_state.input_db, input_peak);
+            store_peak(&self.ui_state.out_db, output_peak);
+            return ProcessStatus::Normal;
+        }
 
         for mut frame in buffer.iter_samples() {
             for (c, sample) in frame.iter_mut().enumerate() {
@@ -217,6 +264,12 @@ impl Plugin for FtsSaturate {
 
         ProcessStatus::Normal
     }
+}
+
+/// The measured models run in f64; the host's buffer is f32.
+#[expect(clippy::as_conversions, clippy::cast_possible_truncation, reason = "narrowing to the host's f32 buffer is the point")]
+const fn to_f32(x: f64) -> f32 {
+    x as f32
 }
 
 /// Peak-hold in dB, falling 0.3 dB a block. The editor samples this when it
@@ -290,7 +343,8 @@ mod tests {
         }
     }
 
-    /// Silence in, silence out — on all nine, including the ones with a bias
+    /// Silence in, silence out — on every profile, the measured models
+    /// included, and the ones with a bias
     /// on them. The DC blocker is what makes that true, and a saturator that
     /// hums at rest is unusable however good it sounds when played.
     #[test]
@@ -298,14 +352,16 @@ mod tests {
         for index in 0..saturate_profiles::PROFILES.len() {
             let mut plugin = FtsSaturate::default();
             plugin.params.store_profile_id(index);
-            let crushing = plugin.sync_params();
+            let (crushing, engine) = plugin.sync_params();
             let mut worst = 0.0f32;
             for i in 0..48_000 {
-                let wet = plugin.pre[0].process_wet(0, 0.0);
-                let y = if crushing {
-                    plugin.quantiser[0].process(0, wet)
-                } else {
-                    wet
+                let y = match engine {
+                    saturate_profiles::Engine::Deluxe => to_f32(plugin.deluxe.process(0.0, 0.0).0),
+                    saturate_profiles::Engine::Bluebox => to_f32(plugin.bluebox.process(0.0, 0.0).0),
+                    saturate_profiles::Engine::Preamp => {
+                        let wet = plugin.pre[0].process_wet(0, 0.0);
+                        if crushing { plugin.quantiser[0].process(0, wet) } else { wet }
+                    }
                 };
                 if i > 24_000 {
                     worst = worst.max(y.abs());
