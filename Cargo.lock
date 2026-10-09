@@ -561,7 +561,6 @@ dependencies = [
 [[package]]
 name = "audiocore-dsp"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/daw?tag=v0.0.6.3#db690d63aaae8c6dcf9d308754299a144c111b4e"
 
 [[package]]
 name = "audiocore-gui"
@@ -1277,6 +1276,7 @@ dependencies = [
  "preset-browser-ui",
  "tokio",
  "vello",
+ "web-time",
 ]
 
 [[package]]
@@ -3583,6 +3583,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
+
+[[package]]
 name = "html-escape"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4565,6 +4571,15 @@ dependencies = [
  "nice-plug",
  "nice-plug-dioxus",
  "parking_lot",
+]
+
+[[package]]
+name = "mic-dsp"
+version = "0.1.0"
+dependencies = [
+ "dsp-core",
+ "hound",
+ "realfft",
 ]
 
 [[package]]
@@ -5859,9 +5874,9 @@ dependencies = [
 [[package]]
 name = "pitch-dsp"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/daw?tag=v0.0.6.3#db690d63aaae8c6dcf9d308754299a144c111b4e"
 dependencies = [
  "audiocore-dsp",
+ "realfft",
  "serde",
 ]
 

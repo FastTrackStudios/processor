@@ -45,6 +45,7 @@ members = [
     "features/fx/modulation/pattern-ui",
     "features/fx/modulation/trem-dsp",
     "features/fx/modulation/wah-dsp",
+    "features/fx/mic/mic-dsp",
     "features/fx/multiband",
     "features/fx/musical-time/musical-time",
     "features/fx/musical-time/musical-time-ui",
@@ -302,6 +303,7 @@ modulation = { path = "features/fx/modulation/modulation" }
 eq-dsp = { path = "features/fx/eq/eq-dsp" }
 comp-dsp = { path = "features/fx/comp/comp-dsp" }
 reverb-dsp = { path = "features/fx/reverb/reverb-dsp" }
+mic-dsp = { path = "features/fx/mic/mic-dsp" }
 reverb-profiles = { path = "features/fx/reverb/reverb-profiles" }
 reverb-ui = { path = "features/fx/reverb/reverb-ui" }
 stretch = { path = "features/fx/stretch/stretch" }
@@ -1052,3 +1054,8 @@ opt-level = 3
 # COOP/COEP headers that unlock SharedArrayBuffer. Developing against the
 # local checkout per CLAUDE.md; the release path is: land in architect,
 # tag, bump the rev here, delete this block.
+
+# TEMPORARY (pitch work, do not commit): local daw checkout
+[patch."https://github.com/FastTrackStudios/daw"]
+pitch-dsp = { path = "../daw/features/fx/pitch/pitch-dsp" }
+audiocore-dsp = { path = "../daw/crates/audiocore/audiocore-dsp" }
