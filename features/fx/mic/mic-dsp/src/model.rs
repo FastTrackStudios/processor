@@ -32,6 +32,7 @@
 //!                            (bit 0, the switch off, is always set)
 //! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
 //! f64 delay                  (optional) the model's own fractional delay
+//! f64 shelf_k[9]             (optional) the Shelf law's k at each pattern step
 //!                            (the measured response, curve's high-passes
 //!                            included; the engine derives the curve's input)
 //! ```
@@ -58,7 +59,7 @@ pub enum ProximityLaw {
     Corner { f0: [f64; PATTERNS], lo: f64, hi: f64 },
     /// As [`Self::Corner`], but the gradient path is a shelf rather than a
     /// high-pass: a zero follows the pole at `k` times its frequency.
-    Shelf { f0: [f64; PATTERNS], lo: f64, hi: f64, k: f64 },
+    Shelf { f0: [f64; PATTERNS], lo: f64, hi: f64, k: [f64; PATTERNS] },
     /// Dynamics: raising proximity moves the pole down geometrically to
     /// `f0 / up`; lowering it slides a zero down from `f0` to
     /// `f0 / down` with `u²` — a deepening low shelf.
@@ -90,7 +91,10 @@ impl ProximityLaw {
                 // replace the centre where it cancels the kernel's own corner
                 let z = if (zero - centre).abs() < 1e-9 { own } else { zero };
                 let p = match self {
-                    Self::Shelf { k, .. } if k.mul_add(-centre, pole).abs() < 1e-9 => k * own,
+                    Self::Shelf { k, .. } => {
+                        let k = k.get(pattern).copied().unwrap_or(1.0);
+                        if k.mul_add(-centre, pole).abs() < 1e-9 { k * own } else { pole }
+                    }
                     _ => pole,
                 };
                 (z, p)
@@ -119,6 +123,7 @@ impl ProximityLaw {
             }
             Self::Shelf { f0, lo, hi, k } => {
                 let f0 = f0.get(pattern).copied().unwrap_or(100.0);
+                let k = k.get(pattern).copied().unwrap_or(1.0);
                 let p = corner(f0, lo, hi);
                 [Some((f0, p)), Some((k * p, k * f0))]
             }
@@ -263,7 +268,7 @@ impl MicModel {
         let [first, second, third, _] = params;
         let proximity = match law {
             0 => ProximityLaw::Corner { f0, lo: first, hi: second },
-            1 => ProximityLaw::Shelf { f0, lo: first, hi: second, k: third },
+            1 => ProximityLaw::Shelf { f0, lo: first, hi: second, k: [third; PATTERNS] },
             2 => ProximityLaw::Dynamic { f0, up: first, down: second, cap: third },
             _ => return Err(ModelError::BadShape),
         };
@@ -312,6 +317,13 @@ impl MicModel {
             bit = bit.wrapping_shl(1);
         }
         let delay = r.f64().unwrap_or(MODEL_DELAY);
+        let mut proximity = proximity;
+        if let ProximityLaw::Shelf { k, .. } = &mut proximity {
+            let mut table = *k;
+            if table.iter_mut().try_for_each(|v| r.f64().map(|x| *v = x)).is_ok() {
+                *k = table;
+            }
+        }
         Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay })
     }
 
