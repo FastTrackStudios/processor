@@ -27,7 +27,8 @@
 //!   u32 poly_len, f64 poly[]  the curve: s + poly[0] s² + poly[1] s³ + …
 //!   u32 n, n × (u32 kind, f64 p[3])  sections after the curve:
 //!                             kind 0 high-pass (p0 = Hz), 1 peak (Hz, Q, dB),
-//!                             2 second-order high-pass (Hz, Q)
+//!                             2 second-order high-pass (Hz, Q),
+//!                             3 the curve's input clamp (p0, not a filter)
 //! u32 kernel_sets            bit k: low-cut position k has its own anchor set
 //!                            (bit 0, the switch off, is always set)
 //! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
@@ -182,6 +183,9 @@ pub struct OutputStage {
     /// `y = s + poly[0] s² + poly[1] s³ + …`.
     pub poly: [f64; MAX_POLY],
     pub post: Vec<PostSection>,
+    /// The polynomial's input is held to ±this (the reference's curve stops
+    /// growing beyond it); infinite when the file gives none.
+    pub clamp: f64,
 }
 
 /// The fractional delay nearly every model carries (samples).
@@ -291,6 +295,7 @@ impl MicModel {
                 return Err(ModelError::BadShape);
             }
             let mut post = Vec::with_capacity(n);
+            let mut clamp = f64::INFINITY;
             for _ in 0..n {
                 let kind = r.u32()?;
                 let p = [r.f64()?, r.f64()?, r.f64()?];
@@ -298,10 +303,14 @@ impl MicModel {
                     0 => PostSection::HighPass(p[0]),
                     1 => PostSection::Peak { hz: p[0], q: p[1], db: p[2] },
                     2 => PostSection::HighPass2 { hz: p[0], q: p[1] },
+                    3 => {
+                        clamp = p[0];
+                        continue;
+                    }
                     _ => return Err(ModelError::BadShape),
                 });
             }
-            *stage = Some(OutputStage { poly, post });
+            *stage = Some(OutputStage { poly, post, clamp });
         }
         let mask = r.u32()? | 1;
         let count = PATTERNS

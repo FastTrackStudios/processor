@@ -137,6 +137,8 @@ pub struct MicChain {
     inverse: [Biquad; MAX_POST],
     /// The curve's coefficients at the current low-cut position.
     poly: [f64; MAX_POLY],
+    /// … and the level its input is held to.
+    clamp: f64,
     out_gain: f64,
     rear_gain: f64,
     kernel_p: Vec<f64>,
@@ -246,6 +248,7 @@ impl MicChain {
             low_cut: CornerShift::identity(),
             post: [Biquad::identity(); MAX_POST],
             poly: [0.0; MAX_POLY],
+            clamp: f64::INFINITY,
             out_gain: 1.0,
             rear_gain: 1.0,
             kernel_p: vec![0.0; taps],
@@ -323,6 +326,7 @@ impl MicChain {
         // By reference: this runs on the audio thread when a control moves.
         let stage = self.model.stage(s.low_cut);
         self.poly = stage.map_or([0.0; MAX_POLY], |st| st.poly);
+        self.clamp = stage.map_or(f64::INFINITY, |st| st.clamp);
         let leak = core::f64::consts::TAU * LEAK_HZ / sr;
         for (i, (section, inverse)) in self.post.iter_mut().zip(&mut self.inverse).enumerate() {
             *section = stage.and_then(|st| st.post.get(i)).map_or_else(Biquad::identity, |&p| design(p, sr));
@@ -382,7 +386,7 @@ impl MicChain {
             // (`K/B`), as a running filter: a kernel truncated to the
             // measured window got its sub-audio gain wrong, and program
             // material's content below 5 Hz then cost dynamics 30 dB.
-            let level = self.inverse.iter_mut().fold(y, |x, sec| sec.process(x));
+            let level = self.inverse.iter_mut().fold(y, |x, sec| sec.process(x)).clamp(-self.clamp, self.clamp);
             // a₂s² + a₃s³ + … by Horner, through the high-passes after
             // the curve.
             let higher = self.poly.iter().rev().fold(0.0_f64, |acc, &a| acc.mul_add(level, a));
