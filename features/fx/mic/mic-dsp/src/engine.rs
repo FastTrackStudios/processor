@@ -110,11 +110,15 @@ fn design(section: PostSection, sample_rate: f64) -> Biquad {
     }
 }
 
+/// Where a removed high-pass's zeros go (Hz): low enough that the curve's
+/// input `K/B` is exact through the audio band (2 Hz cost LD-47K 35 dB).
+const LEAK_HZ: f64 = 0.05;
+
 /// Run a section's inverse over a kernel, in place. A high-pass's zeros
-/// at DC become poles just inside it (0.05 Hz), so the result stays
-/// bounded however the measured kernel was truncated.
+/// at DC become poles at [`LEAK_HZ`], so the result stays bounded however
+/// the measured kernel was truncated.
 fn remove(kernel: &mut [f64], section: Biquad, sample_rate: f64) {
-    let leak = core::f64::consts::TAU * 0.05 / sample_rate;
+    let leak = core::f64::consts::TAU * LEAK_HZ / sample_rate;
     let mut inv = section.inverse(leak);
     for v in kernel.iter_mut() {
         *v = inv.process(*v);
