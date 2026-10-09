@@ -8,14 +8,16 @@
 
 use core::f64::consts::PI;
 
-/// An analog corner as a digital pole: bilinear, not prewarped.
+/// An analog corner as a digital pole: bilinear, prewarped to the corner.
 ///
-/// `(1 − a)/(1 + a)` with `a = πf/fs` — what the reference does: its
-/// 500 Hz proximity corner measures 500.18 Hz, exactly this map's warp.
+/// `(1 − t)/(1 + t)` with `t = tan(πf/fs)`, so the digital corner lands
+/// exactly on `f` — what the reference does (measured against the
+/// unwarped map, its 500 Hz proximity corner sits at `(fs/π)·tan(π·500/fs)`
+/// = 500.18 Hz).
 #[must_use]
 pub fn pole(corner_hz: f64, sample_rate: f64) -> f64 {
-    let a = PI * corner_hz.max(0.0) / sample_rate;
-    (1.0 - a) / (1.0 + a)
+    let t = (PI * corner_hz.max(0.0) / sample_rate).min(1.5).tan();
+    (1.0 - t) / (1.0 + t)
 }
 
 /// `(1 − z₀z⁻¹)/(1 − p z⁻¹)` with unit gain at Nyquist.
