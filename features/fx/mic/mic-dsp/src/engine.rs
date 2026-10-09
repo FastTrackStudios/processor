@@ -23,7 +23,8 @@
 
 use crate::conv::Convolver;
 use crate::model::{AXES, AXIS_STEP_DEG, MicModel, PATTERNS};
-use crate::section::CornerShift;
+use crate::model::{MAX_POLY, MAX_POST, PostSection};
+use crate::section::{Biquad, CornerShift};
 
 
 /// Samples of latency, as the reference reports.
@@ -93,17 +94,22 @@ impl Path {
     }
 }
 
-/// Undo a first-order high-pass at `corner_hz` on a kernel, in place:
-/// `y[n] = y[n−1] + (x[n] − p·x[n−1]) / g`.
-fn remove_high_pass(kernel: &mut [f64], corner_hz: f64, sample_rate: f64) {
-    let p = crate::section::pole(corner_hz, sample_rate);
-    let g = f64::midpoint(1.0, p);
-    let (mut prev_x, mut acc) = (0.0, 0.0);
+fn design(section: PostSection, sample_rate: f64) -> Biquad {
+    match section {
+        PostSection::HighPass(hz) => Biquad::high_pass(hz, sample_rate),
+        PostSection::Peak { hz, q, db } => Biquad::peak(hz, q, db, sample_rate),
+        PostSection::HighPass2 { hz, q } => Biquad::high_pass2(hz, q, sample_rate),
+    }
+}
+
+/// Run a section's inverse over a kernel, in place. A high-pass's zeros
+/// at DC become poles just inside it (0.05 Hz), so the result stays
+/// bounded however the measured kernel was truncated.
+fn remove(kernel: &mut [f64], section: Biquad, sample_rate: f64) {
+    let leak = core::f64::consts::TAU * 0.05 / sample_rate;
+    let mut inv = section.inverse(leak);
     for v in kernel.iter_mut() {
-        let x = *v;
-        acc += p.mul_add(-prev_x, x) / g;
-        prev_x = x;
-        *v = acc;
+        *v = inv.process(*v);
     }
 }
 
@@ -123,8 +129,10 @@ pub struct MicChain {
     /// Only run when the model has a curve.
     pre: Path,
     low_cut: CornerShift,
-    /// The mic's high-passes after the curve, on the distortion terms.
-    post: [CornerShift; crate::model::MAX_POST],
+    /// The sections after the curve, on the distortion terms.
+    post: [Biquad; MAX_POST],
+    /// The curve's coefficients at the current low-cut position.
+    poly: [f64; MAX_POLY],
     out_gain: f64,
     rear_gain: f64,
     kernel_p: Vec<f64>,
@@ -136,12 +144,13 @@ impl MicChain {
     #[must_use]
     pub fn new(model: MicModel) -> Self {
         let taps = model.taps;
-        let has_curve = model.poly.iter().any(|&a| a != 0.0);
+        let has_curve = (0..crate::model::LOW_CUTS).any(|k| model.stage(k).is_some_and(|s| s.poly.iter().any(|&a| a != 0.0)));
         let mut chain = Self {
             linear: Path::new(taps),
             pre: Path::new(if has_curve { taps } else { 0 }),
             low_cut: CornerShift::identity(),
-            post: [CornerShift::identity(); crate::model::MAX_POST],
+            post: [Biquad::identity(); MAX_POST],
+            poly: [0.0; MAX_POLY],
             out_gain: 1.0,
             rear_gain: 1.0,
             kernel_p: vec![0.0; taps],
@@ -189,11 +198,10 @@ impl MicChain {
         } else {
             self.low_cut.set(off, cut.get(s.low_cut).copied().unwrap_or(off), sr);
         }
+        let stage = self.model.stage(s.low_cut).cloned().unwrap_or_default();
+        self.poly = stage.poly;
         for (i, section) in self.post.iter_mut().enumerate() {
-            match self.model.post_hz.get(i) {
-                Some(&corner) => section.set(0.0, corner, sr),
-                None => section.make_identity(),
-            }
+            *section = stage.post.get(i).map_or_else(Biquad::identity, |&p| design(p, sr));
         }
         let sign = if s.phase_invert { -1.0 } else { 1.0 };
         self.out_gain = sign * db_to_gain(s.output_db);
@@ -219,9 +227,10 @@ impl MicChain {
         self.linear.conv_g.set_kernel(&self.kernel_g);
         if self.has_curve {
             let sr = self.model.sample_rate;
-            for &corner in &self.model.post_hz {
-                remove_high_pass(&mut self.kernel_p, corner, sr);
-                remove_high_pass(&mut self.kernel_g, corner, sr);
+            let post = self.model.stage(cut).map(|s| s.post.clone()).unwrap_or_default();
+            for section in post {
+                remove(&mut self.kernel_p, design(section, sr), sr);
+                remove(&mut self.kernel_g, design(section, sr), sr);
             }
             self.pre.conv_p.set_kernel(&self.kernel_p);
             self.pre.conv_g.set_kernel(&self.kernel_g);
@@ -232,7 +241,7 @@ impl MicChain {
         self.linear.reset();
         self.pre.reset();
         self.low_cut.reset();
-        self.post.iter_mut().for_each(CornerShift::reset);
+        self.post.iter_mut().for_each(Biquad::reset);
     }
 
     /// One capsule-pair sample in, one mic sample out.
@@ -245,7 +254,7 @@ impl MicChain {
             let level = self.pre.process(fr + rr, fr - rr);
             // a₂s² + a₃s³ + … by Horner, through the high-passes after
             // the curve.
-            let higher = self.model.poly.iter().rev().fold(0.0_f64, |acc, &a| acc.mul_add(level, a));
+            let higher = self.poly.iter().rev().fold(0.0_f64, |acc, &a| acc.mul_add(level, a));
             let terms = level * level * higher;
             y += self.post.iter_mut().fold(terms, |x, sec| sec.process(x));
         }

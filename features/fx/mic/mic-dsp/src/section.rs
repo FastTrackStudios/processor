@@ -67,3 +67,103 @@ impl CornerShift {
         y
     }
 }
+
+/// A general second-order section, transposed direct form II, `a₀ = 1`.
+#[derive(Clone, Copy, Debug)]
+pub struct Biquad {
+    b: [f64; 3],
+    a: [f64; 2],
+    s1: f64,
+    s2: f64,
+}
+
+impl Default for Biquad {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl Biquad {
+    #[must_use]
+    pub const fn identity() -> Self {
+        Self { b: [1.0, 0.0, 0.0], a: [0.0, 0.0], s1: 0.0, s2: 0.0 }
+    }
+
+    /// First-order high-pass, prewarped: `(1+p)/2 · (1 − z⁻¹)/(1 − p z⁻¹)`.
+    #[must_use]
+    pub fn high_pass(corner_hz: f64, sample_rate: f64) -> Self {
+        let p = pole(corner_hz, sample_rate);
+        let g = f64::midpoint(1.0, p);
+        Self { b: [g, -g, 0.0], a: [-p, 0.0], s1: 0.0, s2: 0.0 }
+    }
+
+    /// Second-order high-pass, bilinear prewarped to the corner, with `q`.
+    #[must_use]
+    pub fn high_pass2(corner_hz: f64, q: f64, sample_rate: f64) -> Self {
+        // H(s) = s² / (s² + s·w/q + w²) with s = (1 − z⁻¹)/(1 + z⁻¹),
+        // w = tan(π f / fs).
+        let w = (core::f64::consts::PI * corner_hz.max(0.0) / sample_rate).min(1.5).tan();
+        let k = w / q.abs().max(1e-6);
+        let ww = w * w;
+        let a0 = 1.0 + k + ww;
+        Self {
+            b: [1.0 / a0, -2.0 / a0, 1.0 / a0],
+            a: [2.0 * (ww - 1.0) / a0, (1.0 - k + ww) / a0],
+            s1: 0.0,
+            s2: 0.0,
+        }
+    }
+
+    /// Peaking EQ (the RBJ cookbook form): `gain_db` at `centre_hz`,
+    /// bandwidth set by `q`.
+    #[must_use]
+    pub fn peak(centre_hz: f64, q: f64, gain_db: f64, sample_rate: f64) -> Self {
+        let amp = 10f64.powf(gain_db / 40.0);
+        let w0 = core::f64::consts::TAU * centre_hz / sample_rate;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos = w0.cos();
+        let a0 = alpha.mul_add(1.0 / amp, 1.0);
+        Self {
+            b: [alpha.mul_add(amp, 1.0) / a0, -2.0 * cos / a0, alpha.mul_add(-amp, 1.0) / a0],
+            a: [-2.0 * cos / a0, alpha.mul_add(-1.0 / amp, 1.0) / a0],
+            s1: 0.0,
+            s2: 0.0,
+        }
+    }
+
+    /// The section's inverse (numerator and denominator swapped), with
+    /// zeros on z = 1 — a high-pass's — pulled in to `1 − leak` so the
+    /// inverse stays stable: exact above a fraction of a hertz, bounded
+    /// below.
+    #[must_use]
+    pub fn inverse(self, leak: f64) -> Self {
+        let [b0, b1, b2] = self.b;
+        let [a1, a2] = self.a;
+        // b(z) = b0 (1 − r1 z⁻¹)(1 − r2 z⁻¹): only the DC zeros (r = 1,
+        // b0 + b1 + b2 = 0 for one, and b1 = −2 b0, b2 = b0 for two) need
+        // moving; replace each by 1 − leak.
+        let r = 1.0 - leak;
+        let (d1, d2) = if (b2 - b0).abs() < 1e-12 * b0.abs() && 2.0f64.mul_add(b0, b1).abs() < 1e-12 * b0.abs() {
+            (-2.0 * r, r * r)
+        } else if b2 == 0.0 && (b0 + b1).abs() < 1e-12 * b0.abs() {
+            (-r, 0.0)
+        } else {
+            (b1 / b0, b2 / b0)
+        };
+        Self { b: [1.0 / b0, a1 / b0, a2 / b0], a: (d1, d2).into(), s1: 0.0, s2: 0.0 }
+    }
+
+    pub const fn reset(&mut self) {
+        self.s1 = 0.0;
+        self.s2 = 0.0;
+    }
+
+    pub fn process(&mut self, x: f64) -> f64 {
+        let [b0, b1, b2] = self.b;
+        let [a1, a2] = self.a;
+        let y = b0.mul_add(x, self.s1);
+        self.s1 = a1.mul_add(-y, b1.mul_add(x, self.s2));
+        self.s2 = a2.mul_add(-y, b2 * x);
+        y
+    }
+}

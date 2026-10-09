@@ -14,16 +14,20 @@
 //! ways no post-EQ reproduces, and those positions carry their own set of
 //! anchors.
 //!
-//! Asset format (`.micm`, little-endian), version 4:
+//! Asset format (`.micm`, little-endian), version 5:
 //!
 //! ```text
-//! b"MICM" u32 version=4 u32 sample_rate u32 taps u32 patterns=9 u32 axes=5
+//! b"MICM" u32 version=5 u32 sample_rate u32 taps u32 patterns=9 u32 axes=5
 //! f64 low_cut_hz[4]          built-in corner, then the three switch positions
 //! f64 proximity_f0[9]        the mic's own gradient corner at each pattern step
 //! u32 proximity_law          0 = Corner, 1 = Shelf, 2 = Dynamic
 //! f64 proximity_params[4]    Corner: lo hi · Shelf: lo hi k · Dynamic: up down
-//! u32 poly_len, f64 poly[]   the output stage's curve: s + poly[0] s² + poly[1] s³ + …
-//! u32 post_len, f64 post_hz[] first-order high-passes after the curve (prewarped)
+//! 4 × output stage, one per low-cut position:
+//!   u32 present (0: use position 0's)
+//!   u32 poly_len, f64 poly[]  the curve: s + poly[0] s² + poly[1] s³ + …
+//!   u32 n, n × (u32 kind, f64 p[3])  sections after the curve:
+//!                             kind 0 high-pass (p0 = Hz), 1 peak (Hz, Q, dB),
+//!                             2 second-order high-pass (Hz, Q)
 //! u32 kernel_sets            bit k: low-cut position k has its own anchor set
 //!                            (bit 0, the switch off, is always set)
 //! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
@@ -99,10 +103,27 @@ pub struct MicModel {
     /// positions it moves to.
     pub low_cut_hz: [f64; LOW_CUTS],
     pub proximity: ProximityLaw,
-    /// The output stage's curve: `y = s + poly[0] s² + poly[1] s³ + …`.
+    /// The output stage per low-cut position (`None`: position 0's).
+    stages: [Option<OutputStage>; LOW_CUTS],
+}
+
+/// One section after the output curve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PostSection {
+    /// First-order high-pass at this corner (Hz).
+    HighPass(f64),
+    /// Peaking EQ.
+    Peak { hz: f64, q: f64, db: f64 },
+    /// Second-order high-pass.
+    HighPass2 { hz: f64, q: f64 },
+}
+
+/// The mic's output stage: a static curve, then filters.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OutputStage {
+    /// `y = s + poly[0] s² + poly[1] s³ + …`.
     pub poly: [f64; MAX_POLY],
-    /// First-order high-pass corners after the curve.
-    pub post_hz: Vec<f64>,
+    pub post: Vec<PostSection>,
 }
 
 /// Highest curve coefficient stored (`s⁷`).
@@ -156,14 +177,14 @@ impl MicModel {
     /// Parse a `.micm` asset.
     ///
     /// # Errors
-    /// The asset is not version 4 of the format, does not have the
+    /// The asset is not version 5 of the format, does not have the
     /// 9 × 5 layout, or is shorter than its header says.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
         let mut r = Reader { bytes, at: 0 };
         if r.take::<4>()? != *b"MICM" {
             return Err(ModelError::BadMagic);
         }
-        if r.u32()? != 4 {
+        if r.u32()? != 5 {
             return Err(ModelError::BadVersion);
         }
         let sample_rate = f64::from(r.u32()?);
@@ -191,21 +212,35 @@ impl MicModel {
             2 => ProximityLaw::Dynamic { f0, up: first, down: second },
             _ => return Err(ModelError::BadShape),
         };
-        let mut poly = [0.0; MAX_POLY];
-        let poly_len = dsp_core::u32_to_index(r.u32()?);
-        if poly_len > MAX_POLY {
-            return Err(ModelError::BadShape);
-        }
-        for v in poly.iter_mut().take(poly_len) {
-            *v = r.f64()?;
-        }
-        let mut post_hz = [0.0; MAX_POST];
-        let post_len = dsp_core::u32_to_index(r.u32()?);
-        if post_len > MAX_POST {
-            return Err(ModelError::BadShape);
-        }
-        for v in post_hz.iter_mut().take(post_len) {
-            *v = r.f64()?;
+        let mut stages: [Option<OutputStage>; LOW_CUTS] = Default::default();
+        for stage in &mut stages {
+            if r.u32()? == 0 {
+                continue;
+            }
+            let mut poly = [0.0; MAX_POLY];
+            let poly_len = dsp_core::u32_to_index(r.u32()?);
+            if poly_len > MAX_POLY {
+                return Err(ModelError::BadShape);
+            }
+            for v in poly.iter_mut().take(poly_len) {
+                *v = r.f64()?;
+            }
+            let n = dsp_core::u32_to_index(r.u32()?);
+            if n > MAX_POST {
+                return Err(ModelError::BadShape);
+            }
+            let mut post = Vec::with_capacity(n);
+            for _ in 0..n {
+                let kind = r.u32()?;
+                let p = [r.f64()?, r.f64()?, r.f64()?];
+                post.push(match kind {
+                    0 => PostSection::HighPass(p[0]),
+                    1 => PostSection::Peak { hz: p[0], q: p[1], db: p[2] },
+                    2 => PostSection::HighPass2 { hz: p[0], q: p[1] },
+                    _ => return Err(ModelError::BadShape),
+                });
+            }
+            *stage = Some(OutputStage { poly, post });
         }
         let mask = r.u32()? | 1;
         let count = PATTERNS
@@ -221,7 +256,13 @@ impl MicModel {
             }
             bit = bit.wrapping_shl(1);
         }
-        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, poly, post_hz: post_hz.into_iter().take(post_len).collect() })
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages })
+    }
+
+    /// The output stage at a low-cut position.
+    #[must_use]
+    pub fn stage(&self, low_cut: usize) -> Option<&OutputStage> {
+        self.stages.get(low_cut).and_then(Option::as_ref).or_else(|| self.stages.first().and_then(Option::as_ref))
     }
 
     /// Whether a low-cut position has its own anchors (otherwise it is the
