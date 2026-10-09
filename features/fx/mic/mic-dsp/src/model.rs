@@ -21,7 +21,7 @@
 //! f64 low_cut_hz[4]          built-in corner, then the three switch positions
 //! f64 proximity_f0[9]        the mic's own gradient corner at each pattern step
 //! u32 proximity_law          0 = Corner, 1 = Shelf, 2 = Dynamic
-//! f64 proximity_params[4]    Corner: lo hi · Shelf: lo hi k · Dynamic: up down
+//! f64 proximity_params[4]    Corner: lo hi · Shelf: lo hi k · Dynamic: up down cap
 //! 4 × output stage, one per low-cut position:
 //!   u32 present (0: use position 0's)
 //!   u32 poly_len, f64 poly[]  the curve: s + poly[0] s² + poly[1] s³ + …
@@ -62,7 +62,12 @@ pub enum ProximityLaw {
     /// Dynamics: raising proximity moves the pole down geometrically to
     /// `f0 / up`; lowering it slides a zero down from `f0` to
     /// `f0 / down` with `u²` — a deepening low shelf.
-    Dynamic { f0: [f64; PATTERNS], up: f64, down: f64 },
+    ///
+    /// Lowering it is a shelf `down^(u²)` deep that first raises the pole
+    /// from `f0` toward `cap` (Hz); once the pole reaches `cap` it stays
+    /// there and a second section's zero slides down from it. `cap` at or
+    /// below `f0` (0 in older files) means the zero moves from the start.
+    Dynamic { f0: [f64; PATTERNS], up: f64, down: f64, cap: f64 },
 }
 
 /// One `(zero, pole)` corner move, in Hz.
@@ -78,7 +83,7 @@ impl ProximityLaw {
         let shifted = match self {
             Self::Corner { lo, hi, .. } => Self::Corner { f0: [centre; PATTERNS], lo, hi },
             Self::Shelf { lo, hi, k, .. } => Self::Shelf { f0: [centre; PATTERNS], lo, hi, k },
-            Self::Dynamic { up, down, .. } => Self::Dynamic { f0: [centre; PATTERNS], up, down },
+            Self::Dynamic { up, down, cap, .. } => Self::Dynamic { f0: [centre; PATTERNS], up, down, cap },
         };
         shifted.moves(percent, pattern).map(|step| {
             step.map(|(zero, pole)| {
@@ -117,9 +122,19 @@ impl ProximityLaw {
                 let p = corner(f0, lo, hi);
                 [Some((f0, p)), Some((k * p, k * f0))]
             }
-            Self::Dynamic { f0, up, down } => {
+            Self::Dynamic { f0, up, down, cap } => {
                 let f0 = f0.get(pattern).copied().unwrap_or(100.0);
-                if u >= 0.0 { [Some((f0, f0 * up.powf(-u))), None] } else { [Some((f0 * down.powf(-u * u), f0)), None] }
+                let depth = down.powf(u * u);
+                if u >= 0.0 {
+                    [Some((f0, f0 * up.powf(-u))), None]
+                } else if cap <= f0 {
+                    [Some((f0 / depth, f0)), None]
+                } else if f0 * depth <= cap {
+                    [Some((f0, f0 * depth)), None]
+                } else {
+                    // the shelf's whole depth is f0·z / cap² = 1 / depth
+                    [Some((f0, cap)), Some((cap.powi(2) / (f0 * depth), cap))]
+                }
             }
         }
     }
@@ -249,7 +264,7 @@ impl MicModel {
         let proximity = match law {
             0 => ProximityLaw::Corner { f0, lo: first, hi: second },
             1 => ProximityLaw::Shelf { f0, lo: first, hi: second, k: third },
-            2 => ProximityLaw::Dynamic { f0, up: first, down: second },
+            2 => ProximityLaw::Dynamic { f0, up: first, down: second, cap: third },
             _ => return Err(ModelError::BadShape),
         };
         let mut stages: [Option<OutputStage>; LOW_CUTS] = Default::default();
