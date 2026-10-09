@@ -659,8 +659,10 @@ impl DualMic {
             let g2 = m * self.mic2.model().dual_weight.get(p2).copied().unwrap_or(1.0);
             let total = g1 + g2;
             let [b1, b2] = if total > 0.0 { [g1 / total, g2 / total] } else { [1.0 - m, m] };
-            // identical blocks crossfade to themselves
-            let same = law1 == law2 && p1 == p2;
+            // identical blocks crossfade to themselves (the law and step fix
+            // the gradient block; the pressure blocks can still differ)
+            let (m1, m2) = (self.mic1.model(), self.mic2.model());
+            let same = law1 == law2 && p1 == p2 && m1.dual_pressure(p1) == m2.dual_pressure(p1) && m1.dual_gradient == m2.dual_gradient;
             let cross1 = (!same).then_some((law2, p2, [b1, b2]));
             let cross2 = (!same).then_some((law1, p1, [b2, b1]));
             let (pr1, pr2) = (self.mic1.model().dual_pressure(p1), self.mic2.model().dual_pressure(p2));
