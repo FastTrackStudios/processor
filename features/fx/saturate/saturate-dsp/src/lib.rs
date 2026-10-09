@@ -19,8 +19,14 @@
 // even though they are allowed workspace-wide off the audio thread.
 #![deny(clippy::disallowed_methods)]
 
+extern crate alloc;
+
 use dsp_core::num;
 
+pub mod deluxe;
+#[rustfmt::skip]
+#[allow(clippy::unreadable_literal, clippy::excessive_precision, reason = "generated measurement tables")]
+pub mod deluxe_tables;
 pub mod digital;
 pub mod emphasis;
 pub mod preamp;
