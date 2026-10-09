@@ -137,6 +137,8 @@ pub struct MicChain {
     rear_gain: f64,
     kernel_p: Vec<f64>,
     kernel_g: Vec<f64>,
+    /// Working space for re-timing kernels (no allocation on a change).
+    scratch: Vec<f64>,
     has_curve: bool,
     /// Dual mode: what the kernels are re-timed and re-centred to.
     dual: DualAdjust,
@@ -202,14 +204,13 @@ fn shift(kernel: &mut [f64], scratch: &mut [f64], samples: f64) {
     let frac = samples - samples.floor();
     let span = dsp_core::count_to_f64(SHIFT_HALF.saturating_add(1));
     // taps[j] weights input n − whole − (j − SHIFT_HALF)
-    let taps: Vec<f64> = (0..=2 * SHIFT_HALF)
-        .map(|j| {
-            let t = dsp_core::count_to_f64(j) - dsp_core::count_to_f64(SHIFT_HALF) - frac;
-            let w = 0.08f64.mul_add((2.0 * PI * t / span).cos(), 0.5f64.mul_add((PI * t / span).cos(), 0.42));
-            let sinc = if t.abs() < 1e-12 { 1.0 } else { (PI * t).sin() / (PI * t) };
-            sinc * w
-        })
-        .collect();
+    let mut taps = [0.0f64; 2 * SHIFT_HALF + 1];
+    for (j, tap) in taps.iter_mut().enumerate() {
+        let t = dsp_core::count_to_f64(j) - dsp_core::count_to_f64(SHIFT_HALF) - frac;
+        let w = 0.08f64.mul_add((2.0 * PI * t / span).cos(), 0.5f64.mul_add((PI * t / span).cos(), 0.42));
+        let sinc = if t.abs() < 1e-12 { 1.0 } else { (PI * t).sin() / (PI * t) };
+        *tap = sinc * w;
+    }
     for (n, out) in scratch.iter_mut().enumerate() {
         *out = taps
             .iter()
@@ -242,6 +243,7 @@ impl MicChain {
             rear_gain: 1.0,
             kernel_p: vec![0.0; taps],
             kernel_g: vec![0.0; taps],
+            scratch: vec![0.0; taps],
             settings: Settings::default(),
             has_curve,
             dual: DualAdjust::none(0.0),
@@ -302,10 +304,11 @@ impl MicChain {
         } else {
             self.low_cut.set(off, cut.get(s.low_cut).copied().unwrap_or(off), sr);
         }
-        let stage = self.model.stage(s.low_cut).cloned().unwrap_or_default();
-        self.poly = stage.poly;
+        // By reference: this runs on the audio thread when a control moves.
+        let stage = self.model.stage(s.low_cut);
+        self.poly = stage.map_or([0.0; MAX_POLY], |st| st.poly);
         for (i, section) in self.post.iter_mut().enumerate() {
-            *section = stage.post.get(i).map_or_else(Biquad::identity, |&p| design(p, sr));
+            *section = stage.and_then(|st| st.post.get(i)).map_or_else(Biquad::identity, |&p| design(p, sr));
         }
         let sign = if s.phase_invert { -1.0 } else { 1.0 };
         self.out_gain = sign * db_to_gain(s.output_db);
@@ -330,18 +333,18 @@ impl MicChain {
         if self.dual.delay.to_bits() != self.dual.own_delay.to_bits() || self.dual.align != 0.0 {
             retime(&mut self.kernel_p, self.dual.own_delay, self.dual.delay);
             retime(&mut self.kernel_g, self.dual.own_delay, self.dual.delay);
-            let mut scratch = vec![0.0; self.kernel_p.len()];
-            shift(&mut self.kernel_p, &mut scratch, self.dual.align);
-            shift(&mut self.kernel_g, &mut scratch, self.dual.align);
+            shift(&mut self.kernel_p, &mut self.scratch, self.dual.align);
+            shift(&mut self.kernel_g, &mut self.scratch, self.dual.align);
         }
         self.linear.conv_p.set_kernel(&self.kernel_p);
         self.linear.conv_g.set_kernel(&self.kernel_g);
         if self.has_curve {
             let sr = self.model.sample_rate;
-            let post = self.model.stage(cut).map(|s| s.post.clone()).unwrap_or_default();
-            for section in post {
-                remove(&mut self.kernel_p, design(section, sr), sr);
-                remove(&mut self.kernel_g, design(section, sr), sr);
+            if let Some(stage) = self.model.stage(cut) {
+                for &section in &stage.post {
+                    remove(&mut self.kernel_p, design(section, sr), sr);
+                    remove(&mut self.kernel_g, design(section, sr), sr);
+                }
             }
             self.pre.conv_p.set_kernel(&self.kernel_p);
             self.pre.conv_g.set_kernel(&self.kernel_g);
