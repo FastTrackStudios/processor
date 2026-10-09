@@ -4594,6 +4594,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mic180-plugin"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "dsp-core",
+ "mic-dsp",
+ "nice-plug",
+]
+
+[[package]]
 name = "midi-consts"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

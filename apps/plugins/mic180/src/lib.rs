@@ -1,31 +1,26 @@
-//! FTS Mic — CLAP/VST3 dual-capsule microphone modeller.
+//! FTS Mic 180 — the stereo variant of FTS Mic.
 //!
-//! Input is a Sphere-style capsule pair (left = front capsule, right =
-//! rear); output is the modelled mic, mono on both channels. The engine is
-//! [`mic_dsp`]; this crate is the host shell: parameters, latency, and
-//! loading the models (≈30 MB each) on a loader thread so the audio thread
-//! never touches the disk or the allocator.
-//!
-//! Models are `.micm` files in `$FTS_MIC_MODELS/<sample rate>[-LX]/`
-//! (default `~/.local/share/fts/mic-models`), one per mic, named as the
-//! mic list below with spaces as underscores.
+//! One capsule pair in (left = front capsule, right = rear); two modelled
+//! mics out: mic 1 facing forward on the left, mic 2 facing back on the
+//! right, balanced by Mic Pan and crossfed by Stereo Width (see
+//! [`mic_dsp::StereoMic`]). The backward mic has its own measured models
+//! (`<rate>[-LX]-180/`), the forward one is the ordinary model.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
-use mic_dsp::{DualMic, DualSettings, LATENCY, MicChain, Settings, Solo};
+use mic_dsp::{LATENCY, MicChain, Settings, StereoMic, StereoSettings};
 use nice_plug::prelude::*;
 
-const PLUGIN_NAME: &str = "FTS Mic";
-
-#[path = "common.rs"]
+#[path = "../../mic/src/common.rs"]
 mod common;
-pub use common::MICS;
-use common::{FILTERS, PATTERNS, SOURCES, choice, float, index, load_model};
+use common::{FILTERS, MICS, PATTERNS, SOURCES, choice, float, index, load_model, load_model_variant};
+
+const PLUGIN_NAME: &str = "FTS Mic 180";
 
 #[derive(Params)]
-pub struct MicParams {
+pub struct Mic180Params {
     #[id = "type1"]
     pub type1: IntParam,
     #[id = "pattern1"]
@@ -34,10 +29,6 @@ pub struct MicParams {
     pub filter1: IntParam,
     #[id = "axis1"]
     pub axis1: FloatParam,
-    #[id = "dual"]
-    pub dual: BoolParam,
-    #[id = "mix"]
-    pub mix: FloatParam,
     #[id = "type2"]
     pub type2: IntParam,
     #[id = "pattern2"]
@@ -46,10 +37,13 @@ pub struct MicParams {
     pub filter2: IntParam,
     #[id = "axis2"]
     pub axis2: FloatParam,
-    #[id = "align"]
-    pub align: FloatParam,
-    #[id = "solo"]
-    pub solo: IntParam,
+    /// Mic 2 follows mic 1's type, pattern, filter and axis.
+    #[id = "link"]
+    pub link: BoolParam,
+    #[id = "pan"]
+    pub pan: FloatParam,
+    #[id = "width"]
+    pub width: FloatParam,
     #[id = "proximity"]
     pub proximity: FloatParam,
     #[id = "output"]
@@ -64,21 +58,20 @@ pub struct MicParams {
     pub source: IntParam,
 }
 
-impl Default for MicParams {
+impl Default for Mic180Params {
     fn default() -> Self {
         Self {
             type1: choice("Mic1 Type", 0, &MICS),
             pattern1: choice("Mic1 Pattern", 4, &PATTERNS),
             filter1: choice("Mic1 Filter", 0, &FILTERS),
             axis1: float("Mic1 Axis", 0.0, 0.0, 180.0, "°", 1),
-            dual: BoolParam::new("Dual", false),
-            mix: float("Mic Mix", 0.0, 0.0, 100.0, "%", 1),
-            type2: choice("Mic2 Type", 2, &MICS),
+            type2: choice("Mic2 Type", 0, &MICS),
             pattern2: choice("Mic2 Pattern", 4, &PATTERNS),
             filter2: choice("Mic2 Filter", 0, &FILTERS),
             axis2: float("Mic2 Axis", 0.0, 0.0, 180.0, "°", 1),
-            align: float("Mic2 Align", 0.0, -2.0, 2.0, " cm", 2),
-            solo: choice("Mic Solo", 0, &["Off", "Mic1", "Mic2"]),
+            link: BoolParam::new("Mic Link", true),
+            pan: float("Mic Pan", 0.0, -100.0, 100.0, "%", 1),
+            width: float("Stereo Width", 100.0, 0.0, 200.0, "%", 1),
             proximity: float("Proximity", 0.0, -100.0, 100.0, "%", 1),
             output: float("Output", 0.0, -12.0, 12.0, " dB", 1),
             phase: BoolParam::new("Phase Invert", false),
@@ -89,69 +82,56 @@ impl Default for MicParams {
     }
 }
 
-/// Which models a chain needs, and at what rate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Want {
     mic1: usize,
     mic2: usize,
-    dual: bool,
     source: usize,
     sample_rate: u32,
 }
 
-/// What the loader hands the audio thread.
-enum Loaded {
-    Single(Box<MicChain>),
-    Dual(Box<DualMic>),
-}
-
-/// The loader thread: builds chains off the audio thread, and drops the
-/// ones the audio thread retires.
-fn loader(requests: &Receiver<Want>, ready: &Sender<(Want, Loaded)>, trash: &Receiver<Loaded>, alive: &AtomicBool) {
+fn loader(requests: &Receiver<Want>, ready: &Sender<(Want, Box<StereoMic>)>, trash: &Receiver<Box<StereoMic>>, alive: &AtomicBool) {
     while alive.load(Ordering::Relaxed) {
         while trash.try_recv().is_ok() {}
         let Ok(mut want) = requests.recv_timeout(std::time::Duration::from_millis(50)) else { continue };
-        // Only the newest request matters.
         while let Ok(newer) = requests.try_recv() {
             want = newer;
         }
-        let Some(m1) = load_model(want.mic1, want.source, want.sample_rate) else { continue };
-        let loaded = if want.dual {
-            let Some(m2) = load_model(want.mic2, want.source, want.sample_rate) else { continue };
-            Loaded::Dual(Box::new(DualMic::new(MicChain::new(m1), MicChain::new(m2))))
-        } else {
-            Loaded::Single(Box::new(MicChain::new(m1)))
+        let (Some(fwd), Some(back)) = (
+            load_model(want.mic1, want.source, want.sample_rate),
+            load_model_variant(want.mic2, want.source, want.sample_rate, "-180"),
+        ) else {
+            continue;
         };
-        if ready.send((want, loaded)).is_err() {
+        let stereo = Box::new(StereoMic::new(MicChain::new(fwd), MicChain::new(back)));
+        if ready.send((want, stereo)).is_err() {
             break;
         }
     }
 }
 
-pub struct FtsMic {
-    params: Arc<MicParams>,
-    engine: Option<Loaded>,
+pub struct FtsMic180 {
+    params: Arc<Mic180Params>,
+    engine: Option<Box<StereoMic>>,
     have: Option<Want>,
     asked: Option<Want>,
     sample_rate: u32,
     requests: Sender<Want>,
-    ready: Receiver<(Want, Loaded)>,
-    trash: Sender<Loaded>,
+    ready: Receiver<(Want, Box<StereoMic>)>,
+    trash: Sender<Box<StereoMic>>,
     alive: Arc<AtomicBool>,
 }
 
-impl Default for FtsMic {
+impl Default for FtsMic180 {
     fn default() -> Self {
         let (req_tx, req_rx) = bounded(16);
         let (ready_tx, ready_rx) = bounded(2);
         let (trash_tx, trash_rx) = bounded(4);
         let alive = Arc::new(AtomicBool::new(true));
         let flag = alive.clone();
-        // The thread lives as long as the plugin; a failed spawn leaves the
-        // plugin silent rather than crashing the host.
-        let _ = std::thread::Builder::new().name("fts-mic-loader".into()).spawn(move || loader(&req_rx, &ready_tx, &trash_rx, &flag));
+        let _ = std::thread::Builder::new().name("fts-mic180-loader".into()).spawn(move || loader(&req_rx, &ready_tx, &trash_rx, &flag));
         Self {
-            params: Arc::new(MicParams::default()),
+            params: Arc::new(Mic180Params::default()),
             engine: None,
             have: None,
             asked: None,
@@ -164,26 +144,31 @@ impl Default for FtsMic {
     }
 }
 
-impl Drop for FtsMic {
+impl Drop for FtsMic180 {
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Relaxed);
     }
 }
 
-impl FtsMic {
+impl FtsMic180 {
+    fn linked(&self) -> bool {
+        self.params.link.value()
+    }
+
     fn want(&self) -> Want {
+        let p = &self.params;
         Want {
-            mic1: index(&self.params.type1),
-            mic2: index(&self.params.type2),
-            dual: self.params.dual.value(),
-            source: index(&self.params.source),
+            mic1: index(&p.type1),
+            mic2: if self.linked() { index(&p.type1) } else { index(&p.type2) },
+            source: index(&p.source),
             sample_rate: self.sample_rate,
         }
     }
 
     fn settings(&self, second: bool) -> Settings {
         let p = &self.params;
-        let (pattern, filter, axis) = if second { (&p.pattern2, &p.filter2, &p.axis2) } else { (&p.pattern1, &p.filter1, &p.axis1) };
+        let use2 = second && !self.linked();
+        let (pattern, filter, axis) = if use2 { (&p.pattern2, &p.filter2, &p.axis2) } else { (&p.pattern1, &p.filter1, &p.axis1) };
         Settings {
             pattern: index(pattern),
             axis_deg: f64::from(axis.value()),
@@ -196,8 +181,6 @@ impl FtsMic {
         }
     }
 
-    /// Ask for different models if the selection changed; take delivered
-    /// ones; push the current controls into whatever is running.
     fn sync(&mut self) {
         let want = self.want();
         if self.asked != Some(want) && self.requests.try_send(want).is_ok() {
@@ -210,43 +193,29 @@ impl FtsMic {
             self.have = Some(got);
         }
         let (s1, s2) = (self.settings(false), self.settings(true));
-        let dual = DualSettings {
-            mix: f64::from(self.params.mix.value()) / 100.0,
-            align_cm: f64::from(self.params.align.value()),
-            solo: match self.params.solo.value() {
-                1 => Solo::Mic1,
-                2 => Solo::Mic2,
-                _ => Solo::Off,
-            },
+        let stereo = StereoSettings {
+            pan: f64::from(self.params.pan.value()) / 100.0,
+            width: f64::from(self.params.width.value()) / 100.0,
         };
-        match self.engine.as_mut() {
-            Some(Loaded::Single(c)) => {
-                if c.settings() != s1 {
-                    c.apply(s1, false);
-                }
+        if let Some(e) = self.engine.as_mut() {
+            if e.forward.settings() != s1 {
+                e.forward.apply(s1, false);
             }
-            Some(Loaded::Dual(d)) => {
-                if d.mic1.settings() != s1 {
-                    d.mic1.apply(s1, false);
-                }
-                if d.mic2.settings() != s2 {
-                    d.mic2.apply(s2, false);
-                }
-                d.set(dual);
+            if e.backward.settings() != s2 {
+                e.backward.apply(s2, false);
             }
-            None => {}
+            e.set(stereo);
         }
     }
 }
 
-impl Plugin for FtsMic {
+impl Plugin for FtsMic180 {
     const NAME: &'static str = PLUGIN_NAME;
     const VENDOR: &'static str = "FastTrackStudio";
     const URL: &'static str = "https://fasttrackstudio.com";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    /// Capsule pair in (front, rear), mic out on both channels.
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
         main_input_channels: NonZeroU32::new(2),
         main_output_channels: NonZeroU32::new(2),
@@ -262,7 +231,6 @@ impl Plugin for FtsMic {
     }
 
     fn activate(&mut self, _layout: &AudioIOLayout, buffer_config: &BufferConfig, context: &mut impl ActivateContext<Self>) -> bool {
-        // The sample rate is a whole number of hertz in every host.
         self.sample_rate = u32::try_from(dsp_core::f32_to_index(buffer_config.sample_rate.round())).unwrap_or(48_000);
         context.set_latency_samples(u32::try_from(LATENCY).unwrap_or(24));
         self.asked = None;
@@ -270,13 +238,9 @@ impl Plugin for FtsMic {
     }
 
     fn reset(&mut self) {
-        match self.engine.as_mut() {
-            Some(Loaded::Single(c)) => c.reset(),
-            Some(Loaded::Dual(d)) => {
-                d.mic1.reset();
-                d.mic2.reset();
-            }
-            None => {}
+        if let Some(e) = self.engine.as_mut() {
+            e.forward.reset();
+            e.backward.reset();
         }
     }
 
@@ -286,35 +250,29 @@ impl Plugin for FtsMic {
         for mut frame in buffer.iter_samples() {
             let mut it = frame.iter_mut();
             let (Some(l), Some(r)) = (it.next(), it.next()) else { continue };
-            let y = if ready {
-                match self.engine.as_mut() {
-                    Some(Loaded::Single(c)) => c.process(f64::from(*l), f64::from(*r)),
-                    Some(Loaded::Dual(d)) => d.process(f64::from(*l), f64::from(*r)),
-                    None => 0.0,
-                }
-            } else {
-                0.0
+            let (yl, yr) = match (ready, self.engine.as_mut()) {
+                (true, Some(e)) => e.process(f64::from(*l), f64::from(*r)),
+                _ => (0.0, 0.0),
             };
-            let out = dsp_core::num::f64_to_f32(y);
-            *l = out;
-            *r = out;
+            *l = dsp_core::num::f64_to_f32(yl);
+            *r = dsp_core::num::f64_to_f32(yr);
         }
         ProcessStatus::Normal
     }
 }
 
-impl ClapPlugin for FtsMic {
-    const CLAP_ID: &'static str = "com.fasttrackstudio.mic";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("Dual-capsule microphone modelling");
+impl ClapPlugin for FtsMic180 {
+    const CLAP_ID: &'static str = "com.fasttrackstudio.mic180";
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("Dual-capsule microphone modelling, stereo (forward + backward mic)");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::AudioEffect, ClapFeature::Stereo];
 }
 
-impl Vst3Plugin for FtsMic {
-    const VST3_CLASS_ID: [u8; 16] = *b"FtsMicModeller01";
+impl Vst3Plugin for FtsMic180 {
+    const VST3_CLASS_ID: [u8; 16] = *b"FtsMic180Modelr1";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Fx, Vst3SubCategory::Tools];
 }
 
-nice_export_clap!(FtsMic);
-nice_export_vst3!(FtsMic);
+nice_export_clap!(FtsMic180);
+nice_export_vst3!(FtsMic180);

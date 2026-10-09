@@ -8,6 +8,7 @@ members = [
     "apps/plugins/host",
     "apps/plugins/level",
     "apps/plugins/mic",
+    "apps/plugins/mic180",
     "apps/plugins/limiter",
     "apps/plugins/meter",
     "apps/plugins/modulation",

@@ -55,3 +55,6 @@ name = "FTS Unison"
 
 [mic-plugin]
 name = "FTS Mic"
+
+[mic180-plugin]
+name = "FTS Mic 180"
