@@ -150,8 +150,8 @@ pub struct MicChain {
 /// 0.146 samples for all but Sphere Diffuse), and in dual mode both are
 /// re-timed to the mix-weighted delay;
 /// Align moves one mic by distance / 340 m/s with a near-ideal fractional
-/// delay; and both share one proximity corner, the mix-weighted geometric
-/// mean of their own.
+/// delay; and both share one proximity corner, the mix-weighted mean of
+/// their own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DualAdjust {
     /// The model's own delay, samples (what the kernels carry).
@@ -360,6 +360,12 @@ impl MicChain {
 
     /// One capsule-pair sample in, one mic sample out.
     pub fn process(&mut self, front: f64, rear: f64) -> f64 {
+        let y = self.process_uncut(front, rear);
+        self.low_cut.process(y) * self.out_gain
+    }
+
+    /// Everything before the low cut (and the output gain).
+    fn process_uncut(&mut self, front: f64, rear: f64) -> f64 {
         // Rear trim belongs to the input's rear channel, before the swap.
         let rear = rear * self.rear_gain;
         let (fr, rr) = if self.settings.swap { (rear, front) } else { (front, rear) };
@@ -372,7 +378,7 @@ impl MicChain {
             let terms = level * level * higher;
             y += self.post.iter_mut().fold(terms, |x, sec| sec.process(x));
         }
-        self.low_cut.process(y) * self.out_gain
+        y
     }
 }
 
@@ -427,7 +433,7 @@ impl DualMic {
             let p2 = self.mic2.settings().pattern;
             let f1 = self.mic1.model().proximity.f0(p1);
             let f2 = self.mic2.model().proximity.f0(p2);
-            let centre = f1.powf(1.0 - m) * f2.powf(m);
+            let centre = (1.0 - m).mul_add(f1, m * f2);
             let align = s.align_cm / 100.0 / 340.0 * sr;
             self.mic1.set_dual(DualAdjust { own_delay: d1, delay, align: (-align).max(0.0), centre: Some(centre) });
             self.mic2.set_dual(DualAdjust { own_delay: d2, delay, align: align.max(0.0), centre: Some(centre) });
@@ -442,9 +448,16 @@ impl DualMic {
             Solo::Mic1 => self.mic1.process(front, rear),
             Solo::Mic2 => self.mic2.process(front, rear),
             Solo::Off => {
-                let a = self.mic1.process(front, rear);
-                let b = self.mic2.process(front, rear);
-                (1.0 - self.mix).mul_add(a, self.mix * b)
+                // The reference crossfades block by block, not whole mics:
+                // the two mics are mixed before the low cut, and the mix
+                // then runs through both low cuts, crossfaded again. (With
+                // one model at two patterns, a per-mic low cut misses by
+                // −30 dB; this nulls to −75.)
+                let w = self.mix;
+                let x = (1.0 - w).mul_add(self.mic1.process_uncut(front, rear), w * self.mic2.process_uncut(front, rear));
+                let a = self.mic1.low_cut.process(x);
+                let b = self.mic2.low_cut.process(x);
+                (1.0 - w).mul_add(a, w * b) * self.mic1.out_gain
             }
         }
     }
