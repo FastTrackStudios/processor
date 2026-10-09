@@ -33,7 +33,9 @@
 //!                            (bit 0, the switch off, is always set)
 //! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
 //! f64 delay                  (optional) the model's own fractional delay
-//! f64 shelf_k[9]             (optional) the Shelf law's k at each pattern step
+//! f64 shelf_k[9]             (optional, Shelf law only) its k at each pattern step
+//! f64 dual_weight[9]         (optional) the weight dual mode gives this model's
+//!                            proximity filter when crossfading it with another's
 //!                            (the measured response, curve's high-passes
 //!                            included; the engine derives the curve's input)
 //! ```
@@ -195,6 +197,9 @@ pub struct MicModel {
     /// The model's own fractional delay in samples (linear interpolation):
     /// 0.146 for every model but Sphere Diffuse (0). Only dual mode sees it.
     pub delay: f64,
+    /// Dual mode's weight on this model's proximity filter, per pattern
+    /// step (relative to Sphere Linear's; 1 when the file gives none).
+    pub dual_weight: [f64; PATTERNS],
 }
 
 /// One section after the output curve.
@@ -365,7 +370,12 @@ impl MicModel {
                 *k = table;
             }
         }
-        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay })
+        let mut dual_weight = [1.0; PATTERNS];
+        let mut table = dual_weight;
+        if table.iter_mut().try_for_each(|v| r.f64().map(|x| *v = x)).is_ok() {
+            dual_weight = table;
+        }
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay, dual_weight })
     }
 
     /// The output stage at a low-cut position.
@@ -379,6 +389,16 @@ impl MicModel {
     #[must_use]
     pub fn has_set(&self, low_cut: usize) -> bool {
         self.sets.get(low_cut).is_some_and(Option::is_some)
+    }
+
+    /// The high-pass the response carries at a low-cut position, as dual
+    /// mode crossfades it: the built-in corner (moved by the switch) for a
+    /// model whose low cut is a corner move, 10 Hz for one measured with its
+    /// own kernels at every position.
+    #[must_use]
+    pub fn low_end_corner(&self, position: usize) -> f64 {
+        let measured = (1..LOW_CUTS).any(|k| self.has_set(k));
+        if measured { 10.0 } else { self.low_cut_hz.get(position).copied().unwrap_or(10.0).max(1.0) }
     }
 
     /// The `(P, G)` kernels at one low-cut position, pattern step and axis
