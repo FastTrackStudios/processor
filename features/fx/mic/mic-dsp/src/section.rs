@@ -14,7 +14,7 @@ use core::f64::consts::PI;
 /// 500 Hz proximity corner measures 500.18 Hz, exactly this map's warp.
 #[must_use]
 pub fn pole(corner_hz: f64, sample_rate: f64) -> f64 {
-    let a = PI * corner_hz / sample_rate;
+    let a = PI * corner_hz.max(0.0) / sample_rate;
     (1.0 - a) / (1.0 + a)
 }
 
@@ -44,6 +44,13 @@ impl CornerShift {
         self.b0 = g;
         self.b1 = -g * z0;
         self.a1 = p;
+    }
+
+    /// Pass everything through (state kept).
+    pub const fn make_identity(&mut self) {
+        self.b0 = 1.0;
+        self.b1 = 0.0;
+        self.a1 = 0.0;
     }
 
     pub const fn reset(&mut self) {

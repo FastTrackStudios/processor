@@ -65,7 +65,7 @@ pub struct MicChain {
     settings: Settings,
     conv_p: Convolver,
     conv_g: Convolver,
-    proximity: CornerShift,
+    proximity: [CornerShift; 2],
     low_cut: CornerShift,
     out_gain: f64,
     rear_gain: f64,
@@ -80,7 +80,7 @@ impl MicChain {
         let mut chain = Self {
             conv_p: Convolver::new(taps),
             conv_g: Convolver::new(taps),
-            proximity: CornerShift::identity(),
+            proximity: [CornerShift::identity(); 2],
             low_cut: CornerShift::identity(),
             out_gain: 1.0,
             rear_gain: 1.0,
@@ -101,17 +101,30 @@ impl MicChain {
     /// Change controls. Kernels are rebuilt only when pattern or axis
     /// moved (`force` rebuilds regardless).
     pub fn apply(&mut self, s: Settings, force: bool) {
-        let reshape = force || s.pattern != self.settings.pattern || s.axis_deg.to_bits() != self.settings.axis_deg.to_bits();
+        let reshape = force
+            || s.pattern != self.settings.pattern
+            || s.low_cut != self.settings.low_cut
+            || s.axis_deg.to_bits() != self.settings.axis_deg.to_bits();
         self.settings = s;
         if reshape {
             self.rebuild_kernels();
         }
         let sr = self.model.sample_rate;
-        let (from, to) = self.model.proximity.corners(s.proximity, s.pattern);
-        self.proximity.set(from, to, sr);
+        for (section, step) in self.proximity.iter_mut().zip(self.model.proximity.moves(s.proximity, s.pattern)) {
+            match step {
+                Some((zero, pole)) => section.set(zero, pole, sr),
+                None => section.make_identity(),
+            }
+        }
         let cut = &self.model.low_cut_hz;
         let off = cut.first().copied().unwrap_or(20.0);
-        self.low_cut.set(off, cut.get(s.low_cut).copied().unwrap_or(off), sr);
+        // A position with its own anchors already has its low end; the
+        // others are the off anchors with the built-in corner moved.
+        if self.model.has_set(s.low_cut) {
+            self.low_cut.make_identity();
+        } else {
+            self.low_cut.set(off, cut.get(s.low_cut).copied().unwrap_or(off), sr);
+        }
         let sign = if s.phase_invert { -1.0 } else { 1.0 };
         self.out_gain = sign * db_to_gain(s.output_db);
         self.rear_gain = db_to_gain(s.rear_trim_db);
@@ -123,8 +136,9 @@ impl MicChain {
         let lo = dsp_core::f64_to_index(pos.floor()).min(AXES.saturating_sub(2));
         let t = pos - dsp_core::count_to_f64(lo);
         let hi = lo.saturating_add(1);
-        if let (Some((p0, g0)), Some((p1, g1))) = (self.model.anchor(pattern, lo), self.model.anchor(pattern, hi)) {
-            for (((k, a), b), _) in self.kernel_p.iter_mut().zip(p0).zip(p1).zip(0..) {
+        let cut = self.settings.low_cut;
+        if let (Some((p0, g0)), Some((p1, g1))) = (self.model.anchor(cut, pattern, lo), self.model.anchor(cut, pattern, hi)) {
+            for ((k, a), b) in self.kernel_p.iter_mut().zip(p0).zip(p1) {
                 *k = (f64::from(*b) - f64::from(*a)).mul_add(t, f64::from(*a));
             }
             for ((k, a), b) in self.kernel_g.iter_mut().zip(g0).zip(g1) {
@@ -138,7 +152,7 @@ impl MicChain {
     pub fn reset(&mut self) {
         self.conv_p.reset();
         self.conv_g.reset();
-        self.proximity.reset();
+        self.proximity.iter_mut().for_each(CornerShift::reset);
         self.low_cut.reset();
     }
 
@@ -148,7 +162,7 @@ impl MicChain {
         let rear = rear * self.rear_gain;
         let (f, r) = if self.settings.swap { (rear, front) } else { (front, rear) };
         let p = self.conv_p.process(f + r);
-        let g = self.proximity.process(self.conv_g.process(f - r));
+        let g = self.proximity.iter_mut().fold(self.conv_g.process(f - r), |x, s| s.process(x));
         self.low_cut.process(p + g) * self.out_gain
     }
 }

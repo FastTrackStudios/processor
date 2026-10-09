@@ -4,8 +4,7 @@
 //!
 //! ```text
 //! cargo run --release -p mic-dsp --example mic_render -- <model.micm> <in.wav> <out.wav> \
-//!     cut=30,60,100,200 prox_f0=f0_omni,…,f0_fig8 pattern=4 axis=0 low_cut=0 proximity=0 \
-//!     output=0 phase=0 rear_trim=0 swap=0
+//!     pattern=4 axis=0 low_cut=0 proximity=0 output=0 phase=0 rear_trim=0 swap=0
 //! ```
 //!
 //! The output is delayed by [`mic_dsp::LATENCY`] relative to the input,
@@ -14,7 +13,7 @@
 
 use std::path::Path;
 
-use mic_dsp::{LATENCY, MicChain, MicModel, ProximityLaw, Settings};
+use mic_dsp::{LATENCY, MicChain, MicModel, Settings};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -23,18 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let kv = |k: &str| rest.iter().find_map(|a| a.strip_prefix(k).and_then(|v| v.strip_prefix('=')));
     let num = |k: &str, d: f64| kv(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
-    let cut: Vec<f64> = kv("cut").unwrap_or("30,60,100,200").split(',').filter_map(|v| v.parse().ok()).collect();
-    let low_cut_hz = [
-        cut.first().copied().unwrap_or(30.0),
-        cut.get(1).copied().unwrap_or(60.0),
-        cut.get(2).copied().unwrap_or(100.0),
-        cut.get(3).copied().unwrap_or(200.0),
-    ];
     let bytes = std::fs::read(model)?;
-    let f0s: Vec<f64> = kv("prox_f0").unwrap_or("100").split(',').filter_map(|v| v.parse().ok()).collect();
-    let f0 = core::array::from_fn(|i| f0s.get(i).or_else(|| f0s.last()).copied().unwrap_or(100.0));
-    let model = MicModel::from_bytes(&bytes, low_cut_hz, ProximityLaw::Corner { f0 })
-        .map_err(|e| format!("{e:?}"))?;
+    let model = MicModel::from_bytes(&bytes).map_err(|e| format!("{e:?}"))?;
     let index = |k: &str, d: usize| kv(k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(d);
     let settings = Settings {
         pattern: index("pattern", 4),

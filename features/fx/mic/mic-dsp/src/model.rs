@@ -9,9 +9,23 @@
 //! linear crossfade of the two neighbouring anchors, which is exactly what
 //! the reference does.
 //!
-//! Asset format (`.micm`, little-endian): `b"MICM"`, `u32` version (1),
-//! `u32` sample rate, `u32` taps, `u32` patterns, `u32` axes, then
-//! `patterns × axes × [P; taps] [G; taps]` as `f32`.
+//! The low-cut switch is, for most mics, an exact first-order move of the
+//! mic's built-in high-pass corner; for the rest it changes the response in
+//! ways no post-EQ reproduces, and those positions carry their own set of
+//! anchors.
+//!
+//! Asset format (`.micm`, little-endian), version 3:
+//!
+//! ```text
+//! b"MICM" u32 version=3 u32 sample_rate u32 taps u32 patterns=9 u32 axes=5
+//! f64 low_cut_hz[4]          built-in corner, then the three switch positions
+//! f64 proximity_f0[9]        the mic's own gradient corner at each pattern step
+//! u32 proximity_law          0 = Corner, 1 = Shelf, 2 = Dynamic
+//! f64 proximity_params[4]    Corner: lo hi · Shelf: lo hi k · Dynamic: up down
+//! u32 kernel_sets            bit k: low-cut position k has its own anchor set
+//!                            (bit 0, the switch off, is always set)
+//! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
+//! ```
 
 /// Pattern steps, Omni (0) to Figure-8 (8).
 pub const PATTERNS: usize = 9;
@@ -19,27 +33,51 @@ pub const PATTERNS: usize = 9;
 pub const AXES: usize = 5;
 /// Degrees between axis anchors.
 pub const AXIS_STEP_DEG: f64 = 45.0;
+/// Low-cut positions: off and three switch settings.
+pub const LOW_CUTS: usize = 4;
 
-/// How the proximity control moves a mic's gradient-path corner.
+/// How the proximity control moves a mic's gradient-path response.
+///
+/// Every law is one or two first-order corner moves relative to the
+/// setting of 0 %, with `f0` the mic's own corner at the current pattern
+/// step and `u` the setting as −1 … +1. Each move is `(zero, pole)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ProximityLaw {
-    /// Condensers and ribbons: from the mic's own corner `f0` (which may
-    /// differ per pattern step), toward 20 Hz linearly as proximity rises
-    /// to +100 %, toward 500 Hz with the square of the setting as it falls
-    /// to −100 %.
-    Corner { f0: [f64; PATTERNS] },
+    /// Condensers and ribbons: the pole moves from `f0` toward `lo` (20 Hz)
+    /// linearly as `u` rises to +1, toward `hi` (500 Hz) with `u²` as it
+    /// falls to −1.
+    Corner { f0: [f64; PATTERNS], lo: f64, hi: f64 },
+    /// As [`Self::Corner`], but the gradient path is a shelf rather than a
+    /// high-pass: a zero follows the pole at `k` times its frequency.
+    Shelf { f0: [f64; PATTERNS], lo: f64, hi: f64, k: f64 },
+    /// Dynamics: raising proximity moves the pole down geometrically to
+    /// `f0 / up`; lowering it slides a zero down from `f0` to
+    /// `f0 / down` with `u²` — a deepening low shelf.
+    Dynamic { f0: [f64; PATTERNS], up: f64, down: f64 },
 }
 
+/// One `(zero, pole)` corner move, in Hz.
+pub type Move = (f64, f64);
+
 impl ProximityLaw {
-    /// `(from, to)` corners for a proximity setting in percent.
+    /// The corner moves for a proximity setting in percent.
     #[must_use]
-    pub fn corners(self, percent: f64, pattern: usize) -> (f64, f64) {
+    pub fn moves(self, percent: f64, pattern: usize) -> [Option<Move>; 2] {
+        let u = (percent / 100.0).clamp(-1.0, 1.0);
+        let corner = |f0: f64, lo: f64, hi: f64| if u >= 0.0 { (f0 - lo).mul_add(-u, f0) } else { (hi - f0).mul_add(u * u, f0) };
         match self {
-            Self::Corner { f0 } => {
+            Self::Corner { f0, lo, hi } => {
                 let f0 = f0.get(pattern).copied().unwrap_or(100.0);
-                let u = (percent / 100.0).clamp(-1.0, 1.0);
-                let to = if u >= 0.0 { (f0 - 20.0).mul_add(-u, f0) } else { (500.0 - f0).mul_add(u * u, f0) };
-                (f0, to)
+                [Some((f0, corner(f0, lo, hi))), None]
+            }
+            Self::Shelf { f0, lo, hi, k } => {
+                let f0 = f0.get(pattern).copied().unwrap_or(100.0);
+                let p = corner(f0, lo, hi);
+                [Some((f0, p)), Some((k * p, k * f0))]
+            }
+            Self::Dynamic { f0, up, down } => {
+                let f0 = f0.get(pattern).copied().unwrap_or(100.0);
+                if u >= 0.0 { [Some((f0, f0 * up.powf(-u))), None] } else { [Some((f0 * down.powf(-u * u), f0)), None] }
             }
         }
     }
@@ -50,11 +88,12 @@ impl ProximityLaw {
 pub struct MicModel {
     pub sample_rate: f64,
     pub taps: usize,
-    /// `PATTERNS × AXES × [P, G]`, `taps` each.
-    kernels: Vec<f32>,
+    /// One anchor set per low-cut position that has its own; `None` means
+    /// the position is the off set plus a corner move.
+    sets: [Option<Vec<f32>>; LOW_CUTS],
     /// The built-in high-pass corner (Filter off) and the three switch
     /// positions it moves to.
-    pub low_cut_hz: [f64; 4],
+    pub low_cut_hz: [f64; LOW_CUTS],
     pub proximity: ProximityLaw,
 }
 
@@ -67,60 +106,109 @@ pub enum ModelError {
     Truncated,
 }
 
+/// A little-endian reader over the asset.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl Reader<'_> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], ModelError> {
+        let end = self.at.checked_add(N).ok_or(ModelError::Truncated)?;
+        let s = self.bytes.get(self.at..end).ok_or(ModelError::Truncated)?;
+        self.at = end;
+        let mut out = [0u8; N];
+        out.copy_from_slice(s);
+        Ok(out)
+    }
+
+    fn u32(&mut self) -> Result<u32, ModelError> {
+        self.take::<4>().map(u32::from_le_bytes)
+    }
+
+    fn f64(&mut self) -> Result<f64, ModelError> {
+        self.take::<8>().map(f64::from_le_bytes)
+    }
+
+    fn f32s(&mut self, count: usize) -> Result<Vec<f32>, ModelError> {
+        let len = count.checked_mul(4).ok_or(ModelError::BadShape)?;
+        let end = self.at.checked_add(len).ok_or(ModelError::Truncated)?;
+        let s = self.bytes.get(self.at..end).ok_or(ModelError::Truncated)?;
+        self.at = end;
+        Ok(s.chunks_exact(4).map(|c| f32::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)])).collect())
+    }
+}
+
 impl MicModel {
     /// Parse a `.micm` asset.
     ///
     /// # Errors
-    /// The asset is not version 1 of the format, does not have the
+    /// The asset is not version 3 of the format, does not have the
     /// 9 × 5 layout, or is shorter than its header says.
-    pub fn from_bytes(
-        bytes: &[u8],
-        low_cut_hz: [f64; 4],
-        proximity: ProximityLaw,
-    ) -> Result<Self, ModelError> {
-        let word = |i: usize| -> Result<u32, ModelError> {
-            let end = i.checked_add(4).ok_or(ModelError::Truncated)?;
-            let b = bytes.get(i..end).ok_or(ModelError::Truncated)?;
-            Ok(u32::from_le_bytes([
-                b.first().copied().unwrap_or(0),
-                b.get(1).copied().unwrap_or(0),
-                b.get(2).copied().unwrap_or(0),
-                b.get(3).copied().unwrap_or(0),
-            ]))
-        };
-        if bytes.get(..4) != Some(b"MICM".as_slice()) {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
+        let mut r = Reader { bytes, at: 0 };
+        if r.take::<4>()? != *b"MICM" {
             return Err(ModelError::BadMagic);
         }
-        if word(4)? != 1 {
+        if r.u32()? != 3 {
             return Err(ModelError::BadVersion);
         }
-        let sample_rate = f64::from(word(8)?);
-        let taps = dsp_core::u32_to_index(word(12)?);
-        if dsp_core::u32_to_index(word(16)?) != PATTERNS || dsp_core::u32_to_index(word(20)?) != AXES {
+        let sample_rate = f64::from(r.u32()?);
+        let taps = dsp_core::u32_to_index(r.u32()?);
+        if dsp_core::u32_to_index(r.u32()?) != PATTERNS || dsp_core::u32_to_index(r.u32()?) != AXES {
             return Err(ModelError::BadShape);
         }
+        let mut low_cut_hz = [0.0; LOW_CUTS];
+        for v in &mut low_cut_hz {
+            *v = r.f64()?;
+        }
+        let mut f0 = [0.0; PATTERNS];
+        for v in &mut f0 {
+            *v = r.f64()?;
+        }
+        let law = r.u32()?;
+        let mut params = [0.0; 4];
+        for v in &mut params {
+            *v = r.f64()?;
+        }
+        let [first, second, third, _] = params;
+        let proximity = match law {
+            0 => ProximityLaw::Corner { f0, lo: first, hi: second },
+            1 => ProximityLaw::Shelf { f0, lo: first, hi: second, k: third },
+            2 => ProximityLaw::Dynamic { f0, up: first, down: second },
+            _ => return Err(ModelError::BadShape),
+        };
+        let mask = r.u32()? | 1;
         let count = PATTERNS
             .checked_mul(AXES)
             .and_then(|n| n.checked_mul(2))
             .and_then(|n| n.checked_mul(taps))
             .ok_or(ModelError::BadShape)?;
-        let body = bytes.get(24..).ok_or(ModelError::Truncated)?;
-        if body.len() / 4 < count {
-            return Err(ModelError::Truncated);
+        let mut sets: [Option<Vec<f32>>; LOW_CUTS] = Default::default();
+        let mut bit = 1u32;
+        for set in &mut sets {
+            if mask & bit != 0 {
+                *set = Some(r.f32s(count)?);
+            }
+            bit = bit.wrapping_shl(1);
         }
-        let kernels = body
-            .chunks_exact(4)
-            .take(count)
-            .map(|c| f32::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]))
-            .collect();
-        Ok(Self { sample_rate, taps, kernels, low_cut_hz, proximity })
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity })
     }
 
-    /// The `(P, G)` kernels at one pattern step and axis anchor.
+    /// Whether a low-cut position has its own anchors (otherwise it is the
+    /// off set with the built-in corner moved).
     #[must_use]
-    pub fn anchor(&self, pattern: usize, axis: usize) -> Option<(&[f32], &[f32])> {
-        let set = pattern.checked_mul(AXES)?.checked_add(axis)?;
-        let pair = self.kernels.chunks_exact(self.taps.checked_mul(2)?).nth(set)?;
+    pub fn has_set(&self, low_cut: usize) -> bool {
+        self.sets.get(low_cut).is_some_and(Option::is_some)
+    }
+
+    /// The `(P, G)` kernels at one low-cut position, pattern step and axis
+    /// anchor (the off set where the position has none of its own).
+    #[must_use]
+    pub fn anchor(&self, low_cut: usize, pattern: usize, axis: usize) -> Option<(&[f32], &[f32])> {
+        let set = self.sets.get(low_cut).and_then(Option::as_ref).or_else(|| self.sets.first().and_then(Option::as_ref))?;
+        let index = pattern.checked_mul(AXES)?.checked_add(axis)?;
+        let pair = set.chunks_exact(self.taps.checked_mul(2)?).nth(index)?;
         Some(pair.split_at(self.taps))
     }
 }
