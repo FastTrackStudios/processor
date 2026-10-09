@@ -1,4 +1,4 @@
-//! Both FTS Mic editors mount headless (dioxus-test + Blitz) with every
+//! The FTS Mic editor mounts headless (dioxus-test + Blitz) with every
 //! section and control laid out, at the size they open at and at their
 //! declared minimum — blitz collapses a container that does not fit to 0×0,
 //! so a minimum that is too small shows up here as a missing control.
@@ -13,8 +13,8 @@ use std::sync::atomic::AtomicBool;
 
 use dioxus::prelude::*;
 use dioxus_test::{DocumentTester, by_testid, render};
-use mic_ui::params::{Mic180Params, Mic180UiState, MicParams, MicUiState};
-use mic_ui::view::{App, App180, EDITOR_H, EDITOR_W, MIN_EDITOR_H, MIN_EDITOR_W};
+use mic_ui::params::{MicParams, MicUiState};
+use mic_ui::view::{App, EDITOR_H, EDITOR_W, MIN_EDITOR_H, MIN_EDITOR_W};
 use nice_plug::context::gui::{GuiContext, GuiContextInner};
 use nice_plug::prelude::*;
 use nice_plug_dioxus::{ParamContext, SharedState};
@@ -48,15 +48,6 @@ fn MicHarness() -> Element {
     }
 }
 
-#[component]
-fn Mic180Harness() -> Element {
-    rsx! {
-        style { "html, body {{ width:100%; height:100%; margin:0; padding:0; overflow:hidden; }}" }
-        style { {nice_plug_dioxus::TAILWIND_CSS} }
-        style { {include_str!("../assets/tailwind.css")} }
-        App180 {}
-    }
-}
 
 fn context() -> ParamContext {
     ParamContext::new(GuiContext::new(Arc::new(Host)), Arc::new(AtomicBool::new(true)))
@@ -67,10 +58,6 @@ fn mount(w: u32, h: u32) -> DocumentTester {
     render(MicHarness).with_window_size(w, h).with_root_context(context()).with_root_context(SharedState::new(ui)).build()
 }
 
-fn mount_180(w: u32, h: u32) -> DocumentTester {
-    let ui = Arc::new(Mic180UiState::new(Arc::new(Mic180Params::default())));
-    render(Mic180Harness).with_window_size(w, h).with_root_context(context()).with_root_context(SharedState::new(ui)).build()
-}
 
 fn laid_out(t: &DocumentTester, ids: &[&str]) -> Vec<String> {
     let mut missing = Vec::new();
@@ -88,19 +75,17 @@ fn laid_out(t: &DocumentTester, ids: &[&str]) -> Vec<String> {
     missing
 }
 
-const MIC: [&str; 16] = [
-    "section-mic-1", "section-dual", "section-mic-2", "section-proximity", "section-capsules", "section-output",
+const MIC: [&str; 20] = [
+    "section-mic-1", "section-dual", "section-180", "section-mic-2", "section-proximity", "section-capsules", "section-output",
     "select-type1", "select-pattern1", "knob-axis1", "select-type2", "knob-mix", "knob-align",
-    "knob-proximity", "knob-reartrim", "knob-output", "toggle-phase",
+    "knob-proximity", "knob-reartrim", "knob-output", "toggle-phase", "toggle-stereo180", "knob-pan", "knob-width",
 ];
 
-const MIC_180: [&str; 10] = [
-    "section-front-mic", "section-stereo", "section-rear-mic", "section-proximity", "section-output",
-    "select-type1", "select-type2", "knob-pan", "knob-width", "toggle-link",
-];
 
 fn sizes() -> [(u32, u32); 2] {
-    [(EDITOR_W, EDITOR_H), (MIN_EDITOR_W as u32, MIN_EDITOR_H as u32)]
+    // the minimum is declared in logical f32 pixels; whole pixels here
+    let px = |v: f32| format!("{v:.0}").parse().unwrap_or(0);
+    [(EDITOR_W, EDITOR_H), (px(MIN_EDITOR_W), px(MIN_EDITOR_H))]
 }
 
 #[tokio::test]
@@ -114,11 +99,3 @@ async fn fts_mic_editor_lays_out_every_control() {
     }
 }
 
-#[tokio::test]
-async fn fts_mic_180_editor_lays_out_every_control() {
-    for (w, h) in sizes() {
-        let t = mount_180(w, h);
-        let bad = laid_out(&t, &MIC_180);
-        assert!(bad.is_empty(), "at {w}x{h}:\n  {}", bad.join("\n  "));
-    }
-}

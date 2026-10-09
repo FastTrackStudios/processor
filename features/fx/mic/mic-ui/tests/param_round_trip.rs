@@ -1,4 +1,4 @@
-//! Every parameter of both FTS Mic plugins parses the string it prints.
+//! Every parameter of FTS Mic parses the string it prints.
 //!
 //! A host's generic parameter list is text in, text out; a parameter that
 //! formats but does not parse is read-only there. The choices are held to
@@ -6,7 +6,7 @@
 //! has to read its own name back ("LD-87 Vintage", "Sub-Card"), since that
 //! is what a host shows and what scripts set.
 
-use mic_ui::params::{Mic180Params, MicParams};
+use mic_ui::params::MicParams;
 use nice_plug::prelude::Params;
 
 /// Normalized points to probe; the ends matter as much as the middle.
@@ -20,10 +20,13 @@ fn broken(params: &dyn Params) -> Vec<String> {
         let name = unsafe { ptr.name() }.to_string();
         // A stepped parameter is checked at every step, a continuous one at
         // the probes.
-        let points: Vec<f32> = match unsafe { ptr.step_count() } {
-            Some(steps) => (0..=steps).map(|k| k as f32 / steps.max(1) as f32).collect(),
-            None => PROBES.to_vec(),
-        };
+        let points: Vec<f32> = unsafe { ptr.step_count() }.map_or_else(
+            || PROBES.to_vec(),
+            |steps| {
+                let n = u16::try_from(steps).unwrap_or(u16::MAX).max(1);
+                (0..=n).map(|k| f32::from(k) / f32::from(n)).collect()
+            },
+        );
         for at in points {
             let shown = unsafe { ptr.normalized_value_to_string(at, true) };
             let Some(parsed) = (unsafe { ptr.string_to_normalized_value(&shown) }) else {
@@ -44,10 +47,4 @@ fn broken(params: &dyn Params) -> Vec<String> {
 fn every_fts_mic_parameter_parses_the_string_it_prints() {
     let bad = broken(&MicParams::default());
     assert!(bad.is_empty(), "FTS Mic:\n  {}", bad.join("\n  "));
-}
-
-#[test]
-fn every_fts_mic_180_parameter_parses_the_string_it_prints() {
-    let bad = broken(&Mic180Params::default());
-    assert!(bad.is_empty(), "FTS Mic 180:\n  {}", bad.join("\n  "));
 }

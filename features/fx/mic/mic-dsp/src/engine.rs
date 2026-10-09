@@ -24,6 +24,7 @@
 use crate::conv::Convolver;
 use crate::model::{AXES, AXIS_STEP_DEG, MicModel, PATTERNS};
 use crate::model::{MAX_POLY, MAX_POST, PostSection};
+use crate::model::Move;
 use crate::section::{Biquad, CornerShift};
 
 
@@ -82,12 +83,12 @@ fn db_to_gain(db: f64) -> f64 {
 struct Path {
     conv_p: Convolver,
     conv_g: Convolver,
-    proximity: [CornerShift; 2],
+    proximity: [CornerShift; 3],
 }
 
 impl Path {
     fn new(taps: usize) -> Self {
-        Self { conv_p: Convolver::new(taps), conv_g: Convolver::new(taps), proximity: [CornerShift::identity(); 2] }
+        Self { conv_p: Convolver::new(taps), conv_g: Convolver::new(taps), proximity: [CornerShift::identity(); 3] }
     }
 
     fn process(&mut self, sum: f64, diff: f64) -> f64 {
@@ -109,6 +110,9 @@ fn design(section: PostSection, sample_rate: f64) -> Biquad {
         PostSection::HighPass2 { hz, q } => Biquad::high_pass2(hz, q, sample_rate),
     }
 }
+
+/// Where a cancelled proximity high-pass's zero at DC goes (Hz).
+const BASE_LEAK_HZ: f64 = 0.05;
 
 /// Where the inverted sections' zeros at DC go (Hz). The reference's curve
 /// input is `K/B` with no leak at all (its phase follows `K/B` to 2 Hz), but
@@ -169,14 +173,17 @@ pub struct DualAdjust {
     /// Shared proximity corner, if any.
     pub centre: Option<f64>,
     /// The pattern step whose proximity base (corner, shelf depth) the mic
-    /// takes, if not its own (the 180 variant's backward mic: mic 1's).
+    /// takes, if not its own.
     pub law_pattern: Option<usize>,
+    /// Another mic's proximity filter (law and pattern step) run in place
+    /// of this mic's own: the 180 variant's backward mic runs mic 1's.
+    pub foreign: Option<(crate::model::ProximityLaw, usize)>,
 }
 
 impl DualAdjust {
     #[must_use]
     pub const fn none(own_delay: f64) -> Self {
-        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None }
+        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None, foreign: None }
     }
 }
 
@@ -301,10 +308,16 @@ impl MicChain {
         let sr = self.model.sample_rate;
         let law = self.model.proximity;
         let law_pattern = self.dual.law_pattern.unwrap_or(s.pattern);
-        let moves = match self.dual.centre {
-            Some(centre) => law.moves_around(s.proximity, s.pattern, centre, law_pattern),
-            None if law_pattern != s.pattern => law.moves_around(s.proximity, s.pattern, law.f0(law_pattern), law_pattern),
-            None => self.model.proximity.moves(s.proximity, s.pattern),
+        let pad = |[a, b]: [Option<Move>; 2]| [a, b, None];
+        let moves = match (self.dual.foreign, self.dual.centre) {
+            (Some((other, pattern)), _) => {
+                // the kernels' own base out, the other mic's whole filter in
+                let [a, b] = other.filter(s.proximity, pattern);
+                [law.base_inverse(s.pattern, BASE_LEAK_HZ), a, b]
+            }
+            (None, Some(centre)) => pad(law.moves_around(s.proximity, s.pattern, centre, law_pattern)),
+            (None, None) if law_pattern != s.pattern => pad(law.moves_around(s.proximity, s.pattern, law.f0(law_pattern), law_pattern)),
+            (None, None) => pad(law.moves(s.proximity, s.pattern)),
         };
         for path in [&mut self.linear] {
             for (section, step) in path.proximity.iter_mut().zip(moves) {
@@ -450,8 +463,8 @@ impl DualMic {
             let f2 = self.mic2.model().proximity.f0(p2);
             let centre = (1.0 - m).mul_add(f1, m * f2);
             let align = s.align_cm / 100.0 / 340.0 * sr;
-            self.mic1.set_dual(DualAdjust { own_delay: d1, delay, align: (-align).max(0.0), centre: Some(centre), law_pattern: None });
-            self.mic2.set_dual(DualAdjust { own_delay: d2, delay, align: align.max(0.0), centre: Some(centre), law_pattern: None });
+            self.mic1.set_dual(DualAdjust { own_delay: d1, delay, align: (-align).max(0.0), centre: Some(centre), law_pattern: None, foreign: None });
+            self.mic2.set_dual(DualAdjust { own_delay: d2, delay, align: align.max(0.0), centre: Some(centre), law_pattern: None, foreign: None });
         } else {
             self.mic1.set_dual(DualAdjust::none(d1));
             self.mic2.set_dual(DualAdjust::none(d2));
@@ -515,7 +528,17 @@ impl StereoMic {
     pub fn set(&mut self, s: StereoSettings) {
         let own = self.backward.model().delay;
         let forward = self.forward.settings().pattern;
-        self.backward.set_dual(DualAdjust { law_pattern: Some(forward), ..DualAdjust::none(own) });
+        // the backward mic runs the forward mic's proximity filter (measured:
+        // its gradient low end follows mic 1's model, law and pattern)
+        let law = self.forward.model().proximity;
+        let adjust = if law == self.backward.model().proximity {
+            // one model: its own law at mic 1's step, nothing to cancel
+            DualAdjust { law_pattern: Some(forward), ..DualAdjust::none(own) }
+        } else {
+            // two models: −20..−50 dB; the coupling is not fully identified
+            DualAdjust { foreign: Some((law, forward)), ..DualAdjust::none(own) }
+        };
+        self.backward.set_dual(adjust);
         let p = s.pan.clamp(-1.0, 1.0);
         // Each mic's pan gain is applied twice, before its curve and after
         // it: the level falls as g², its second harmonic as g and its third

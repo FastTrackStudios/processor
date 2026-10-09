@@ -1,4 +1,4 @@
-//! The FTS Mic and FTS Mic 180 editors.
+//! The FTS Mic editor.
 //!
 //! One row of sections per mic (type, pattern, axis, low cut), then the
 //! shared controls. Everything is the suite's shared chrome; the only local
@@ -12,7 +12,7 @@ use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::prelude::*;
 use nice_plug_dioxus::{SharedState, use_param_context};
 
-use crate::params::{FILTERS, MICS, Mic180UiState, MicUiState, PATTERNS, SOLOS, SOURCES};
+use crate::params::{FILTERS, MICS, MicUiState, PATTERNS, SOLOS, SOURCES};
 
 /// Editor size requested from the host on open.
 pub const EDITOR_W: u32 = 980;
@@ -139,45 +139,15 @@ fn MicShell() -> Element {
                     Switch { handle: param_handle(p.dual.as_ptr(), ctx.clone()), testid: "dual".to_string(), label: "Dual".to_string(), skin }
                     ParamKnob { handle: param_handle(p.mix.as_ptr(), ctx.clone()), testid: "mix".to_string() }
                     ParamKnob { handle: param_handle(p.align.as_ptr(), ctx.clone()), testid: "align".to_string() }
-                    ParamSelector { handle: param_handle(p.solo.as_ptr(), ctx), testid: "solo".to_string(), label: "Solo".to_string(), options: names(&SOLOS), skin }
+                    ParamSelector { handle: param_handle(p.solo.as_ptr(), ctx.clone()), testid: "solo".to_string(), label: "Solo".to_string(), options: names(&SOLOS), skin }
                 }
-                MicSection { label: "Mic 2".to_string(), n: 2, kind: p.type2.as_ptr(), pattern: p.pattern2.as_ptr(), filter: p.filter2.as_ptr(), axis: p.axis2.as_ptr(), skin }
-                Shared { proximity: p.proximity.as_ptr(), rear_trim: p.rear_trim.as_ptr(), swap: p.swap.as_ptr(), source: p.source.as_ptr(), output: p.output.as_ptr(), phase: p.phase.as_ptr(), skin }
-            }
-        }
-    }
-}
-
-/// FTS Mic 180's editor root.
-#[component]
-pub fn App180() -> Element {
-    rsx! {
-        PluginApp { tailwind_css: include_str!("../assets/tailwind.css").to_string(), Mic180Shell {} }
-    }
-}
-
-#[component]
-fn Mic180Shell() -> Element {
-    let shared = use_context::<SharedState>();
-    let Some(ui) = shared.get::<Mic180UiState>() else { return rsx! {} };
-    let ctx = use_param_context();
-    let p = &ui.params;
-    let skin = skin();
-    let frame = use_redraw_tick();
-    rsx! {
-        PluginRoot {
-            title: "FTS Mic 180".to_string(),
-            subtitle: "Stereo pair from one capsule pair".to_string(),
-            skin,
-            frame,
-            ControlSurface {
-                MicSection { label: "Front Mic".to_string(), n: 1, kind: p.type1.as_ptr(), pattern: p.pattern1.as_ptr(), filter: p.filter1.as_ptr(), axis: p.axis1.as_ptr(), skin }
-                Section { label: "Stereo".to_string(), skin,
+                Section { label: "180".to_string(), skin,
+                    Switch { handle: param_handle(p.stereo180.as_ptr(), ctx.clone()), testid: "stereo180".to_string(), label: "180 Stereo".to_string(), skin }
                     Switch { handle: param_handle(p.link.as_ptr(), ctx.clone()), testid: "link".to_string(), label: "Link".to_string(), skin }
                     ParamKnob { handle: param_handle(p.pan.as_ptr(), ctx.clone()), testid: "pan".to_string() }
                     ParamKnob { handle: param_handle(p.width.as_ptr(), ctx), testid: "width".to_string() }
                 }
-                MicSection { label: "Rear Mic".to_string(), n: 2, kind: p.type2.as_ptr(), pattern: p.pattern2.as_ptr(), filter: p.filter2.as_ptr(), axis: p.axis2.as_ptr(), skin }
+                MicSection { label: "Mic 2".to_string(), n: 2, kind: p.type2.as_ptr(), pattern: p.pattern2.as_ptr(), filter: p.filter2.as_ptr(), axis: p.axis2.as_ptr(), skin }
                 Shared { proximity: p.proximity.as_ptr(), rear_trim: p.rear_trim.as_ptr(), swap: p.swap.as_ptr(), source: p.source.as_ptr(), output: p.output.as_ptr(), phase: p.phase.as_ptr(), skin }
             }
         }

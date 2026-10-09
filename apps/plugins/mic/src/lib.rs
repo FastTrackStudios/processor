@@ -1,7 +1,10 @@
 //! FTS Mic — CLAP/VST3 dual-capsule microphone modeller.
 //!
 //! Input is a Sphere-style capsule pair (left = front capsule, right =
-//! rear); output is the modelled mic, mono on both channels. The engine is
+//! rear); output is the modelled mic, mono on both channels — or, in 180
+//! mode, a stereo pair: mic 1 forward on the left, mic 2 facing back on the
+//! right (its own measured models, `<rate>[-LX]-180/`), balanced by Mic Pan
+//! and crossfed by Stereo Width. The engine is
 //! [`mic_dsp`]; this crate is the host shell: parameters, latency, and
 //! loading the models (≈30 MB each) on a loader thread so the audio thread
 //! never touches the disk or the allocator.
@@ -14,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
-use mic_dsp::{DualMic, DualSettings, MicChain, Settings, Solo, latency};
+use mic_dsp::{DualMic, DualSettings, MicChain, Settings, Solo, StereoMic, StereoSettings, latency};
 use nice_plug::prelude::*;
 use nice_plug_dioxus::{DioxusState, create_dioxus_editor_with_state};
 pub use mic_ui::params::MicParams;
@@ -25,7 +28,7 @@ const PLUGIN_NAME: &str = "FTS Mic";
 #[path = "common.rs"]
 mod common;
 pub use common::MICS;
-use common::{index, load_model};
+use common::{index, load_model, load_model_variant};
 
 
 /// Which models a chain needs, and at what rate.
@@ -34,6 +37,8 @@ struct Want {
     mic1: usize,
     mic2: usize,
     dual: bool,
+    /// The 180 pair (mic 2's backward model) rather than a dual mix.
+    stereo: bool,
     source: usize,
     sample_rate: u32,
 }
@@ -42,6 +47,7 @@ struct Want {
 enum Loaded {
     Single(Box<MicChain>),
     Dual(Box<DualMic>),
+    Stereo(Box<StereoMic>),
 }
 
 /// The loader thread: builds chains off the audio thread, and drops the
@@ -55,7 +61,10 @@ fn loader(requests: &Receiver<Want>, ready: &Sender<(Want, Loaded)>, trash: &Rec
             want = newer;
         }
         let Some(m1) = load_model(want.mic1, want.source, want.sample_rate) else { continue };
-        let loaded = if want.dual {
+        let loaded = if want.stereo {
+            let Some(m2) = load_model_variant(want.mic2, want.source, want.sample_rate, "-180") else { continue };
+            Loaded::Stereo(Box::new(StereoMic::new(MicChain::new(m1), MicChain::new(m2))))
+        } else if want.dual {
             let Some(m2) = load_model(want.mic2, want.source, want.sample_rate) else { continue };
             Loaded::Dual(Box::new(DualMic::new(MicChain::new(m1), MicChain::new(m2))))
         } else {
@@ -115,11 +124,17 @@ impl Drop for FtsMic {
 }
 
 impl FtsMic {
+    /// 180 with Link: mic 2 is mic 1's type, pattern, filter and axis.
+    fn linked(&self) -> bool {
+        self.params.stereo180.value() && self.params.link.value()
+    }
+
     fn want(&self) -> Want {
         Want {
             mic1: index(&self.params.type1),
-            mic2: index(&self.params.type2),
+            mic2: if self.linked() { index(&self.params.type1) } else { index(&self.params.type2) },
             dual: self.params.dual.value(),
+            stereo: self.params.stereo180.value(),
             source: index(&self.params.source),
             sample_rate: self.sample_rate,
         }
@@ -127,7 +142,7 @@ impl FtsMic {
 
     fn settings(&self, second: bool) -> Settings {
         let p = &self.params;
-        let (pattern, filter, axis) = if second { (&p.pattern2, &p.filter2, &p.axis2) } else { (&p.pattern1, &p.filter1, &p.axis1) };
+        let (pattern, filter, axis) = if second && !self.linked() { (&p.pattern2, &p.filter2, &p.axis2) } else { (&p.pattern1, &p.filter1, &p.axis1) };
         Settings {
             pattern: index(pattern),
             axis_deg: f64::from(axis.value()),
@@ -178,6 +193,20 @@ impl FtsMic {
                 }
                 d.set(dual);
             }
+            Some(Loaded::Stereo(e)) => {
+                if e.forward.settings() != s1 {
+                    e.forward.apply(s1, false);
+                }
+                if e.backward.settings() != s2 {
+                    e.backward.apply(s2, false);
+                }
+                // after the chains: the backward mic takes the forward one's
+                // proximity base
+                e.set(StereoSettings {
+                    pan: f64::from(self.params.pan.value()) / 100.0,
+                    width: f64::from(self.params.width.value()) / 100.0,
+                });
+            }
             None => {}
         }
     }
@@ -224,6 +253,10 @@ impl Plugin for FtsMic {
                 d.mic1.reset();
                 d.mic2.reset();
             }
+            Some(Loaded::Stereo(e)) => {
+                e.forward.reset();
+                e.backward.reset();
+            }
             None => {}
         }
     }
@@ -234,18 +267,24 @@ impl Plugin for FtsMic {
         for mut frame in buffer.iter_samples() {
             let mut it = frame.iter_mut();
             let (Some(l), Some(r)) = (it.next(), it.next()) else { continue };
-            let y = if ready {
+            let (a, b) = if ready {
                 match self.engine.as_mut() {
-                    Some(Loaded::Single(c)) => c.process(f64::from(*l), f64::from(*r)),
-                    Some(Loaded::Dual(d)) => d.process(f64::from(*l), f64::from(*r)),
-                    None => 0.0,
+                    Some(Loaded::Single(c)) => {
+                        let y = c.process(f64::from(*l), f64::from(*r));
+                        (y, y)
+                    }
+                    Some(Loaded::Dual(d)) => {
+                        let y = d.process(f64::from(*l), f64::from(*r));
+                        (y, y)
+                    }
+                    Some(Loaded::Stereo(e)) => e.process(f64::from(*l), f64::from(*r)),
+                    None => (0.0, 0.0),
                 }
             } else {
-                0.0
+                (0.0, 0.0)
             };
-            let out = dsp_core::num::f64_to_f32(y);
-            *l = out;
-            *r = out;
+            *l = dsp_core::num::f64_to_f32(a);
+            *r = dsp_core::num::f64_to_f32(b);
         }
         ProcessStatus::Normal
     }

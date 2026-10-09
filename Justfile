@@ -4,7 +4,7 @@
 # does not build on macOS. That is inherited from signal, not new. Build the
 # plugins, or the crate you are working on.
 
-fts_plugins := "eq comp saturate delay reverb gate level limiter meter mic mic180 modulation pitch trigger tune unison"
+fts_plugins := "eq comp saturate delay reverb gate level limiter meter mic modulation pitch trigger tune unison"
 
 # Everything that matters, checked.
 check:

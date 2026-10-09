@@ -104,6 +104,37 @@ impl ProximityLaw {
         })
     }
 
+    /// The whole gradient-path proximity filter at a setting, base
+    /// included, as `(zero, pole)` sections: a high-pass at the corner
+    /// (Corner), a shelf at it (Shelf), or only the moves (Dynamic, whose
+    /// base is flat). The kernels carry the filter at 0 %.
+    #[must_use]
+    pub fn filter(self, percent: f64, pattern: usize) -> [Option<Move>; 2] {
+        let u = (percent / 100.0).clamp(-1.0, 1.0);
+        let corner = |f0: f64, lo: f64, hi: f64| if u >= 0.0 { (f0 - lo).mul_add(-u, f0) } else { (hi - f0).mul_add(u * u, f0) };
+        match self {
+            Self::Corner { lo, hi, .. } => [Some((0.0, corner(self.f0(pattern), lo, hi))), None],
+            Self::Shelf { lo, hi, k, .. } => {
+                let k = k.get(pattern).copied().unwrap_or(1.0);
+                let c = corner(self.f0(pattern), lo, hi);
+                [Some((k * c, c)), None]
+            }
+            Self::Dynamic { .. } => self.moves(percent, pattern),
+        }
+    }
+
+    /// The section that undoes the base the kernels carry at a pattern step
+    /// (`leak` Hz stands in for a pole at DC under a high-pass's zero).
+    #[must_use]
+    pub fn base_inverse(self, pattern: usize, leak: f64) -> Option<Move> {
+        let f0 = self.f0(pattern);
+        match self {
+            Self::Corner { .. } => Some((f0, leak)),
+            Self::Shelf { k, .. } => Some((f0, k.get(pattern).copied().unwrap_or(1.0) * f0)),
+            Self::Dynamic { .. } => None,
+        }
+    }
+
     /// The mic's own corner at a pattern step.
     #[must_use]
     pub fn f0(self, pattern: usize) -> f64 {

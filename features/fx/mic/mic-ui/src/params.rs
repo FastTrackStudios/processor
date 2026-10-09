@@ -91,6 +91,17 @@ pub struct MicParams {
     pub swap: BoolParam,
     #[id = "source"]
     pub source: IntParam,
+    /// The 180 variant's stereo pair: mic 1 forward on the left, mic 2
+    /// facing back on the right (instead of dual mode's mix).
+    #[id = "stereo180"]
+    pub stereo180: BoolParam,
+    /// 180: mic 2 follows mic 1's type, pattern, filter and axis.
+    #[id = "link"]
+    pub link: BoolParam,
+    #[id = "pan"]
+    pub pan: FloatParam,
+    #[id = "width"]
+    pub width: FloatParam,
 }
 
 impl Default for MicParams {
@@ -114,69 +125,10 @@ impl Default for MicParams {
             rear_trim: float("Rear Trim", 0.0, -6.0, 6.0, " dB", 2),
             swap: BoolParam::new("Swap Capsules", false),
             source: choice("Source Mic", 0, &SOURCES),
-        }
-    }
-}
-
-#[derive(Params)]
-pub struct Mic180Params {
-    #[id = "type1"]
-    pub type1: IntParam,
-    #[id = "pattern1"]
-    pub pattern1: IntParam,
-    #[id = "filter1"]
-    pub filter1: IntParam,
-    #[id = "axis1"]
-    pub axis1: FloatParam,
-    #[id = "type2"]
-    pub type2: IntParam,
-    #[id = "pattern2"]
-    pub pattern2: IntParam,
-    #[id = "filter2"]
-    pub filter2: IntParam,
-    #[id = "axis2"]
-    pub axis2: FloatParam,
-    /// Mic 2 follows mic 1's type, pattern, filter and axis.
-    #[id = "link"]
-    pub link: BoolParam,
-    #[id = "pan"]
-    pub pan: FloatParam,
-    #[id = "width"]
-    pub width: FloatParam,
-    #[id = "proximity"]
-    pub proximity: FloatParam,
-    #[id = "output"]
-    pub output: FloatParam,
-    #[id = "phase"]
-    pub phase: BoolParam,
-    #[id = "rear_trim"]
-    pub rear_trim: FloatParam,
-    #[id = "swap"]
-    pub swap: BoolParam,
-    #[id = "source"]
-    pub source: IntParam,
-}
-
-impl Default for Mic180Params {
-    fn default() -> Self {
-        Self {
-            type1: choice("Mic1 Type", 0, &MICS),
-            pattern1: choice("Mic1 Pattern", 4, &PATTERNS),
-            filter1: choice("Mic1 Filter", 0, &FILTERS),
-            axis1: float("Mic1 Axis", 0.0, 0.0, 180.0, "°", 1),
-            type2: choice("Mic2 Type", 0, &MICS),
-            pattern2: choice("Mic2 Pattern", 4, &PATTERNS),
-            filter2: choice("Mic2 Filter", 0, &FILTERS),
-            axis2: float("Mic2 Axis", 0.0, 0.0, 180.0, "°", 1),
+            stereo180: BoolParam::new("180 Stereo", false),
             link: BoolParam::new("Mic Link", true),
             pan: float("Mic Pan", 0.0, -100.0, 100.0, "%", 1),
             width: float("Stereo Width", 100.0, 0.0, 200.0, "%", 1),
-            proximity: float("Proximity", 0.0, -100.0, 100.0, "%", 1),
-            output: float("Output", 0.0, -12.0, 12.0, " dB", 1),
-            phase: BoolParam::new("Phase Invert", false),
-            rear_trim: float("Rear Trim", 0.0, -6.0, 6.0, " dB", 2),
-            swap: BoolParam::new("Swap Capsules", false),
-            source: choice("Source Mic", 0, &SOURCES),
         }
     }
 }
@@ -189,18 +141,6 @@ pub struct MicUiState {
 impl MicUiState {
     #[must_use]
     pub const fn new(params: Arc<MicParams>) -> Self {
-        Self { params }
-    }
-}
-
-/// What FTS Mic 180's editor reads.
-pub struct Mic180UiState {
-    pub params: Arc<Mic180Params>,
-}
-
-impl Mic180UiState {
-    #[must_use]
-    pub const fn new(params: Arc<Mic180Params>) -> Self {
         Self { params }
     }
 }

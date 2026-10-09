@@ -1,5 +1,5 @@
-//! What both FTS Mic plugins share: where the models live (the mic list
-//! and parameter helpers are `mic_ui::params`). Included by path from each plugin crate.
+//! Where the models live (the mic list and parameter helpers are
+//! `mic_ui::params`).
 
 use std::path::PathBuf;
 use mic_dsp::MicModel;
