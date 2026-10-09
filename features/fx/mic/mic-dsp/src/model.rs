@@ -36,6 +36,8 @@
 //! f64 shelf_k[9]             (optional, Shelf law only) its k at each pattern step
 //! f64 dual_weight[9]         (optional) the weight dual mode gives this model's
 //!                            proximity filter when crossfading it with another's
+//! f64 dual_pressure_hz       (optional) the pressure path's high-pass corner dual
+//!                            mode crossfades (same weight; 0 = none, default 10)
 //!                            (the measured response, curve's high-passes
 //!                            included; the engine derives the curve's input)
 //! ```
@@ -200,6 +202,9 @@ pub struct MicModel {
     /// Dual mode's weight on this model's proximity filter, per pattern
     /// step (relative to Sphere Linear's; 1 when the file gives none).
     pub dual_weight: [f64; PATTERNS],
+    /// Dual mode's pressure-path block: a high-pass at this corner (0: none)
+    /// crossfaded with the same weights (Sphere Linear's is 10 Hz).
+    pub dual_pressure_hz: f64,
 }
 
 /// One section after the output curve.
@@ -375,7 +380,8 @@ impl MicModel {
         if table.iter_mut().try_for_each(|v| r.f64().map(|x| *v = x)).is_ok() {
             dual_weight = table;
         }
-        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay, dual_weight })
+        let dual_pressure_hz = r.f64().unwrap_or(10.0);
+        Ok(Self { sample_rate, taps, sets, low_cut_hz, proximity, stages, delay, dual_weight, dual_pressure_hz })
     }
 
     /// The output stage at a low-cut position.

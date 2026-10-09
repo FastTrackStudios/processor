@@ -87,6 +87,8 @@ struct Path {
     /// Dual mode: the other mic's proximity filter over this kernel's own
     /// base, and the weights the two branches are crossfaded with.
     cross: [CornerShift; 3],
+    /// … and the pressure path's: its high-pass moved to the other mic's.
+    pressure_cross: CornerShift,
     weights: Option<[f64; 2]>,
 }
 
@@ -97,6 +99,7 @@ impl Path {
             conv_g: Convolver::new(taps),
             proximity: [CornerShift::identity(); 3],
             cross: [CornerShift::identity(); 3],
+            pressure_cross: CornerShift::identity(),
             weights: None,
         }
     }
@@ -104,11 +107,14 @@ impl Path {
     fn process(&mut self, sum: f64, diff: f64) -> f64 {
         let g = self.conv_g.process(diff);
         let own = self.proximity.iter_mut().fold(g, |x, sec| sec.process(x));
-        let gradient = match self.weights {
-            Some([a, b]) => a.mul_add(own, b * self.cross.iter_mut().fold(g, |x, sec| sec.process(x))),
-            None => own,
-        };
-        self.conv_p.process(sum) + gradient
+        let p = self.conv_p.process(sum);
+        match self.weights {
+            Some([a, b]) => {
+                let gradient = a.mul_add(own, b * self.cross.iter_mut().fold(g, |x, sec| sec.process(x)));
+                a.mul_add(p, b * self.pressure_cross.process(p)) + gradient
+            }
+            None => p + own,
+        }
     }
 
     fn reset(&mut self) {
@@ -116,6 +122,7 @@ impl Path {
         self.conv_g.reset();
         self.proximity.iter_mut().for_each(CornerShift::reset);
         self.cross.iter_mut().for_each(CornerShift::reset);
+        self.pressure_cross.reset();
     }
 }
 
@@ -129,6 +136,10 @@ fn design(section: PostSection, sample_rate: f64) -> Biquad {
 
 /// Where a cancelled proximity high-pass's zero at DC goes (Hz).
 const BASE_LEAK_HZ: f64 = 0.05;
+
+/// Where the pressure block's missing high-pass goes when the other mic has
+/// none (Hz): one pole, so far lower than [`BASE_LEAK_HZ`] is safe.
+const PRESSURE_LEAK_HZ: f64 = 0.005;
 
 /// A base's inverse followed by another filter, with a leaked DC pole and a
 /// following high-pass's zero at DC cancelled exactly: Corner to Corner is
@@ -211,12 +222,14 @@ pub struct DualAdjust {
     pub cross: Option<(crate::model::ProximityLaw, usize, [f64; 2])>,
     /// Dual mode: the other mic's low-end corner at its low-cut position.
     pub cross_low: Option<f64>,
+    /// Dual mode: the other mic's pressure-path corner.
+    pub cross_pressure: Option<f64>,
 }
 
 impl DualAdjust {
     #[must_use]
     pub const fn none(own_delay: f64) -> Self {
-        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None, foreign: None, cross: None, cross_low: None }
+        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None, foreign: None, cross: None, cross_low: None, cross_pressure: None }
     }
 }
 
@@ -360,6 +373,11 @@ impl MicChain {
             }
         }
         path.weights = self.dual.cross.map(|(_, _, w)| w);
+        match self.dual.cross_pressure {
+            // a flat block's missing high-pass is a pole at DC: leaked
+            Some(target) => path.pressure_cross.set(self.model.dual_pressure_hz, target.max(PRESSURE_LEAK_HZ), sr),
+            None => path.pressure_cross.make_identity(),
+        }
         if let Some((other, pattern, _)) = self.dual.cross {
             // this kernel's own base out, the other mic's whole filter in
             let steps = merge(law.base_inverse(s.pattern, BASE_LEAK_HZ), other.filter(s.proximity, pattern));
@@ -520,11 +538,12 @@ impl DualMic {
             let same = (law1 == law2 && p1 == p2) || dynamic(law1) || dynamic(law2);
             let cross1 = (!same).then_some((law2, p2, [b1, b2]));
             let cross2 = (!same).then_some((law1, p1, [b2, b1]));
+            let (pr1, pr2) = (self.mic1.model().dual_pressure_hz, self.mic2.model().dual_pressure_hz);
             let end_1 = self.mic1.model().low_end_corner(self.mic1.settings().low_cut);
             let end_2 = self.mic2.model().low_end_corner(self.mic2.settings().low_cut);
             let align = s.align_cm / 100.0 / 340.0 * sr;
-            self.mic1.set_dual(DualAdjust { delay, align: (-align).max(0.0), cross: cross1, cross_low: Some(end_2), ..DualAdjust::none(d1) });
-            self.mic2.set_dual(DualAdjust { delay, align: align.max(0.0), cross: cross2, cross_low: Some(end_1), ..DualAdjust::none(d2) });
+            self.mic1.set_dual(DualAdjust { delay, align: (-align).max(0.0), cross: cross1, cross_low: Some(end_2), cross_pressure: (!same).then_some(pr2), ..DualAdjust::none(d1) });
+            self.mic2.set_dual(DualAdjust { delay, align: align.max(0.0), cross: cross2, cross_low: Some(end_1), cross_pressure: (!same).then_some(pr1), ..DualAdjust::none(d2) });
         } else {
             self.mic1.set_dual(DualAdjust::none(d1));
             self.mic2.set_dual(DualAdjust::none(d2));
