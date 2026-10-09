@@ -78,28 +78,10 @@ pub fn crush_db(knob: f64) -> f64 {
     (b - a) * frac + a
 }
 
-/// The static curve: cubic Hermite through the measured values and slopes,
-/// held flat past the table (the curve is on its rails there).
+/// The static curve, from its measured table.
 #[must_use]
 pub fn curve(u: f64) -> f64 {
-    let last = t::CURVE.len().saturating_sub(1);
-    let step = 2.0 * t::CURVE_UMAX / dsp_core::num::count_to_f64(last);
-    let pos = (u + t::CURVE_UMAX) / step;
-    if pos <= 0.0 {
-        return t::CURVE.first().copied().unwrap_or(0.0);
-    }
-    let i = dsp_core::num::f64_to_index(libm::floor(pos));
-    if i >= last {
-        return t::CURVE.last().copied().unwrap_or(0.0);
-    }
-    let x = pos - dsp_core::num::count_to_f64(i);
-    let j = i.saturating_add(1);
-    let (y0, y1) = (t::CURVE.get(i).copied().unwrap_or(0.0), t::CURVE.get(j).copied().unwrap_or(0.0));
-    let m0 = t::CURVE_SLOPE.get(i).copied().unwrap_or(0.0) * step;
-    let m1 = t::CURVE_SLOPE.get(j).copied().unwrap_or(0.0) * step;
-    let x2 = x * x;
-    let x3 = x2 * x;
-    (2.0 * x3 - 3.0 * x2 + 1.0) * y0 + (x3 - 2.0 * x2 + x) * m0 + (3.0 * x2 - 2.0 * x3) * y1 + (x3 - x2) * m1
+    crate::table::hermite(&t::CURVE, &t::CURVE_SLOPE, t::CURVE_UMAX, u)
 }
 
 /// A complex number, just enough of one for bilinear transforms.

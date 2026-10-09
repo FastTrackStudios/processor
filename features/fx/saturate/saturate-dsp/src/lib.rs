@@ -23,6 +23,10 @@ extern crate alloc;
 
 use dsp_core::num;
 
+pub mod bluebox;
+#[rustfmt::skip]
+#[allow(clippy::unreadable_literal, clippy::excessive_precision, reason = "generated measurement tables")]
+pub mod bluebox_tables;
 pub mod deluxe;
 #[rustfmt::skip]
 #[allow(clippy::unreadable_literal, clippy::excessive_precision, reason = "generated measurement tables")]
@@ -30,6 +34,7 @@ pub mod deluxe_tables;
 pub mod digital;
 pub mod emphasis;
 pub mod preamp;
+pub mod table;
 
 /// Saturation transfer-curve family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
