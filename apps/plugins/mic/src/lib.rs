@@ -6,12 +6,14 @@
 //! right (its own measured models, `<rate>[-LX]-180/`), balanced by Mic Pan
 //! and crossfed by Stereo Width. The engine is
 //! [`mic_dsp`]; this crate is the host shell: parameters, latency, and
-//! loading the models (≈30 MB each) on a loader thread so the audio thread
-//! never touches the disk or the allocator.
+//! loading the models on a loader thread so the audio thread never touches
+//! the disk or the allocator.
 //!
 //! Models are `.micm` files in `$FTS_MIC_MODELS/<sample rate>[-LX]/`
-//! (default `~/.local/share/fts/mic-models`), one per mic, named as the
-//! mic list below with spaces as underscores.
+//! (default `~/.local/share/fts/mic-models`, a checkout of the private
+//! `mic-models` repository: `just mic-models-install`), one per mic, named as
+//! the mic list with spaces as underscores. The default mic (LD-47K) is also
+//! built in, and stands in for any mic that is not installed.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +30,7 @@ const PLUGIN_NAME: &str = "FTS Mic";
 #[path = "common.rs"]
 mod common;
 pub use common::MICS;
-use common::{index, load_model, load_model_variant};
+use common::{index, load_model_or_default};
 
 
 /// Which models a chain needs, and at what rate.
@@ -60,12 +62,12 @@ fn loader(requests: &Receiver<Want>, ready: &Sender<(Want, Loaded)>, trash: &Rec
         while let Ok(newer) = requests.try_recv() {
             want = newer;
         }
-        let Some(m1) = load_model(want.mic1, want.source, want.sample_rate) else { continue };
+        let Some(m1) = load_model_or_default(want.mic1, want.source, want.sample_rate, "") else { continue };
         let loaded = if want.stereo {
-            let Some(m2) = load_model_variant(want.mic2, want.source, want.sample_rate, "-180") else { continue };
+            let Some(m2) = load_model_or_default(want.mic2, want.source, want.sample_rate, "-180") else { continue };
             Loaded::Stereo(Box::new(StereoMic::new(MicChain::new(m1), MicChain::new(m2))))
         } else if want.dual {
-            let Some(m2) = load_model(want.mic2, want.source, want.sample_rate) else { continue };
+            let Some(m2) = load_model_or_default(want.mic2, want.source, want.sample_rate, "") else { continue };
             Loaded::Dual(Box::new(DualMic::new(MicChain::new(m1), MicChain::new(m2))))
         } else {
             Loaded::Single(Box::new(MicChain::new(m1)))

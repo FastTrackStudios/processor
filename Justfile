@@ -152,3 +152,22 @@ plugins-unlink:
 # arch to run the universal binaries in one personality:
 #   just plugins-verify              # native
 #   just plugins-verify x86_64       # the Intel half, under Rosetta
+
+# The models are the private FastTrackStudios/mic-models repository, read from
+# $FTS_MIC_MODELS, else ~/.local/share/fts/mic-models. The default mic (LD-47K)
+# is built into the plugin, so this is only needed for the other thirty-nine.
+# Install or update the FTS Mic models for the plugin
+mic-models-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="${FTS_MIC_MODELS:-${XDG_DATA_HOME:-$HOME/.local/share}/fts/mic-models}"
+    if [ -d "$dest/.git" ]; then
+        git -C "$dest" pull --ff-only
+    elif [ -e "$dest" ]; then
+        echo "$dest exists and is not a mic-models checkout; leaving it alone" >&2
+        exit 1
+    else
+        mkdir -p "$(dirname "$dest")"
+        git clone git@github.com:FastTrackStudios/mic-models.git "$dest"
+    fi
+
