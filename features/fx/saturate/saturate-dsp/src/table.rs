@@ -15,18 +15,15 @@ pub fn hermite(values: &[f64], slopes: &[f64], umax: f64, u: f64) -> f64 {
     if pos <= 0.0 {
         return values.first().copied().unwrap_or(0.0);
     }
-    let i = f64_to_index(libm::floor(pos));
-    if i >= last {
+    let i = f64_to_index(pos);
+    let (Some(&y0), Some(&y1), Some(&s0), Some(&s1)) = (values.get(i), values.get(i.saturating_add(1)), slopes.get(i), slopes.get(i.saturating_add(1))) else {
         return values.last().copied().unwrap_or(0.0);
-    }
+    };
     let x = pos - count_to_f64(i);
-    let j = i.saturating_add(1);
-    let (y0, y1) = (values.get(i).copied().unwrap_or(0.0), values.get(j).copied().unwrap_or(0.0));
-    let m0 = slopes.get(i).copied().unwrap_or(0.0) * step;
-    let m1 = slopes.get(j).copied().unwrap_or(0.0) * step;
-    let x2 = x * x;
-    let x3 = x2 * x;
-    (2.0 * x3 - 3.0 * x2 + 1.0) * y0 + (x3 - 2.0 * x2 + x) * m0 + (3.0 * x2 - 2.0 * x3) * y1 + (x3 - x2) * m1
+    let (m0, m1) = (s0 * step, s1 * step);
+    // Horner form of the cubic Hermite basis
+    let d = y1 - y0;
+    ((((m0 + m1) - 2.0 * d) * x + (3.0 * d - 2.0 * m0 - m1)) * x + m0) * x + y0
 }
 
 /// As [`hermite`], on a grid uniform in `s = asinh(k·u/umax) / asinh(k)` —

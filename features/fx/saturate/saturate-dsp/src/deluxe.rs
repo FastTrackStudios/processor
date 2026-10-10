@@ -237,24 +237,24 @@ impl Channel {
         self.pre.iter_mut().fold(x, |v, s| s.run(v))
     }
 
-    /// Darkness after the curve: every position's ratio runs (so moving the
-    /// knob never meets cold state); positions `lo` and `lo + 1` (0 = open,
-    /// the identity) are crossfaded by `w`.
+    /// Darkness after the curve: positions `lo` and `lo + 1` (0 = open, the
+    /// identity) crossfaded by `w`. Only the active pair runs — a filter
+    /// entering the pair as the knob sweeps does so at (near) zero weight,
+    /// so its cold start is never heard, and the open knob costs nothing.
     #[inline]
     fn dark(&mut self, x: f64, lo: usize, w: f64) -> f64 {
-        let hi = lo.saturating_add(1);
-        let open = if lo == 0 { (1.0 - w) * x } else { 0.0 };
-        self.dark.iter_mut().enumerate().fold(open, |acc, (i, f)| {
-            let y = f.iter_mut().fold(x, |v, s| s.run(v));
-            let pos = i.saturating_add(1);
-            if pos == lo {
-                (1.0 - w) * y + acc
-            } else if pos == hi {
-                w * y + acc
-            } else {
-                acc
+        let mut run = |pos: usize| -> f64 {
+            if pos == 0 {
+                return x;
             }
-        })
+            self.dark.get_mut(pos.saturating_sub(1)).map_or(x, |f| f.iter_mut().fold(x, |v, s| s.run(v)))
+        };
+        if w <= 0.0 {
+            return run(lo);
+        }
+        let a = run(lo);
+        let b = run(lo.saturating_add(1));
+        (1.0 - w) * a + w * b
     }
 
     #[inline]
@@ -266,6 +266,9 @@ impl Channel {
     }
 }
 
+/// ln(10)/20: dB to natural-log units.
+const DB_TO_LN: f64 = core::f64::consts::LN_10 / 20.0;
+
 fn pole_ms(ms: f64, sample_rate: f64) -> f64 {
     if ms <= 0.0 { 0.0 } else { libm::exp(-1000.0 / (ms * sample_rate)) }
 }
@@ -276,32 +279,114 @@ fn soft_over(x: f64, k: f64) -> f64 {
     if z > 30.0 { x } else { k * libm::log1p(libm::exp(z)) }
 }
 
+/// The detector's constants. [`Default`] is the measured set
+/// ([`crate::deluxe_tables`]); the fitting tools drive the engine with
+/// other sets through [`Deluxe::set_detector`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DetectorParams {
+    /// Extra gain into the VCA, dB (calibration; 0 in the measured set,
+    /// which folds it into the Crush taper).
+    pub offset_db: f64,
+    /// Rectifier threshold θ, dB re full scale at the detector tap.
+    pub theta_db: f64,
+    /// Smoothing of the rectified level before the rectifier law, ms.
+    pub smooth_ms: f64,
+    /// Rectifier law: `(x^p − 1)/p` of `x = level/θ` (`p → 0` is `ln x`).
+    pub power: f64,
+    /// Rectifier corner softness.
+    pub soft: f64,
+    /// Cap charge rate (dB of gain reduction per second per unit excess)…
+    pub charge_per_s: f64,
+    /// …and its limit, dB per ms.
+    pub charge_max_db_per_ms: f64,
+    /// Cap discharge, Release On / Off, ms.
+    pub tau_on_ms: f64,
+    pub tau_off_ms: f64,
+    /// Most gain reduction, dB, and how softly the cap approaches it.
+    pub floor_db: f64,
+    pub floor_knee_db: f64,
+    /// Fast peak path: dB of reduction per dB over `fast_t_db`, knee width,
+    /// attack, and release (On / Off).
+    pub fast_k: f64,
+    pub fast_t_db: f64,
+    pub fast_w_db: f64,
+    pub fast_attack_ms: f64,
+    pub fast_release_on_ms: f64,
+    pub fast_release_off_ms: f64,
+    /// Release Off's slow component: weight, charge and release, ms.
+    pub slow_weight: f64,
+    pub slow_charge_ms: f64,
+    pub slow_release_ms: f64,
+}
+
+impl Default for DetectorParams {
+    fn default() -> Self {
+        Self {
+            offset_db: 0.0,
+            theta_db: t::DET_THETA_DB,
+            smooth_ms: t::DET_SMOOTH_MS,
+            power: t::DET_POWER,
+            soft: t::DET_SOFT,
+            charge_per_s: t::DET_CHARGE_PER_S,
+            charge_max_db_per_ms: t::DET_CHARGE_MAX_DB_PER_MS,
+            tau_on_ms: t::DET_TAU_ON_MS,
+            tau_off_ms: t::DET_TAU_OFF_MS,
+            floor_db: t::DET_FLOOR_DB,
+            floor_knee_db: t::DET_FLOOR_KNEE_DB,
+            fast_k: t::DET_FAST_K,
+            fast_t_db: t::DET_FAST_T_DB,
+            fast_w_db: t::DET_FAST_W_DB,
+            fast_attack_ms: t::DET_FAST_ATTACK_MS,
+            fast_release_on_ms: t::DET_FAST_RELEASE_ON_MS,
+            fast_release_off_ms: t::DET_FAST_RELEASE_OFF_MS,
+            slow_weight: t::DET_SLOW_WEIGHT,
+            slow_charge_ms: t::DET_SLOW_CHARGE_MS,
+            slow_release_ms: t::DET_SLOW_RELEASE_MS,
+        }
+    }
+}
+
+/// Per-sample detector coefficients derived from [`DetectorParams`] and the
+/// Release switch.
+#[derive(Clone, Copy, Debug, Default)]
+struct DetCoefs {
+    gain: f64,
+    theta: f64,
+    smooth: f64,
+    charge: f64,
+    charge_max: f64,
+    rel: f64,
+    fast_attack: f64,
+    fast_release: f64,
+    slow_weight: f64,
+    slow_charge: f64,
+    slow_release: f64,
+}
+
 /// The stereo Deluxe engine.
 #[derive(Clone, Debug)]
 pub struct Deluxe {
     sample_rate: f64,
     ch: [Channel; 2],
+    det: DetectorParams,
+    c: DetCoefs,
+    release_on: bool,
     crush: f64,
     crunch: f64,
     wet: f64,
     dry: f64,
-    rel: f64,
     pre_lo: usize,
     pre_w: f64,
-    charge: f64,
-    charge_max: f64,
-    theta: f64,
-    smooth: f64,
     hp_b: f64,
     hp_a: f64,
     /// Rectified, smoothed detector input.
     m: f64,
     /// Detector cap: gain reduction in dB.
     vc: f64,
-    /// The fast peak path's gain reduction, dB, and its ballistics.
+    /// The fast peak path's gain reduction, dB.
     fast: f64,
-    fast_attack: f64,
-    fast_release: f64,
+    /// Release Off's slow component, dB.
+    slow: f64,
 }
 
 impl Deluxe {
@@ -311,24 +396,21 @@ impl Deluxe {
         let mut s = Self {
             sample_rate,
             ch: [Channel::new(sample_rate), Channel::new(sample_rate)],
+            det: DetectorParams::default(),
+            c: DetCoefs::default(),
+            release_on: false,
             crush: 1.0,
             crunch: 1.0,
             wet: 1.0,
             dry: 0.0,
-            rel: 0.0,
             pre_lo: 0,
             pre_w: 0.0,
-            charge: t::DET_CHARGE_PER_S / sample_rate,
-            charge_max: t::DET_CHARGE_MAX_DB_PER_MS * 1000.0 / sample_rate,
-            fast_attack: 1.0 - pole_ms(t::DET_FAST_ATTACK_MS, sample_rate),
-            fast_release: 0.0,
-            theta: libm::pow(10.0, t::DET_THETA_DB / 20.0),
-            smooth: 1.0 - pole_ms(t::DET_SMOOTH_MS, sample_rate),
             hp_b: 1.0 / (1.0 + k),
             hp_a: (1.0 - k) / (1.0 + k),
             m: 0.0,
             vc: 0.0,
             fast: 0.0,
+            slow: 0.0,
         };
         s.set(DeluxeParams::default());
         s
@@ -339,6 +421,30 @@ impl Deluxe {
         self.sample_rate
     }
 
+    /// Replace the detector's constants (the fitting tools' hook).
+    pub fn set_detector(&mut self, det: DetectorParams) {
+        self.det = det;
+        self.refresh_detector();
+    }
+
+    fn refresh_detector(&mut self) {
+        let (d, sr) = (self.det, self.sample_rate);
+        let on = self.release_on;
+        self.c = DetCoefs {
+            gain: libm::pow(10.0, d.offset_db / 20.0),
+            theta: libm::pow(10.0, d.theta_db / 20.0),
+            smooth: 1.0 - pole_ms(d.smooth_ms, sr),
+            charge: d.charge_per_s / sr,
+            charge_max: d.charge_max_db_per_ms * 1000.0 / sr,
+            rel: pole_ms(if on { d.tau_on_ms } else { d.tau_off_ms }, sr),
+            fast_attack: 1.0 - pole_ms(d.fast_attack_ms, sr),
+            fast_release: 1.0 - pole_ms(if on { d.fast_release_on_ms } else { d.fast_release_off_ms }, sr),
+            slow_weight: if on { 0.0 } else { d.slow_weight },
+            slow_charge: 1.0 - pole_ms(d.slow_charge_ms, sr),
+            slow_release: pole_ms(d.slow_release_ms, sr),
+        };
+    }
+
     pub fn set(&mut self, p: DeluxeParams) {
         let db = |x: f64| libm::pow(10.0, x / 20.0);
         self.crush = db(crush_db(p.crush));
@@ -346,8 +452,8 @@ impl Deluxe {
         let m = (p.mix / 100.0).clamp(0.0, 1.0) * FRAC_PI_2;
         self.wet = libm::sin(m);
         self.dry = libm::cos(m);
-        self.rel = pole_ms(if p.release_on { t::DET_TAU_ON_MS } else { t::DET_TAU_OFF_MS }, self.sample_rate);
-        self.fast_release = 1.0 - pole_ms(if p.release_on { t::DET_FAST_RELEASE_ON_MS } else { t::DET_FAST_RELEASE_OFF_MS }, self.sample_rate);
+        self.release_on = p.release_on;
+        self.refresh_detector();
         // Darkness: crossfade the two measured positions around the knob, in
         // log-Hz. Position 0 is the open knob (identity), then `t::DARK`.
         let hz = p.darkness_hz.clamp(500.0, 20_000.0);
@@ -368,30 +474,37 @@ impl Deluxe {
         self.m = 0.0;
         self.vc = 0.0;
         self.fast = 0.0;
+        self.slow = 0.0;
     }
 
     /// One stereo frame.
     pub fn process(&mut self, left: f64, right: f64) -> (f64, f64) {
-        let gr = t::DET_FLOOR_DB - soft_over(t::DET_FLOOR_DB - (self.vc + self.fast), 1.0);
-        let g = libm::pow(10.0, -gr / 20.0) * self.crush;
+        let (det, coef) = (self.det, self.c);
+        let slow = coef.slow_weight * self.slow;
+        let total = self.vc + self.fast + slow;
+        let gr = det.floor_db - soft_over(det.floor_db - total, det.floor_knee_db);
+        // 10^(−gr/20), as one exp
+        let gain = libm::exp(-gr * DB_TO_LN) * self.crush * coef.gain;
         let (lo, w) = (self.pre_lo, self.pre_w);
         let [cl, cr] = &mut self.ch;
-        let dl = g * cl.pre(left);
-        let dr = g * cr.pre(right);
-        // detector: the stereo sum, rectified and lightly smoothed (a single
-        // spike must not charge the cap — the reference shrugs one off),
-        // log-compared with θ, integrated on a leaky cap whose voltage is the
-        // gain reduction in dB
-        self.m += self.smooth * (libm::fabs(0.5 * (dl + dr)) - self.m);
-        let level = self.m / self.theta + 1e-12;
-        let excess = t::DET_SOFT * soft_over(libm::log(level) / t::DET_SOFT, 1.0);
-        // the sidechain's current limit: the cap charges at most this fast
-        self.vc = self.vc * self.rel + (self.charge * excess).min(self.charge_max);
+        let dl = gain * cl.pre(left);
+        let dr = gain * cr.pre(right);
+        // detector: the stereo sum, rectified and smoothed, through the
+        // rectifier law against θ, integrated on a leaky cap whose voltage is
+        // the gain reduction in dB (charge rate limited)
+        let sum = libm::fabs(0.5 * (dl + dr));
+        self.m += coef.smooth * (sum - self.m);
+        let ln_x = libm::log(self.m / coef.theta + 1e-12);
+        let q = if det.power < 1e-6 { ln_x } else { libm::expm1(det.power * ln_x) / det.power };
+        let excess = det.soft * soft_over(q / det.soft, 1.0);
+        self.vc = self.vc * coef.rel + (coef.charge * excess).min(coef.charge_max);
+        // Release Off's slow component follows the cap up and bleeds slowly
+        self.slow = if self.vc > self.slow { self.slow + coef.slow_charge * (self.vc - self.slow) } else { self.slow * coef.slow_release };
         // the fast path: a peak follower on the instantaneous level, which is
         // what makes the reference dip on every drum hit and recover between
-        let level_db = 20.0 * libm::log10(libm::fabs(0.5 * (dl + dr)) + 1e-9);
-        let target = t::DET_FAST_K * soft_over(level_db - t::DET_FAST_T_DB, t::DET_FAST_W_DB);
-        let coef = if target > self.fast { self.fast_attack } else { self.fast_release };
+        let level_db = libm::log(sum + 1e-9) / DB_TO_LN;
+        let target = det.fast_k * soft_over(level_db - det.fast_t_db, det.fast_w_db);
+        let coef = if target > self.fast { coef.fast_attack } else { coef.fast_release };
         self.fast += coef * (target - self.fast);
         let (wet, dry, hb, ha, k) = (self.wet, self.dry, self.hp_b, self.hp_a, self.crunch);
         let shaped_l = cl.os.process(k * dl, curve);
