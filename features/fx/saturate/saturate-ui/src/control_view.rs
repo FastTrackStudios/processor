@@ -348,6 +348,13 @@ pub fn profile_badge(profile_id: &str) -> String {
         "fuzz" => "FUZZ",
         "clip" => "CLIP",
         "crush" => "BITS",
+        "deluxe" => "DLX",
+        "bluebox" => "BBX",
+        "bluebox_low" => "BBXL",
+        "bluebox_high" => "BBXH",
+        "bluebox_alt" => "BBXA",
+        "bluebox_alt_low" => "BXAL",
+        "bluebox_alt_high" => "BXAH",
         _ => "SAT",
     }
     .to_string()

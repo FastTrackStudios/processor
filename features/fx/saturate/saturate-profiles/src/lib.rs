@@ -23,6 +23,11 @@
 //! Drive is deliberately not a family. It is the control every one of these
 //! has, the way feedback is on every delay.
 //!
+//! Two more rail entries are not points in that space at all: **Deluxe** and
+//! **Bluebox** are measured models — whole algorithms recreated from a
+//! reference ([`Engine`]) — that take the same knobs through their own
+//! mapping ([`deluxe_params`], [`bluebox_params`]).
+//!
 //! Each profile carries the [`Voicing`] it *is* — the per-side shaper pair,
 //! the operating point, the sag and its ballistics — and [`apply`] is the one
 //! place that knows how a knob reaches the DSP. The plugin shell and the
@@ -64,6 +69,29 @@ pub enum Character {
     Bits,
     /// Sample-rate divisor.
     Rate,
+    /// A measured model's own first circuit control (Deluxe: Crunch,
+    /// Bluebox: Triode). See [`deluxe_params`] / [`bluebox_params`].
+    ModelA,
+    /// …and its second (Deluxe: Darkness, Bluebox: Saturation).
+    ModelB,
+}
+
+/// Which engine plays a profile.
+///
+/// Most profiles are points in the class-A preamp's space ([`Voicing`]). The
+/// measured models are whole algorithms of their own, recreated from
+/// black-box measurements of a reference: they take the panel's knobs
+/// through their own mapping ([`deluxe_params`], [`bluebox_params`]), and
+/// their [`Voicing`] only says what the panel draws.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Engine {
+    Preamp,
+    /// A Level-Loc-style crushing limiter ([`saturate_dsp::deluxe`]).
+    Deluxe,
+    /// A two-tube harmonics generator ([`saturate_dsp::bluebox`]), with the
+    /// two switches the panel has no knob for: which band the saturation
+    /// tube's output feeds back, and which tube it is.
+    Bluebox { sat_freq: saturate_dsp::bluebox::SatFreq, alt_tube: bool },
 }
 
 /// The engine settings a profile *is*.
@@ -150,6 +178,8 @@ pub struct Profile {
     pub curve: SaturationCurve,
     /// The class-A stage this profile actually is.
     pub voicing: Voicing,
+    /// What plays it.
+    pub engine: Engine,
     /// One line on what it is for.
     pub voice: &'static str,
 }
@@ -193,6 +223,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::Headroom, // "Grid" — grid conduction clamps the peak
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "A single-ended valve stage. Even harmonics, and a thickening you hear before you see it.",
     },
     Profile {
@@ -219,6 +250,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::Headroom, // "Screen"
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "Pushed harder and biased colder — the same warmth with an edge on top.",
     },
     // ── Tape: a soft knee into compression ───────────────────────────────
@@ -245,6 +277,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::SagTime,  // "Speed" — ips, as a recovery time
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "The gentlest onset of the five: third harmonic and a little compression, arriving gradually.",
     },
     Profile {
@@ -269,6 +302,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::Skew,     // "Print"
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "Printed loud. The knee is behind you and the top has started to go.",
     },
     // ── Transformer: hysteresis, not level ───────────────────────────────
@@ -294,6 +328,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::SagTime,  // "Hysteresis"
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "Saturates on transients and lows rather than on level — it blooms the bottom instead of thickening everything.",
     },
     // ── Transistor: hard-edged solid state ───────────────────────────────
@@ -314,6 +349,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::Crossover, // "Gate"
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "Odd harmonics with a sharp corner. Modern, direct, and unromantic about it.",
     },
     Profile {
@@ -340,6 +376,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::Crossover, // "Starve"
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "The same circuit at its end: squared off, gated, and barely a waveform any more.",
     },
     // ── Digital: clipping and quantisation ───────────────────────────────
@@ -364,6 +401,7 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::Knee,     // "Knee"
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "A ceiling and nothing else. What happens above 0 dBFS when nobody was asked.",
     },
     Profile {
@@ -383,7 +421,128 @@ pub static PROFILES: &[Profile] = &[
             character_b: Character::Rate,
             ..Voicing::base()
         },
+        engine: Engine::Preamp,
         voice: "Quantisation rather than saturation: the steps between the samples become the sound.",
+    },
+    // ── Measured models: whole algorithms, recreated from a reference ─────
+    Profile {
+        id: "deluxe",
+        name: "Deluxe",
+        curve: SaturationCurve::Hard,
+        // What the panel draws: a hard-edged solid-state limiter. The sound
+        // is the Deluxe engine, through `deluxe_params`.
+        voicing: Voicing {
+            positive: SideShaper::OpAmp,
+            negative: SideShaper::Hard,
+            knee: 0.6,
+            character_a: Character::ModelA, // "Crunch"
+            character_b: Character::ModelB, // "Darkness"
+            ..Voicing::base()
+        },
+        engine: Engine::Deluxe,
+        voice: "A crushing feedback limiter with a distortion stage: pumping, snarling, and dark on demand.",
+    },
+    Profile {
+        id: "bluebox",
+        name: "Bluebox",
+        curve: SaturationCurve::Tube,
+        // What the panel draws: two valves, the first one-sided. The sound
+        // is the Bluebox engine, through `bluebox_params`.
+        voicing: Voicing {
+            positive: SideShaper::Tube,
+            negative: SideShaper::Transformer,
+            skew: 0.2,
+            character_a: Character::ModelA, // "Triode"
+            character_b: Character::ModelB, // "Saturation"
+            ..Voicing::base()
+        },
+        engine: Engine::Bluebox { sat_freq: saturate_dsp::bluebox::SatFreq::Flat, alt_tube: false },
+        voice: "Pentode into triode with a parallel saturation tube: mix-bus richness up to outright overdrive.",
+    },
+    Profile {
+        id: "bluebox_low",
+        name: "Bluebox Low",
+        curve: SaturationCurve::Tube,
+        // What the panel draws: two valves, the first one-sided. The sound
+        // is the Bluebox engine, through `bluebox_params`.
+        voicing: Voicing {
+            positive: SideShaper::Tube,
+            negative: SideShaper::Transformer,
+            skew: 0.2,
+            character_a: Character::ModelA, // "Triode"
+            character_b: Character::ModelB, // "Saturation"
+            ..Voicing::base()
+        },
+        engine: Engine::Bluebox { sat_freq: saturate_dsp::bluebox::SatFreq::Low, alt_tube: false },
+        voice: "The saturation tube's harmonics fed back only in the lows: weight and body.",
+    },
+    Profile {
+        id: "bluebox_high",
+        name: "Bluebox High",
+        curve: SaturationCurve::Tube,
+        // What the panel draws: two valves, the first one-sided. The sound
+        // is the Bluebox engine, through `bluebox_params`.
+        voicing: Voicing {
+            positive: SideShaper::Tube,
+            negative: SideShaper::Transformer,
+            skew: 0.2,
+            character_a: Character::ModelA, // "Triode"
+            character_b: Character::ModelB, // "Saturation"
+            ..Voicing::base()
+        },
+        engine: Engine::Bluebox { sat_freq: saturate_dsp::bluebox::SatFreq::High, alt_tube: false },
+        voice: "The saturation tube's harmonics fed back only up top: presence and sizzle.",
+    },
+    Profile {
+        id: "bluebox_alt",
+        name: "Bluebox Alt",
+        curve: SaturationCurve::Tube,
+        // What the panel draws: two valves, the first one-sided. The sound
+        // is the Bluebox engine, through `bluebox_params`.
+        voicing: Voicing {
+            positive: SideShaper::Tube,
+            negative: SideShaper::Transformer,
+            skew: 0.2,
+            character_a: Character::ModelA, // "Triode"
+            character_b: Character::ModelB, // "Saturation"
+            ..Voicing::base()
+        },
+        engine: Engine::Bluebox { sat_freq: saturate_dsp::bluebox::SatFreq::Flat, alt_tube: true },
+        voice: "The hotter saturation tube, full band.",
+    },
+    Profile {
+        id: "bluebox_alt_low",
+        name: "Bluebox Alt Low",
+        curve: SaturationCurve::Tube,
+        // What the panel draws: two valves, the first one-sided. The sound
+        // is the Bluebox engine, through `bluebox_params`.
+        voicing: Voicing {
+            positive: SideShaper::Tube,
+            negative: SideShaper::Transformer,
+            skew: 0.2,
+            character_a: Character::ModelA, // "Triode"
+            character_b: Character::ModelB, // "Saturation"
+            ..Voicing::base()
+        },
+        engine: Engine::Bluebox { sat_freq: saturate_dsp::bluebox::SatFreq::Low, alt_tube: true },
+        voice: "The hotter saturation tube, into the lows.",
+    },
+    Profile {
+        id: "bluebox_alt_high",
+        name: "Bluebox Alt High",
+        curve: SaturationCurve::Tube,
+        // What the panel draws: two valves, the first one-sided. The sound
+        // is the Bluebox engine, through `bluebox_params`.
+        voicing: Voicing {
+            positive: SideShaper::Tube,
+            negative: SideShaper::Transformer,
+            skew: 0.2,
+            character_a: Character::ModelA, // "Triode"
+            character_b: Character::ModelB, // "Saturation"
+            ..Voicing::base()
+        },
+        engine: Engine::Bluebox { sat_freq: saturate_dsp::bluebox::SatFreq::High, alt_tube: true },
+        voice: "The hotter saturation tube, up top.",
     },
 ];
 
@@ -418,6 +577,18 @@ pub static CATEGORIES: &[Category] = &[
         label: "Digital",
         badge: "DIG",
         profiles: &["clip", "crush"],
+    },
+    Category {
+        id: "deluxe",
+        label: "Deluxe",
+        badge: "DLX",
+        profiles: &["deluxe"],
+    },
+    Category {
+        id: "bluebox",
+        label: "Bluebox",
+        badge: "BBX",
+        profiles: &["bluebox", "bluebox_low", "bluebox_high", "bluebox_alt", "bluebox_alt_low", "bluebox_alt_high"],
     },
 ];
 
@@ -569,7 +740,7 @@ fn apply_character(
 ) {
     let knob = knob.clamp(0.0, 1.0);
     match role {
-        Character::None => {}
+        Character::None | Character::ModelA | Character::ModelB => {}
         Character::Skew => pre.skew = trim(knob, v.skew, 0.0, 0.9),
         Character::Headroom => {
             let room = trim_ratio(knob, v.headroom, 1.5);
@@ -598,6 +769,61 @@ fn apply_character(
             let down = 1.0 - knob;
             digital.rate = (down * down).mul_add(31.0, 1.0);
         }
+    }
+}
+
+/// The panel's knobs as the Deluxe engine's controls.
+///
+/// Drive → Crush 0..10, Character A → Crunch 0..10, Character B → Darkness
+/// (20 kHz fully anticlockwise to 500 Hz, logarithmic), Sag → the Release
+/// switch (On above noon). Mix is the engine's own equal-power law, so the
+/// plugin hands it over rather than crossfading itself; Output stays the
+/// plugin's.
+#[must_use]
+pub fn deluxe_params(c: &Controls) -> saturate_dsp::deluxe::DeluxeParams {
+    let unit = |v: f32| f64::from(v.clamp(0.0, 1.0));
+    saturate_dsp::deluxe::DeluxeParams {
+        crush: unit(c.drive) * 10.0,
+        crunch: unit(c.character_a) * 10.0,
+        darkness_hz: 20_000.0 * (500.0_f64 / 20_000.0).powf(unit(c.character_b)),
+        mix: unit(c.mix) * 100.0,
+        release_on: c.sag > 0.5,
+    }
+}
+
+/// The panel's knobs as the Bluebox engine's controls.
+///
+/// Drive → Pentode (`100·√drive`, so the default quarter-turn is the
+/// reference's 50), Character A → Triode 0..100, Character B → Saturation
+/// (In above zero, amount 0..100), Bias → Density
+/// −100..+100 (noon is 0), Tilt → Air (In past noon, amount from there),
+/// Sag → Cal (Dark / Norm / Bright in thirds). Sat Freq and Alt Tube come
+/// from the profile (the rail's variants). Mix is the engine's (linear);
+/// Output stays the plugin's.
+#[must_use]
+pub fn bluebox_params(c: &Controls, sat_freq: saturate_dsp::bluebox::SatFreq, alt_tube: bool) -> saturate_dsp::bluebox::BlueboxParams {
+    use saturate_dsp::bluebox::{BlueboxParams, Cal};
+    let unit = |v: f32| f64::from(v.clamp(0.0, 1.0));
+    BlueboxParams {
+        pentode: 100.0 * unit(c.drive).sqrt(),
+        triode: unit(c.character_a) * 100.0,
+        saturation_in: c.character_b > 0.01,
+        saturation: unit(c.character_b) * 100.0,
+        saturation_freq: sat_freq,
+        alt_tube,
+        air_in: c.tilt > 0.5,
+        air: ((unit(c.tilt) - 0.5) * 200.0).max(0.0),
+        cal: if c.sag < 1.0 / 3.0 {
+            Cal::Dark
+        } else if c.sag > 2.0 / 3.0 {
+            Cal::Bright
+        } else {
+            Cal::Norm
+        },
+        density: (unit(c.bias) - 0.5) * 200.0,
+        input_db: 0.0,
+        output: 50.0,
+        mix: unit(c.mix) * 100.0,
     }
 }
 
@@ -709,8 +935,11 @@ mod tests {
     fn no_two_profiles_are_the_same_voicing() {
         for (i, a) in PROFILES.iter().enumerate() {
             for b in &PROFILES[i + 1..] {
+                // a measured model's variants share a panel drawing but not
+                // an engine
                 assert_ne!(
-                    a.voicing, b.voicing,
+                    (a.voicing, a.engine),
+                    (b.voicing, b.engine),
                     "{} and {} are the same circuit under two names",
                     a.id, b.id,
                 );

@@ -7,6 +7,7 @@ members = [
     "apps/plugins/gate",
     "apps/plugins/host",
     "apps/plugins/level",
+    "apps/plugins/mic",
     "apps/plugins/limiter",
     "apps/plugins/meter",
     "apps/plugins/modulation",
@@ -45,6 +46,10 @@ members = [
     "features/fx/modulation/pattern-ui",
     "features/fx/modulation/trem-dsp",
     "features/fx/modulation/wah-dsp",
+    "features/fx/gate/gate",
+    "features/fx/gate/gate-dsp",
+    "features/fx/mic/mic-dsp",
+    "features/fx/mic/mic-ui",
     "features/fx/multiband",
     "features/fx/musical-time/musical-time",
     "features/fx/musical-time/musical-time-ui",
@@ -302,6 +307,10 @@ modulation = { path = "features/fx/modulation/modulation" }
 eq-dsp = { path = "features/fx/eq/eq-dsp" }
 comp-dsp = { path = "features/fx/comp/comp-dsp" }
 reverb-dsp = { path = "features/fx/reverb/reverb-dsp" }
+gate = { path = "features/fx/gate/gate" }
+gate-dsp = { path = "features/fx/gate/gate-dsp" }
+mic-dsp = { path = "features/fx/mic/mic-dsp" }
+mic-ui = { path = "features/fx/mic/mic-ui" }
 reverb-profiles = { path = "features/fx/reverb/reverb-profiles" }
 reverb-ui = { path = "features/fx/reverb/reverb-ui" }
 stretch = { path = "features/fx/stretch/stretch" }
@@ -1056,3 +1065,4 @@ opt-level = 3
 # COOP/COEP headers that unlock SharedArrayBuffer. Developing against the
 # local checkout per CLAUDE.md; the release path is: land in architect,
 # tag, bump the rev here, delete this block.
+

@@ -135,6 +135,29 @@ const DIGITAL_KNOBS: &[KnobSpec] = &[
     knob("output", "Output", 866.0, 54.0, KnobStyle::Collet),
 ];
 
+// The measured models carry their own controls, mapped by
+// `saturate_profiles::{deluxe_params, bluebox_params}`. A knob the model
+// does not use is not drawn.
+const DELUXE_KNOBS: &[KnobSpec] = &[
+    knob("drive", "Crush", 140.0, 62.0, KnobStyle::Daka),
+    knob("character_a", "Crunch", 280.0, 62.0, KnobStyle::Daka),
+    knob("character_b", "Darkness", 420.0, 50.0, KnobStyle::Daka),
+    knob("sag", "Release", 550.0, 46.0, KnobStyle::Daka),
+    knob("mix", "Mix", 690.0, 46.0, KnobStyle::Daka),
+    knob("output", "Output", 850.0, 54.0, KnobStyle::Daka),
+];
+
+const BLUEBOX_KNOBS: &[KnobSpec] = &[
+    knob("drive", "Pentode", 120.0, 58.0, KnobStyle::Bakelite),
+    knob("character_a", "Triode", 232.0, 58.0, KnobStyle::Bakelite),
+    knob("character_b", "Saturation", 344.0, 50.0, KnobStyle::Bakelite),
+    knob("bias", "Density", 452.0, 42.0, KnobStyle::Bakelite),
+    knob("tilt", "Air", 556.0, 42.0, KnobStyle::Bakelite),
+    knob("sag", "Cal", 660.0, 42.0, KnobStyle::Bakelite),
+    knob("mix", "Mix", 764.0, 42.0, KnobStyle::Bakelite),
+    knob("output", "Output", 872.0, 50.0, KnobStyle::Bakelite),
+];
+
 /// Tube: warm cream and a lit valve.
 pub static TUBE: SatDesign = SatDesign {
     family: "tube",
@@ -191,6 +214,34 @@ pub static TRANSISTOR: SatDesign = SatDesign {
     knobs: SS_KNOBS,
 };
 
+/// Deluxe: a crushing limiter — red on black, nothing polite about it.
+pub static DELUXE: SatDesign = SatDesign {
+    family: "deluxe",
+    paint: "linear-gradient(178deg, #2a1414 0%, #1c0d0d 48%, #120707 100%)",
+    ink: "#f3e6e2",
+    dim_ink: "#b08c86",
+    chrome: "#8c7470",
+    accent: "#e2412f",
+    ends: PanelEnds::RackEars,
+    texture: PanelTexture::Painted,
+    circuit: Circuit::Solid,
+    knobs: DELUXE_KNOBS,
+};
+
+/// Bluebox: two valves behind blue anodising.
+pub static BLUEBOX: SatDesign = SatDesign {
+    family: "bluebox",
+    paint: "linear-gradient(178deg, #2d4f78 0%, #22406a 48%, #183253 100%)",
+    ink: "#eef3fa",
+    dim_ink: "#a9bad1",
+    chrome: "#93a6bf",
+    accent: "#ffb257",
+    ends: PanelEnds::RackEars,
+    texture: PanelTexture::Brushed { strength: 25 },
+    circuit: Circuit::Valve,
+    knobs: BLUEBOX_KNOBS,
+};
+
 /// Digital: not saturation at all, and it should not pretend.
 pub static DIGITAL: SatDesign = SatDesign {
     family: "digital",
@@ -214,6 +265,8 @@ pub fn design_for(profile_id: &str) -> &'static SatDesign {
         Some("tape") => &TAPE,
         Some("transformer") => &TRANSFORMER,
         Some("transistor") => &TRANSISTOR,
+        Some("deluxe") => &DELUXE,
+        Some("bluebox") => &BLUEBOX,
         _ => &DIGITAL,
     }
 }
@@ -239,6 +292,10 @@ pub fn character_legends(profile_id: &str) -> (&'static str, &'static str) {
         "fuzz" => ("Fuzz", "Starve"),
         "clip" => ("Ceiling", "Knee"),
         "crush" => ("Bits", "Rate"),
+        "deluxe" => ("Crunch", "Darkness"),
+        "bluebox" | "bluebox_low" | "bluebox_high" | "bluebox_alt" | "bluebox_alt_low" | "bluebox_alt_high" => {
+            ("Triode", "Saturation")
+        }
         _ => ("Character", "Colour"),
     }
 }
@@ -437,8 +494,20 @@ fn CurveView(
     let samples = 200;
     for i in 0..=samples {
         let x = -1.0 + 2.0 * f64::from(i) / f64::from(samples);
-        let shaped = pre.transfer(x as f32) * makeup;
-        let y = f64::from(quantiser.process(0, shaped)).clamp(-1.0, 1.0);
+        let y = match profile.engine {
+            // the measured models draw their own stages
+            saturate_profiles::Engine::Deluxe => {
+                saturate_dsp::deluxe::static_curve(&saturate_profiles::deluxe_params(&controls), x).clamp(-1.0, 1.0)
+            }
+            saturate_profiles::Engine::Bluebox { sat_freq, alt_tube } => {
+                saturate_dsp::bluebox::static_curve(&saturate_profiles::bluebox_params(&controls, sat_freq, alt_tube), x)
+                    .clamp(-1.0, 1.0)
+            }
+            saturate_profiles::Engine::Preamp => {
+                let shaped = pre.transfer(x as f32) * makeup;
+                f64::from(quantiser.process(0, shaped)).clamp(-1.0, 1.0)
+            }
+        };
         let (px, py) = ((x * half).mul_add(2.0, cx), cy - y * half);
         let _ = write!(
             path,

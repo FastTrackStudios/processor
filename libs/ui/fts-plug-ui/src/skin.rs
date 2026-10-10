@@ -68,4 +68,6 @@ pub mod accents {
     pub const PITCH: &str = "#f6a75c";
     /// Amp / cabinet modelling.
     pub const NAM: &str = "#a8c7fa";
+    /// Microphone modelling.
+    pub const MIC: &str = "#e6c79c";
 }

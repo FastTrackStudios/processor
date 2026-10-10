@@ -3,6 +3,8 @@
 //! Apps and plugin shells depend on this crate, never on `saturate-dsp`
 //! directly (mirrors the level/comp facade pattern).
 
+pub use saturate_dsp::bluebox;
+pub use saturate_dsp::deluxe;
 pub use saturate_dsp::emphasis;
 pub use saturate_dsp::preamp;
 pub use saturate_dsp::{SaturationCurve, Saturator, digital};
