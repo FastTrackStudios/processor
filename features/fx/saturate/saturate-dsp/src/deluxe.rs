@@ -9,7 +9,7 @@
 //! What measurement showed the reference to be:
 //!
 //! ```text
-//!  x ─ A ─ ×crush ─ ×g ─┬─ ×crunch ─ f(·) ─ HP 9.45 Hz ─ D(darkness) ─┐
+//!  x ─ A ─ ×crush ─ ×g ─┬─ ×crunch ─ [f(·) ─ D(darkness)]×4 ─ HP 9.45 Hz ┐
 //!                                 │                               ├─ mix ─ y
 //!                     detector on (L+R)/2 ── g             dry ───┘
 //! ```
@@ -17,11 +17,13 @@
 //! - `A` is the whole linear colour, *before* the curve: `H2/H1²` is flat
 //!   from 100 Hz to 8 kHz, so nothing but a 9.45 Hz coupling high-pass
 //!   follows the curve.
-//! - Darkness is a steep low-pass after the curve — four coincident poles
-//!   (an RC ladder) sliding from ~18 kHz down to ~2.4 kHz, then an
-//!   overall level drop at the darkest settings. Measured in steady state
-//!   (multitone) at twelve positions and crossfaded between neighbours.
-//!   Its post-curve place is measured too: the detector never hears it,
+//! - Darkness is one third-order low-pass after the curve — a resonant
+//!   two-pole section with a real pole above it — whose cutoff is close to
+//!   linear in the knob above a ≈700 Hz floor (Q easing from ≈0.86 to ≈0.65
+//!   as it closes), with a little feedthrough and a passband loss that sets
+//!   in below ~1.5 kHz, like an RC network loading more as it closes. One law, fitted to 24 measured
+//!   steady-state (multitone) positions at once. Its post-curve place is
+//!   measured too: the detector never hears it,
 //!   and it darkens the harmonics exactly as a filter after the curve
 //!   would. (Single-impulse captures of it mislead: the reference's
 //!   Darkness does not act as a fixed filter on an isolated spike.)
@@ -225,7 +227,8 @@ fn realise(zeros: &[(f64, f64)], poles: &[(f64, f64)], gain_1k: f64, sr: f64) ->
 #[derive(Clone, Debug)]
 struct Channel {
     pre: Vec<Biquad>,
-    dark: Vec<Vec<Biquad>>,
+    /// Darkness: the resonant pair, then the real pole.
+    dark: [Biquad; 2],
     /// The curve runs at 4× (the reference oversamples it too: a clipped
     /// 7 kHz tone's aliases sit 47–80 dB down there).
     os: crate::oversample::Oversample4,
@@ -235,13 +238,12 @@ struct Channel {
 
 impl Channel {
     fn new(sr: f64) -> Self {
-        let dark = t::DARK.iter().map(|p| realise(p.zeros, p.poles, p.gain_1k, sr)).collect();
-        Self { pre: pre_filter(&t::PRE, sr), dark, os: crate::oversample::Oversample4::new(), hp_x: 0.0, hp_y: 0.0 }
+        Self { pre: pre_filter(&t::PRE, sr), dark: [Biquad::default(); 2], os: crate::oversample::Oversample4::new(), hp_x: 0.0, hp_y: 0.0 }
     }
 
     fn reset(&mut self) {
         self.pre.iter_mut().for_each(Biquad::reset);
-        self.dark.iter_mut().flatten().for_each(Biquad::reset);
+        self.dark.iter_mut().for_each(Biquad::reset);
         self.os.reset();
         self.hp_x = 0.0;
         self.hp_y = 0.0;
@@ -252,24 +254,28 @@ impl Channel {
         self.pre.iter_mut().fold(x, |v, s| s.run(v))
     }
 
-    /// Darkness after the curve: positions `lo` and `lo + 1` (0 = open, the
-    /// identity) crossfaded by `w`. Only the active pair runs — a filter
-    /// entering the pair as the knob sweeps does so at (near) zero weight,
-    /// so its cold start is never heard, and the open knob costs nothing.
+    /// The curve and then Darkness, both at 4×: Darkness runs before the
+    /// decimator, so it keeps its analog shape up to 20 kHz (a filter at the
+    /// base rate bends down into its Nyquist zero there; the reference does
+    /// not). `mix` fades it in (0 = the open knob, which skips it), `gain` is
+    /// its passband loss.
     #[inline]
-    fn dark(&mut self, x: f64, lo: usize, w: f64) -> f64 {
-        let mut run = |pos: usize| -> f64 {
-            if pos == 0 {
-                return x;
+    fn shape(&mut self, u: f64, mix: f64, gain: f64) -> f64 {
+        let Self { os, dark, .. } = self;
+        os.process(u, |v| {
+            let y = curve(v);
+            if mix <= 0.0 {
+                return y;
             }
-            self.dark.get_mut(pos.saturating_sub(1)).map_or(x, |f| f.iter_mut().fold(x, |v, s| s.run(v)))
-        };
-        if w <= 0.0 {
-            return run(lo);
+            let wet = dark.iter_mut().fold(y, |a, s| s.run(a)) + t::DARK_FEEDTHROUGH * y;
+            mix * gain * wet + (1.0 - mix) * y
+        })
+    }
+
+    fn set_dark(&mut self, coefs: [[f64; 5]; 2]) {
+        for (s, c) in self.dark.iter_mut().zip(coefs) {
+            s.c = c;
         }
-        let a = run(lo);
-        let b = run(lo.saturating_add(1));
-        (1.0 - w) * a + w * b
     }
 
     #[inline]
@@ -407,8 +413,9 @@ pub struct Deluxe {
     crunch: f64,
     wet: f64,
     dry: f64,
-    pre_lo: usize,
-    pre_w: f64,
+    /// Darkness: fade-in (0 = open) and passband gain.
+    dark_mix: f64,
+    dark_gain: f64,
     hp_b: f64,
     hp_a: f64,
     /// Rectified, smoothed detector input.
@@ -435,8 +442,8 @@ impl Deluxe {
             crunch: 1.0,
             wet: 1.0,
             dry: 0.0,
-            pre_lo: 0,
-            pre_w: 0.0,
+            dark_mix: 0.0,
+            dark_gain: 1.0,
             hp_b: 1.0 / (1.0 + k),
             hp_a: (1.0 - k) / (1.0 + k),
             m: 0.0,
@@ -493,17 +500,33 @@ impl Deluxe {
         self.dry = libm::cos(m);
         self.release_on = p.release_on;
         self.refresh_detector();
-        // Darkness: crossfade the two measured positions around the knob, in
-        // log-Hz. Position 0 is the open knob (identity), then `t::DARK`.
-        let hz = p.darkness_hz.clamp(500.0, 20_000.0);
-        let at = |i: usize| if i == 0 { 20_000.0 } else { t::DARK.get(i.saturating_sub(1)).map_or(500.0, |q| q.darkness_hz) };
-        let mut lo = 0_usize;
-        while lo < t::DARK.len().saturating_sub(1) && at(lo.saturating_add(1)) > hz {
-            lo = lo.saturating_add(1);
+        self.set_darkness(p.darkness_hz);
+    }
+
+    /// Darkness's law: a resonant pair at `fc = a·knob^b + f0` (≈ linear in
+    /// the knob above a fixed floor — a pot in series with a resistor) with
+    /// `Q = q0 + q1·ln(knob / 1 kHz)`, a real pole at `r·fc`, a small signed
+    /// feedthrough around them (where the reference's response floors, near
+    /// −50 dB), and a passband loss of `gA·ln(1 + (g0/knob)^gp)` dB. Above the first measured
+    /// position it fades in (log-Hz) from the open knob, which is the
+    /// reference the law was measured against.
+    fn set_darkness(&mut self, darkness_hz: f64) {
+        let hz = darkness_hz.clamp(500.0, 20_000.0);
+        // designed at the 4× rate it runs at
+        let sr = 4.0 * self.sample_rate;
+        let fc = t::DARK_FC_SCALE * libm::pow(hz, t::DARK_FC_EXP) + t::DARK_FC_FLOOR_HZ;
+        let q = t::DARK_Q0 + t::DARK_Q1 * libm::log(hz / 1000.0);
+        let k = libm::tan(PI * fc.min(0.45 * sr) / sr);
+        let n = 1.0 / (1.0 + k / q + k * k);
+        let b0 = k * k * n;
+        let pair = [b0, 2.0 * b0, b0, 2.0 * (k * k - 1.0) * n, (1.0 - k / q + k * k) * n];
+        let k1 = libm::tan(PI * (t::DARK_POLE_RATIO * fc).min(0.45 * sr) / sr);
+        let pole = [k1 / (1.0 + k1), k1 / (1.0 + k1), 0.0, (k1 - 1.0) / (1.0 + k1), 0.0];
+        for c in &mut self.ch {
+            c.set_dark([pair, pole]);
         }
-        let (a, b) = (at(lo), at(lo.saturating_add(1)));
-        self.pre_lo = lo;
-        self.pre_w = if a <= b { 0.0 } else { (libm::log(a / hz) / libm::log(a / b)).clamp(0.0, 1.0) };
+        self.dark_gain = libm::pow(10.0, -t::DARK_LOSS_DB * libm::log1p(libm::pow(t::DARK_LOSS_KNEE_HZ / hz, t::DARK_LOSS_EXP)) / 20.0);
+        self.dark_mix = (libm::log(20_000.0 / hz) / libm::log(20_000.0 / t::DARK_FIRST_HZ)).clamp(0.0, 1.0);
     }
 
     pub fn reset(&mut self) {
@@ -524,7 +547,7 @@ impl Deluxe {
         let gr = det.floor_db - soft_over(det.floor_db - total, det.floor_knee_db);
         // 10^(−gr/20), as one exp
         let gain = libm::exp(-gr * DB_TO_LN) * self.crush * coef.gain;
-        let (lo, w) = (self.pre_lo, self.pre_w);
+        let (dm, dg) = (self.dark_mix, self.dark_gain);
         let [cl, cr] = &mut self.ch;
         let dl = gain * cl.pre(left);
         let dr = gain * cr.pre(right);
@@ -547,11 +570,10 @@ impl Deluxe {
         let step = if fast_target > self.fast { coef.fast_attack } else { coef.fast_release };
         self.fast += step * (fast_target - self.fast);
         let (wet, dry, hb, ha, k) = (self.wet, self.dry, self.hp_b, self.hp_a, self.crunch);
-        let shaped_l = cl.os.process(k * dl, curve);
-        let shaped_r = cr.os.process(k * dr, curve);
+        let shaped_l = cl.shape(k * dl, dm, dg);
+        let shaped_r = cr.shape(k * dr, dm, dg);
         let yl = cl.post(shaped_l, hb, ha);
         let yr = cr.post(shaped_r, hb, ha);
-        let (yl, yr) = (cl.dark(yl, lo, w), cr.dark(yr, lo, w));
         (yl * wet + left * dry, yr * wet + right * dry)
     }
 }

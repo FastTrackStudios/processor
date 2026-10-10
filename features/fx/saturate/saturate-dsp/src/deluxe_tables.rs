@@ -50,23 +50,23 @@ pub struct PreFilter {
 /// The pre-curve filter (the open, undarkened response).
 pub const PRE: PreFilter = PreFilter { darkness_hz: 20000.0, gain_1k: 1.907729039e+00, zeros: &[(-3.246576578e+01, 5.915072443e+01), (-5.178358021e+00, 0.000000000e+00), (-2.017974608e+05, 0.000000000e+00), (-1.045513982e+05, 0.000000000e+00)], poles: &[(-3.082913269e+00, 0.000000000e+00), (-2.508226277e+02, 9.126998307e+01), (-1.646227996e+05, 0.000000000e+00), (-8.647736664e+04, 0.000000000e+00)] };
 
-/// Darkness after the curve: its steady-state response (relative to the open
-/// position) at twelve knob positions, brightest first. The open position
-/// (20 kHz) is the identity and is not listed.
-pub const DARK: [PreFilter; 12] = [
-    PreFilter { darkness_hz: 14707.0, gain_1k: 1.003830441e+00, zeros: &[(-1.848910884e+05, 3.764318000e+05), (1.428263630e+05, 8.133128359e+05)], poles: &[(-8.370914895e+05, 8.812053357e-02), (-8.990185116e+06, 1.145804308e+05)] },
-    PreFilter { darkness_hz: 10814.8, gain_1k: 9.958191638e-01, zeros: &[(-4.062973597e+05, 8.421534369e+05), (-1.065030154e+05, 1.266150318e+05)], poles: &[(-6.545535729e+04, 7.829949321e+04), (-9.040866272e+06, 4.236713071e+04)] },
-    PreFilter { darkness_hz: 7952.7, gain_1k: 9.928686364e-01, zeros: &[(-3.239947543e+05, 7.280715434e+05), (-1.000537118e+05, 9.262339218e+04)], poles: &[(-4.246321053e+04, 4.747929805e+04), (-9.283781121e+06, 4.993332022e+04)] },
-    PreFilter { darkness_hz: 5848.0, gain_1k: 9.901438250e-01, zeros: &[(-2.814284592e+05, 6.807013860e+05), (-9.748203710e+04, 7.425729734e+04)], poles: &[(-2.927230204e+04, 3.172496336e+04), (-9.364912654e+06, 2.910713067e+04)] },
-    PreFilter { darkness_hz: 4300.4, gain_1k: 9.869725548e-01, zeros: &[(-2.568486471e+05, 6.599651562e+05), (-9.612428469e+04, 6.577537499e+04)], poles: &[(-2.145103440e+04, 2.218741840e+04), (-9.391762560e+06, 1.323339160e+04)] },
-    PreFilter { darkness_hz: 3162.3, gain_1k: 9.783590212e-01, zeros: &[(-2.382677180e+05, 6.422362181e+05), (-9.444547313e+04, 6.424611002e+04)], poles: &[(-1.645144410e+04, 1.573134912e+04), (-9.395499823e+06, 1.946352795e+04)] },
-    PreFilter { darkness_hz: 2325.4, gain_1k: 9.477237319e-01, zeros: &[(-2.239040565e+05, 6.455354488e+05), (-9.060841330e+04, 6.772028458e+04)], poles: &[(-1.295774783e+04, 1.120895139e+04), (-9.397242333e+06, 2.651000299e+04)] },
-    PreFilter { darkness_hz: 1710.0, gain_1k: 8.799611568e-01, zeros: &[(-2.100965359e+05, 6.585577960e+05), (-8.589029994e+04, 7.189217277e+04)], poles: &[(-1.003768685e+04, 8.430391893e+03), (-9.503865983e+06, 3.567349574e+04)] },
-    PreFilter { darkness_hz: 1257.4, gain_1k: 7.866154190e-01, zeros: &[(1.682153916e+04, 2.348578476e+04), (-1.616644165e+05, 0.000000000e+00), (-9.421287394e+04, 0.000000000e+00)], poles: &[(-1.524916914e+04, 3.922635821e+00), (-7.265233902e+03, 1.497185687e+04)] },
-    PreFilter { darkness_hz: 924.7, gain_1k: 6.679187330e-01, zeros: &[(3.130098315e+04, 5.219177518e+03), (-2.346130807e+04, 0.000000000e+00), (-2.379865359e+05, 0.000000000e+00)], poles: &[(-9.573648592e+03, 4.919173171e+00), (-4.732338320e+03, 1.202044485e+04)] },
-    PreFilter { darkness_hz: 679.9, gain_1k: 5.473534039e-01, zeros: &[(2.978587642e+04, 1.000902563e+04), (-3.440890371e+04, 0.000000000e+00), (-1.460179900e+05, 0.000000000e+00)], poles: &[(-9.293676919e+03, 3.336148401e+00), (-4.413846709e+03, 1.124936944e+04)] },
-    PreFilter { darkness_hz: 500.0, gain_1k: 4.398775723e-01, zeros: &[(2.070951459e+04, 1.806299851e+04), (-5.235057989e+04, 3.294699163e+04)], poles: &[(-8.923468966e+03, 3.409259001e+00), (-3.867884000e+03, 1.083329262e+04)] },
-];
+/// Darkness (see [`crate::deluxe`]).
+///
+/// A resonant pair at `fc = scale·knob^exp + floor`, `Q = q0 + q1·ln(knob / 1 kHz)`,
+/// a real pole at `pole_ratio·fc`, a signed feedthrough around them, and a passband
+/// loss of `loss·ln(1 + (knee/knob)^exp)` dB; fitted to 24 measured positions.
+pub const DARK_FC_SCALE: f64 = 5.322416888e-01;
+pub const DARK_FC_EXP: f64 = 1.072916197e+00;
+pub const DARK_FC_FLOOR_HZ: f64 = 7.071440862e+02;
+pub const DARK_Q0: f64 = 6.629792050e-01;
+pub const DARK_Q1: f64 = 6.877828712e-02;
+pub const DARK_POLE_RATIO: f64 = 3.042239212e+00;
+pub const DARK_FEEDTHROUGH: f64 = -1.881647996e-03;
+pub const DARK_LOSS_DB: f64 = 1.375118359e+00;
+pub const DARK_LOSS_KNEE_HZ: f64 = 1.334868610e+03;
+pub const DARK_LOSS_EXP: f64 = 4.005951435e+00;
+/// The first measured position below the open knob; above it the filter fades in.
+pub const DARK_FIRST_HZ: f64 = 1.715052805e+04;
 
 /// The integrating detector (see the module notes).
 pub const DET_OFFSET_DB: f64 = -5.715452105e-01;
