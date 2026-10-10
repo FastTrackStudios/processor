@@ -35,6 +35,10 @@ kurbo = { workspace = true }
 # Blitz custom widget. Native only — the DOM/renderer boundary.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 blitz-dom = { workspace = true, features = ["custom-widget"] }
+blitz-traits = { workspace = true }
+# Rendering a widget's scene into its own texture (`widget::Rasterized`),
+# so the host can draw it over the page as a layer.
+anyrender_vello = { workspace = true }
 dioxus-native-dom = { workspace = true }
 
 # The browser's half of that seam (`src/scene_canvas.rs`): a `<canvas>` with

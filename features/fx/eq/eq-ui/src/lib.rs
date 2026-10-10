@@ -35,6 +35,15 @@ pub mod eq_graph_svg;
 pub mod control_view;
 #[cfg(feature = "graph")]
 pub mod eq_graph;
+/// The custom-widget mechanism the graph is drawn with — Blitz's own types
+/// (`nice_plug_dioxus::widget` re-exports the same), so the graph needs no
+/// plugin host.
+#[cfg(all(feature = "graph", not(target_arch = "wasm32")))]
+pub(crate) mod widget {
+    pub use blitz_dom::node::ComputedStyles;
+    pub use blitz_traits::events::UiEvent;
+    pub use dioxus_native::{CustomWidgetAttr, Widget};
+}
 #[cfg(feature = "native")]
 pub mod preset_view;
 

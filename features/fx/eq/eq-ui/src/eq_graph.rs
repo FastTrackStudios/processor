@@ -20,7 +20,7 @@ use dioxus_elements::input_data::MouseButton;
 // in. The plugin's custom-widget host is native only (below).
 use dioxus::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
-use nice_plug_dioxus::widget::CustomWidgetAttr;
+use crate::widget::CustomWidgetAttr;
 
 use super::eq_graph_interaction::{
     CreateMode, DotAction, DragMode, GraphMapper, Mods, WheelTarget, bands_in_rect, create_mode,
@@ -496,10 +496,17 @@ pub fn EqGraph(
     // canvas (vello on WebGPU) in a browser. The widget is the same either
     // way, glow shader and all.
     #[cfg(not(target_arch = "wasm32"))]
+    let graph_fresh = use_hook(fts_audio_ui::widget::Fresh::default);
+    #[cfg(not(target_arch = "wasm32"))]
     let graph_widget = {
         let state = render_state.clone();
-        use_memo(move || CustomWidgetAttr::new(EqGraphWidget::new(state.clone())))
+        let fresh = graph_fresh.clone();
+        use_memo(move || CustomWidgetAttr::new(fts_audio_ui::widget::Rasterized::new(fts_audio_ui::widget::Freshened::new(EqGraphWidget::new(state.clone()), fresh.clone()))))
     };
+    // Each render may have moved the graph (bands, curve, spectrum), and
+    // only the widget draws it: the DOM does not change.
+    #[cfg(not(target_arch = "wasm32"))]
+    graph_fresh.mark();
     #[cfg(target_arch = "wasm32")]
     let graph_panel = {
         let state = render_state.clone();
@@ -521,18 +528,11 @@ pub fn EqGraph(
     // theory but in practice the task waker doesn't propagate up to blitz's
     // event-loop waker reliably here — schedule_update bypasses that.
     let frame_tick: Signal<u64> = use_signal(|| 0);
-    #[cfg(not(target_arch = "wasm32"))]
-    use_hook(|| {
-        let updater = dioxus_core::schedule_update();
-        std::thread::spawn(move || {
-            loop {
-                // 120 Hz (~8.33 ms) to match the App tick — smoother on
-                // high-refresh displays. Presentation stays vsync-bounded.
-                std::thread::sleep(std::time::Duration::from_micros(8_333));
-                updater();
-            }
-        });
-    });
+    // 120 Hz (~8.33 ms) to match the App tick — smoother on high-refresh
+    // displays; presentation stays vsync-bounded. Only while the host lets
+    // pictures move (`fts_audio_ui::animate`): with its audio stopped the
+    // graph re-renders when it changes, not 120 times a second forever.
+    fts_audio_ui::animate::use_frame_clock(true, std::time::Duration::from_micros(8_333));
     // A browser has no thread to spawn — and no need for one: the canvas
     // runs its own clock and redraws itself without the document changing.
     // (A thread here is not a slow path in wasm32, it is a panic, and it
