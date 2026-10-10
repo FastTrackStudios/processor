@@ -38,7 +38,10 @@
 //!   ~10 ms overshoot after an onset, its dB-exponential release, its
 //!   ≈ 15:1 static ratio, and the way it sits at the gain-reduction floor
 //!   for hundreds of ms after a loud burst (the cap charged far past it).
-//!   Release On discharges faster than Off.
+//!   Release On discharges faster than Off. On top of it runs a fast peak
+//!   path (a few-ms attack, tens-of-ms release) on the instantaneous level:
+//!   the per-hit dip-and-recover that makes it pump on drums. Both were
+//!   fitted on the reference's output envelope on music, not only on tones.
 //! - Mix is equal-power with a unity dry path.
 
 use alloc::vec::Vec;
@@ -263,12 +266,6 @@ impl Channel {
     }
 }
 
-/// Fastest the detector cap charges, dB of gain reduction per ms. Without a
-/// limit, a single full-scale spike at high Crush charges thousands of dB
-/// and holds the gain on its floor for seconds; the reference shrugs a
-/// spike off yet still charges hundreds of dB over a 100 ms loud burst.
-const CHARGE_MAX_DB_PER_MS: f64 = 5.0;
-
 fn pole_ms(ms: f64, sample_rate: f64) -> f64 {
     if ms <= 0.0 { 0.0 } else { libm::exp(-1000.0 / (ms * sample_rate)) }
 }
@@ -301,6 +298,10 @@ pub struct Deluxe {
     m: f64,
     /// Detector cap: gain reduction in dB.
     vc: f64,
+    /// The fast peak path's gain reduction, dB, and its ballistics.
+    fast: f64,
+    fast_attack: f64,
+    fast_release: f64,
 }
 
 impl Deluxe {
@@ -318,13 +319,16 @@ impl Deluxe {
             pre_lo: 0,
             pre_w: 0.0,
             charge: t::DET_CHARGE_PER_S / sample_rate,
-            charge_max: CHARGE_MAX_DB_PER_MS * 1000.0 / sample_rate,
+            charge_max: t::DET_CHARGE_MAX_DB_PER_MS * 1000.0 / sample_rate,
+            fast_attack: 1.0 - pole_ms(t::DET_FAST_ATTACK_MS, sample_rate),
+            fast_release: 0.0,
             theta: libm::pow(10.0, t::DET_THETA_DB / 20.0),
             smooth: 1.0 - pole_ms(t::DET_SMOOTH_MS, sample_rate),
             hp_b: 1.0 / (1.0 + k),
             hp_a: (1.0 - k) / (1.0 + k),
             m: 0.0,
             vc: 0.0,
+            fast: 0.0,
         };
         s.set(DeluxeParams::default());
         s
@@ -343,6 +347,7 @@ impl Deluxe {
         self.wet = libm::sin(m);
         self.dry = libm::cos(m);
         self.rel = pole_ms(if p.release_on { t::DET_TAU_ON_MS } else { t::DET_TAU_OFF_MS }, self.sample_rate);
+        self.fast_release = 1.0 - pole_ms(if p.release_on { t::DET_FAST_RELEASE_ON_MS } else { t::DET_FAST_RELEASE_OFF_MS }, self.sample_rate);
         // Darkness: crossfade the two measured positions around the knob, in
         // log-Hz. Position 0 is the open knob (identity), then `t::DARK`.
         let hz = p.darkness_hz.clamp(500.0, 20_000.0);
@@ -362,11 +367,12 @@ impl Deluxe {
         }
         self.m = 0.0;
         self.vc = 0.0;
+        self.fast = 0.0;
     }
 
     /// One stereo frame.
     pub fn process(&mut self, left: f64, right: f64) -> (f64, f64) {
-        let gr = t::DET_FLOOR_DB - soft_over(t::DET_FLOOR_DB - self.vc, 1.0);
+        let gr = t::DET_FLOOR_DB - soft_over(t::DET_FLOOR_DB - (self.vc + self.fast), 1.0);
         let g = libm::pow(10.0, -gr / 20.0) * self.crush;
         let (lo, w) = (self.pre_lo, self.pre_w);
         let [cl, cr] = &mut self.ch;
@@ -381,6 +387,12 @@ impl Deluxe {
         let excess = t::DET_SOFT * soft_over(libm::log(level) / t::DET_SOFT, 1.0);
         // the sidechain's current limit: the cap charges at most this fast
         self.vc = self.vc * self.rel + (self.charge * excess).min(self.charge_max);
+        // the fast path: a peak follower on the instantaneous level, which is
+        // what makes the reference dip on every drum hit and recover between
+        let level_db = 20.0 * libm::log10(libm::fabs(0.5 * (dl + dr)) + 1e-9);
+        let target = t::DET_FAST_K * soft_over(level_db - t::DET_FAST_T_DB, t::DET_FAST_W_DB);
+        let coef = if target > self.fast { self.fast_attack } else { self.fast_release };
+        self.fast += coef * (target - self.fast);
         let (wet, dry, hb, ha, k) = (self.wet, self.dry, self.hp_b, self.hp_a, self.crunch);
         let shaped_l = cl.os.process(k * dl, curve);
         let shaped_r = cr.os.process(k * dr, curve);

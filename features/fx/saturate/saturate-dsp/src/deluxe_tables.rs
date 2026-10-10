@@ -4,9 +4,9 @@
 
 /// Crush 0..=10 in whole steps → dB into the VCA (linear in dB between steps).
 pub const CRUSH_DB: [f64; 11] = [
-    -1.492895539e-01, 3.706915399e+00, 7.256700578e+00, 1.066535372e+01,
-    1.430901397e+01, 1.759802372e+01, 2.000420028e+01, 2.414948745e+01,
-    2.654276208e+01, 3.046950601e+01, 3.346956288e+01,
+    -1.419659612e-01, 3.714238992e+00, 7.264024170e+00, 1.067267732e+01,
+    1.431633756e+01, 1.760534731e+01, 2.001152387e+01, 2.415681104e+01,
+    2.655008567e+01, 3.047682960e+01, 3.347688647e+01,
 ];
 
 /// Crunch: dB into the curve per knob unit.
@@ -187,10 +187,17 @@ pub const DARK: [PreFilter; 12] = [
 ];
 
 /// The integrating detector (see the module notes).
-pub const DET_SMOOTH_MS: f64 = 2.825614506e-01;
-pub const DET_THETA_DB: f64 = -9.557324383e+00;
-pub const DET_CHARGE_PER_S: f64 = 1.544312377e+08;
-pub const DET_SOFT: f64 = 1.226537952e-01;
-pub const DET_TAU_ON_MS: f64 = 9.843577884e+01;
-pub const DET_TAU_OFF_MS: f64 = 1.772351783e+02;
-pub const DET_FLOOR_DB: f64 = 4.890029521e+01;
+pub const DET_SMOOTH_MS: f64 = 4.614910960e+00;
+pub const DET_THETA_DB: f64 = -1.401261606e+01;
+pub const DET_CHARGE_PER_S: f64 = 8.123515923e+08;
+pub const DET_SOFT: f64 = 4.679640397e-02;
+pub const DET_TAU_ON_MS: f64 = 1.701966202e+02;
+pub const DET_TAU_OFF_MS: f64 = 2.911402721e+02;
+pub const DET_FLOOR_DB: f64 = 5.247660644e+01;
+pub const DET_CHARGE_MAX_DB_PER_MS: f64 = 7.859976240e+01;
+pub const DET_FAST_K: f64 = 1.976583453e+01;
+pub const DET_FAST_T_DB: f64 = -2.134053157e+01;
+pub const DET_FAST_W_DB: f64 = 2.328789784e-01;
+pub const DET_FAST_ATTACK_MS: f64 = 1.542852035e+01;
+pub const DET_FAST_RELEASE_ON_MS: f64 = 1.195632143e+02;
+pub const DET_FAST_RELEASE_OFF_MS: f64 = 2.395380786e+02;
