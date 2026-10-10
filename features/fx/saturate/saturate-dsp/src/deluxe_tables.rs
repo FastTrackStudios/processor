@@ -4,9 +4,9 @@
 
 /// Crush 0..=10 in whole steps → dB into the VCA (linear in dB between steps).
 pub const CRUSH_DB: [f64; 11] = [
-    -1.947520675e-01, 3.661452885e+00, 7.211238064e+00, 1.061989121e+01,
-    1.426355145e+01, 1.755256120e+01, 1.995873777e+01, 2.410402494e+01,
-    2.649729957e+01, 3.042404350e+01, 3.342410036e+01,
+    0.000000000e+00, 3.856204953e+00, 7.405990132e+00, 1.081464328e+01,
+    1.445830352e+01, 1.774731327e+01, 2.015348983e+01, 2.429877700e+01,
+    2.669205163e+01, 3.061879556e+01, 3.361885243e+01,
 ];
 
 /// Crunch: dB into the curve per knob unit.
@@ -187,22 +187,26 @@ pub const DARK: [PreFilter; 12] = [
 ];
 
 /// The integrating detector (see the module notes).
-pub const DET_THETA_DB: f64 = -1.474408212e+01;
-pub const DET_SMOOTH_MS: f64 = 4.132422486e+00;
-pub const DET_POWER: f64 = 5.101197364e-02;
-pub const DET_SOFT: f64 = 1.878109949e-02;
-pub const DET_CHARGE_PER_S: f64 = 7.630828952e+08;
-pub const DET_CHARGE_MAX_DB_PER_MS: f64 = 5.474445817e+01;
-pub const DET_TAU_ON_MS: f64 = 1.790198368e+02;
-pub const DET_TAU_OFF_MS: f64 = 3.226587439e+02;
-pub const DET_FLOOR_DB: f64 = 5.094514298e+01;
-pub const DET_FLOOR_KNEE_DB: f64 = 1.996767140e+00;
-pub const DET_FAST_K: f64 = 3.966559683e+01;
-pub const DET_FAST_T_DB: f64 = -2.015088292e+01;
-pub const DET_FAST_W_DB: f64 = 6.684701101e-01;
-pub const DET_FAST_ATTACK_MS: f64 = 3.677096851e+01;
-pub const DET_FAST_RELEASE_ON_MS: f64 = 1.577128828e+02;
-pub const DET_FAST_RELEASE_OFF_MS: f64 = 1.710912529e+02;
-pub const DET_SLOW_WEIGHT: f64 = 6.573136762e-03;
-pub const DET_SLOW_CHARGE_MS: f64 = 6.618159201e+01;
-pub const DET_SLOW_RELEASE_MS: f64 = 7.341097772e+03;
+pub const DET_OFFSET_DB: f64 = -5.715452105e-01;
+pub const DET_THETA_DB: f64 = -1.378933848e+01;
+pub const DET_SMOOTH_MS: f64 = 6.847394968e+00;
+pub const DET_POWER: f64 = 1.267528587e-01;
+pub const DET_SOFT: f64 = 1.235310783e-02;
+pub const DET_CHARGE_PER_S: f64 = 5.662583143e+08;
+pub const DET_CHARGE_MAX_DB_PER_MS: f64 = 7.695045687e+01;
+pub const DET_TAU_ON_MS: f64 = 1.442770186e+02;
+pub const DET_TAU_OFF_MS: f64 = 2.354421891e+02;
+pub const DET_FLOOR_DB: f64 = 4.929036220e+01;
+pub const DET_FLOOR_KNEE_DB: f64 = 1.555596065e+01;
+pub const DET_FAST_K: f64 = 1.403768035e+01;
+pub const DET_FAST_T_DB: f64 = -1.908845381e+01;
+pub const DET_FAST_W_DB: f64 = 1.638690748e+00;
+pub const DET_FAST_ATTACK_MS: f64 = 6.953738671e+00;
+pub const DET_FAST_RELEASE_ON_MS: f64 = 1.375389922e+02;
+pub const DET_FAST_RELEASE_OFF_MS: f64 = 1.960666340e+02;
+pub const DET_SLOW_WEIGHT: f64 = 1.439836308e-03;
+pub const DET_SLOW_CHARGE_MS: f64 = 3.228386916e+01;
+pub const DET_SLOW_RELEASE_MS: f64 = 7.948428219e+03;
+pub const DET_SMOOTH_ATTACK_MS: f64 = 3.259487564e+00;
+pub const DET_RELEASE_LIN_DB_PER_S: f64 = 2.709271196e+00;
+pub const DET_DET_FLOOR_DB: f64 = 4.393338193e+01;

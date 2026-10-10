@@ -284,8 +284,7 @@ fn soft_over(x: f64, k: f64) -> f64 {
 /// other sets through [`Deluxe::set_detector`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DetectorParams {
-    /// Extra gain into the VCA, dB (calibration; 0 in the measured set,
-    /// which folds it into the Crush taper).
+    /// Calibration gain into the VCA, dB, on top of the Crush taper.
     pub offset_db: f64,
     /// Rectifier threshold θ, dB re full scale at the detector tap.
     pub theta_db: f64,
@@ -317,12 +316,25 @@ pub struct DetectorParams {
     pub slow_weight: f64,
     pub slow_charge_ms: f64,
     pub slow_release_ms: f64,
+    /// Attack of the level smoother, ms (`smooth_ms` is its release): the
+    /// reference's detector follows peaks, so peaky material keeps charging
+    /// the cap after the gain has bottomed out.
+    pub smooth_attack_ms: f64,
+    /// Constant-rate part of the cap's release, dB/s at Release On. A cap
+    /// that discharges exponentially while the gain reduction is its log
+    /// releases linearly in dB: overcharge past the floor holds it there,
+    /// then the gain collapses at a fixed rate.
+    pub release_lin_db_per_s: f64,
+    /// Where the detector's own gain reduction bottoms out, dB. Below the
+    /// audio's floor, hot material keeps charging the cap after the audio
+    /// has pinned — the longer and hotter, the longer the hold.
+    pub det_floor_db: f64,
 }
 
 impl Default for DetectorParams {
     fn default() -> Self {
         Self {
-            offset_db: 0.0,
+            offset_db: t::DET_OFFSET_DB,
             theta_db: t::DET_THETA_DB,
             smooth_ms: t::DET_SMOOTH_MS,
             power: t::DET_POWER,
@@ -342,6 +354,9 @@ impl Default for DetectorParams {
             slow_weight: t::DET_SLOW_WEIGHT,
             slow_charge_ms: t::DET_SLOW_CHARGE_MS,
             slow_release_ms: t::DET_SLOW_RELEASE_MS,
+            smooth_attack_ms: t::DET_SMOOTH_ATTACK_MS,
+            release_lin_db_per_s: t::DET_RELEASE_LIN_DB_PER_S,
+            det_floor_db: t::DET_DET_FLOOR_DB,
         }
     }
 }
@@ -353,6 +368,8 @@ struct DetCoefs {
     gain: f64,
     theta: f64,
     smooth: f64,
+    smooth_attack: f64,
+    release_lin: f64,
     charge: f64,
     charge_max: f64,
     rel: f64,
@@ -430,15 +447,18 @@ impl Deluxe {
     fn refresh_detector(&mut self) {
         let (d, sr) = (self.det, self.sample_rate);
         let on = self.release_on;
+        let leak_ratio = (1.0 - pole_ms(if on { d.tau_on_ms } else { d.tau_off_ms }, sr)) / (1.0 - pole_ms(d.tau_on_ms, sr)).max(1e-12);
         self.c = DetCoefs {
             gain: libm::pow(10.0, d.offset_db / 20.0),
             theta: libm::pow(10.0, d.theta_db / 20.0),
             smooth: 1.0 - pole_ms(d.smooth_ms, sr),
+            smooth_attack: 1.0 - pole_ms(d.smooth_attack_ms, sr),
             // the Release switch changes the dynamics, not the static law: the
             // reference compresses a steady tone identically in both modes, so
             // the charge scales with the leak and the cap settles in the same
             // place either way
-            charge: d.charge_per_s / sr * (1.0 - pole_ms(if on { d.tau_on_ms } else { d.tau_off_ms }, sr)) / (1.0 - pole_ms(d.tau_on_ms, sr)).max(1e-12),
+            charge: d.charge_per_s / sr * leak_ratio,
+            release_lin: d.release_lin_db_per_s / sr * leak_ratio,
             charge_max: d.charge_max_db_per_ms * 1000.0 / sr,
             rel: pole_ms(if on { d.tau_on_ms } else { d.tau_off_ms }, sr),
             fast_attack: 1.0 - pole_ms(d.fast_attack_ms, sr),
@@ -496,20 +516,21 @@ impl Deluxe {
         // detector: the stereo sum, rectified and smoothed, through the
         // rectifier law against θ, integrated on a leaky cap whose voltage is
         // the gain reduction in dB (charge rate limited)
-        let sum = libm::fabs(0.5 * (dl + dr));
-        self.m += coef.smooth * (sum - self.m);
+        let det_gr = det.det_floor_db - soft_over(det.det_floor_db - total, det.floor_knee_db);
+        let sum = libm::fabs(0.5 * (dl + dr)) * libm::exp((gr - det_gr) * DB_TO_LN);
+        self.m += if sum > self.m { coef.smooth_attack } else { coef.smooth } * (sum - self.m);
         let ln_x = libm::log(self.m / coef.theta + 1e-12);
         let q = if det.power < 1e-6 { ln_x } else { libm::expm1(det.power * ln_x) / det.power };
         let excess = det.soft * soft_over(q / det.soft, 1.0);
-        self.vc = self.vc * coef.rel + (coef.charge * excess).min(coef.charge_max);
+        self.vc = (self.vc * coef.rel - coef.release_lin).max(0.0) + (coef.charge * excess).min(coef.charge_max);
         // Release Off's slow component follows the cap up and bleeds slowly
         self.slow = if self.vc > self.slow { self.slow + coef.slow_charge * (self.vc - self.slow) } else { self.slow * coef.slow_release };
         // the fast path: a peak follower on the instantaneous level, which is
         // what makes the reference dip on every drum hit and recover between
         let level_db = libm::log(sum + 1e-9) / DB_TO_LN;
-        let target = det.fast_k * soft_over(level_db - det.fast_t_db, det.fast_w_db);
-        let coef = if target > self.fast { coef.fast_attack } else { coef.fast_release };
-        self.fast += coef * (target - self.fast);
+        let fast_target = det.fast_k * soft_over(level_db - det.fast_t_db, det.fast_w_db);
+        let step = if fast_target > self.fast { coef.fast_attack } else { coef.fast_release };
+        self.fast += step * (fast_target - self.fast);
         let (wet, dry, hb, ha, k) = (self.wet, self.dry, self.hp_b, self.hp_a, self.crunch);
         let shaped_l = cl.os.process(k * dl, curve);
         let shaped_r = cr.os.process(k * dr, curve);

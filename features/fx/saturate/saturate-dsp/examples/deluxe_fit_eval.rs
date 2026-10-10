@@ -63,8 +63,8 @@ fn parse_params(path: &str) -> Result<Vec<DetectorParams>, String> {
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let v: Vec<f64> = line.split_whitespace().map(str::parse).collect::<Result<_, _>>().map_err(|e| format!("{line}: {e}"))?;
-            if v.len() != 20 {
-                return Err(format!("expected 20 values: {line}"));
+            if v.len() != 23 {
+                return Err(format!("expected 23 values: {line}"));
             }
             let at = |i: usize| v.get(i).copied().unwrap_or(0.0);
             Ok(DetectorParams {
@@ -88,6 +88,9 @@ fn parse_params(path: &str) -> Result<Vec<DetectorParams>, String> {
                 slow_weight: at(17),
                 slow_charge_ms: at(18),
                 slow_release_ms: at(19),
+                smooth_attack_ms: at(20),
+                release_lin_db_per_s: at(21),
+                det_floor_db: at(22),
             })
         })
         .collect()
