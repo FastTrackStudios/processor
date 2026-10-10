@@ -2,12 +2,8 @@
 //! tool `dlx_gen_rust.py` from black-box measurements of the reference. Do not edit
 //! by hand — regenerate.
 
-/// Crush 0..=10 in whole steps → dB into the VCA (linear in dB between steps).
-pub const CRUSH_DB: [f64; 11] = [
-    0.000000000e+00, 3.856204953e+00, 7.405990132e+00, 1.081464328e+01,
-    1.445830352e+01, 1.774731327e+01, 2.015348983e+01, 2.429877700e+01,
-    2.669205163e+01, 3.061879556e+01, 3.361885243e+01,
-];
+/// Crush: dB into the VCA per knob unit (a taper linear in dB, end to end).
+pub const CRUSH_DB_PER_UNIT: f64 = 3.361885243e+00;
 
 /// Crunch: dB into the curve per knob unit.
 pub const CRUNCH_DB_PER_UNIT: f64 = 3.0;

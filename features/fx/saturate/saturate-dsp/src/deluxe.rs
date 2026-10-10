@@ -75,12 +75,7 @@ impl Default for DeluxeParams {
 /// Crush knob (0..=10) → dB into the VCA.
 #[must_use]
 pub fn crush_db(knob: f64) -> f64 {
-    let k = knob.clamp(0.0, 10.0);
-    let lo = dsp_core::num::f64_to_index(libm::floor(k)).min(t::CRUSH_DB.len().saturating_sub(2));
-    let frac = k - dsp_core::num::count_to_f64(lo);
-    let a = t::CRUSH_DB.get(lo).copied().unwrap_or(0.0);
-    let b = t::CRUSH_DB.get(lo.saturating_add(1)).copied().unwrap_or(a);
-    (b - a) * frac + a
+    t::CRUSH_DB_PER_UNIT * knob.clamp(0.0, 10.0)
 }
 
 /// The static curve: a diode breakpoint network.
