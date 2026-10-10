@@ -434,7 +434,11 @@ impl Deluxe {
             gain: libm::pow(10.0, d.offset_db / 20.0),
             theta: libm::pow(10.0, d.theta_db / 20.0),
             smooth: 1.0 - pole_ms(d.smooth_ms, sr),
-            charge: d.charge_per_s / sr,
+            // the Release switch changes the dynamics, not the static law: the
+            // reference compresses a steady tone identically in both modes, so
+            // the charge scales with the leak and the cap settles in the same
+            // place either way
+            charge: d.charge_per_s / sr * (1.0 - pole_ms(if on { d.tau_on_ms } else { d.tau_off_ms }, sr)) / (1.0 - pole_ms(d.tau_on_ms, sr)).max(1e-12),
             charge_max: d.charge_max_db_per_ms * 1000.0 / sr,
             rel: pole_ms(if on { d.tau_on_ms } else { d.tau_off_ms }, sr),
             fast_attack: 1.0 - pole_ms(d.fast_attack_ms, sr),
