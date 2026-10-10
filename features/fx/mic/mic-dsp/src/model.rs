@@ -35,9 +35,11 @@
 //!                            (bit 0, the switch off, is always set)
 //! for each set bit k, ascending:
 //!   u32 head, u32 modes, modes × (f64 re, f64 im)   the tail's modes z
-//!   patterns × axes × (P, G), each: f32 head[head], modes × (f64 re, f64 im) c
-//!                             the kernel's first `head` taps, then
-//!                             Re Σ c·zᵐ to `taps` (m from the head's end)
+//!   u32 groups, groups × (u32 start, f64 pole_hz, u32 count)   Laguerre functions
+//!   patterns × axes × (P, G), each: f32 head[head], modes × (f64 re, f64 im) c,
+//!                             f64 laguerre[Σ count]
+//!                             kernel = head (to `head`) + Re Σ c·zᵐ (after it,
+//!                             m from the head's end) + Σ laguerre·φ (all taps)
 //! f64 delay                  the model's own fractional delay (samples)
 //! f64 shelf_k[9]             the Shelf law's k at each pattern step (1 otherwise)
 //! f64 dual_weight[9]         the weight dual mode gives this model's blocks when
@@ -266,6 +268,7 @@ pub enum ModelError {
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
+    sample_rate: f64,
 }
 
 impl Reader<'_> {
@@ -320,9 +323,13 @@ fn read_block(r: &mut Reader<'_>) -> Result<LowEnd, ModelError> {
 /// Most tail modes a kernel set may carry.
 const MAX_MODES: usize = 256;
 
+/// Most Laguerre functions a kernel set may carry.
+const MAX_LAGUERRE: usize = 64;
+
 /// One kernel set, expanded to `kernels × taps`: each kernel is stored as
-/// its first `head` taps and a tail `Re Σ c_k z_kᵐ` over modes the set
-/// shares (`m` counted from the end of the head).
+/// its first `head` taps, a tail `Re Σ c_k z_kᵐ` over modes the set shares
+/// (`m` counted from the end of the head), and a sum of discrete Laguerre
+/// functions over the whole kernel (the low-end correction, exact).
 fn read_set(r: &mut Reader<'_>, taps: usize, kernels: usize) -> Result<Vec<f32>, ModelError> {
     let head = dsp_core::u32_to_index(r.u32()?);
     let modes = dsp_core::u32_to_index(r.u32()?);
@@ -333,27 +340,74 @@ fn read_set(r: &mut Reader<'_>, taps: usize, kernels: usize) -> Result<Vec<f32>,
     for _ in 0..modes {
         z.push((r.f64()?, r.f64()?));
     }
+    let basis = read_laguerre(r, taps)?;
     let mut out = Vec::with_capacity(kernels.checked_mul(taps).ok_or(ModelError::BadShape)?);
     let mut c = Vec::with_capacity(modes);
+    let mut kernel = vec![0.0f64; taps];
     for _ in 0..kernels {
-        out.extend(r.f32s(head)?);
+        for (k, v) in kernel.iter_mut().zip(r.f32s(head)?) {
+            *k = f64::from(v);
+        }
         c.clear();
         for _ in 0..modes {
             c.push((r.f64()?, r.f64()?));
         }
         // w_k = c_k z_kᵐ, stepped one sample at a time
         let mut w = c.clone();
-        for _ in head..taps {
+        for k in kernel.iter_mut().skip(head) {
             let mut sum = 0.0;
             for (wk, &(zr, zi)) in w.iter_mut().zip(&z) {
                 sum += wk.0;
                 *wk = (wk.0.mul_add(zr, -(wk.1 * zi)), wk.0.mul_add(zi, wk.1 * zr));
             }
-            #[expect(clippy::cast_possible_truncation, clippy::as_conversions, reason = "kernels are stored as f32")]
-            out.push(sum as f32);
+            *k = sum;
         }
+        for phi in &basis {
+            let weight = r.f64()?;
+            for (k, p) in kernel.iter_mut().zip(phi) {
+                *k = weight.mul_add(*p, *k);
+            }
+        }
+        #[expect(clippy::cast_possible_truncation, clippy::as_conversions, reason = "kernels are stored as f32")]
+        out.extend(kernel.iter().map(|&v| v as f32));
     }
     Ok(out)
+}
+
+/// The set's Laguerre functions: groups of (start sample, pole Hz, count),
+/// each `√(1 − a²) aⁿ` from `start` then repeated all-passes
+/// `(−a + z⁻¹)/(1 − a z⁻¹)`, `a = e^(−2π·pole/fs)` — the functions the
+/// low-end correction was fitted with.
+fn read_laguerre(r: &mut Reader<'_>, taps: usize) -> Result<Vec<Vec<f64>>, ModelError> {
+    let groups = dsp_core::u32_to_index(r.u32()?);
+    let mut basis = Vec::new();
+    for _ in 0..groups {
+        let start = dsp_core::u32_to_index(r.u32()?);
+        let pole_hz = r.f64()?;
+        let count = dsp_core::u32_to_index(r.u32()?);
+        if start > taps || basis.len().saturating_add(count) > MAX_LAGUERRE {
+            return Err(ModelError::BadShape);
+        }
+        let a = (-core::f64::consts::TAU * pole_hz / r.sample_rate).exp();
+        let mut v = vec![0.0; taps];
+        let mut g = a.mul_add(-a, 1.0).sqrt();
+        for x in v.iter_mut().skip(start) {
+            *x = g;
+            g *= a;
+        }
+        for _ in 0..count {
+            let mut next = vec![0.0; taps];
+            let (mut x1, mut y1) = (0.0, 0.0);
+            for (y, &x) in next.iter_mut().zip(&v) {
+                let out = a.mul_add(y1, (-a).mul_add(x, x1));
+                *y = out;
+                x1 = x;
+                y1 = out;
+            }
+            basis.push(core::mem::replace(&mut v, next));
+        }
+    }
+    Ok(basis)
 }
 
 /// Nine values, one per pattern step.
@@ -372,7 +426,7 @@ impl MicModel {
     /// The asset is not version 5 of the format, does not have the
     /// 9 × 5 layout, or is shorter than its header says.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
-        let mut r = Reader { bytes, at: 0 };
+        let mut r = Reader { bytes, at: 0, sample_rate: 48_000.0 };
         if r.take::<4>()? != *b"MICM" {
             return Err(ModelError::BadMagic);
         }
@@ -380,6 +434,7 @@ impl MicModel {
             return Err(ModelError::BadVersion);
         }
         let sample_rate = f64::from(r.u32()?);
+        r.sample_rate = sample_rate;
         let taps = dsp_core::u32_to_index(r.u32()?);
         if dsp_core::u32_to_index(r.u32()?) != PATTERNS || dsp_core::u32_to_index(r.u32()?) != AXES {
             return Err(ModelError::BadShape);
