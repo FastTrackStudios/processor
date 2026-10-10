@@ -33,7 +33,11 @@
 //!                             included; the engine derives the curve's input)
 //! u32 kernel_sets            bit k: low-cut position k has its own anchor set
 //!                            (bit 0, the switch off, is always set)
-//! for each set bit k, ascending: patterns × axes × ([P; taps] [G; taps]) f32
+//! for each set bit k, ascending:
+//!   u32 head, u32 modes, modes × (f64 re, f64 im)   the tail's modes z
+//!   patterns × axes × (P, G), each: f32 head[head], modes × (f64 re, f64 im) c
+//!                             the kernel's first `head` taps, then
+//!                             Re Σ c·zᵐ to `taps` (m from the head's end)
 //! f64 delay                  the model's own fractional delay (samples)
 //! f64 shelf_k[9]             the Shelf law's k at each pattern step (1 otherwise)
 //! f64 dual_weight[9]         the weight dual mode gives this model's blocks when
@@ -313,6 +317,45 @@ fn read_block(r: &mut Reader<'_>) -> Result<LowEnd, ModelError> {
     Ok(LowEnd { gain, sections })
 }
 
+/// Most tail modes a kernel set may carry.
+const MAX_MODES: usize = 256;
+
+/// One kernel set, expanded to `kernels × taps`: each kernel is stored as
+/// its first `head` taps and a tail `Re Σ c_k z_kᵐ` over modes the set
+/// shares (`m` counted from the end of the head).
+fn read_set(r: &mut Reader<'_>, taps: usize, kernels: usize) -> Result<Vec<f32>, ModelError> {
+    let head = dsp_core::u32_to_index(r.u32()?);
+    let modes = dsp_core::u32_to_index(r.u32()?);
+    if head > taps || modes > MAX_MODES {
+        return Err(ModelError::BadShape);
+    }
+    let mut z = Vec::with_capacity(modes);
+    for _ in 0..modes {
+        z.push((r.f64()?, r.f64()?));
+    }
+    let mut out = Vec::with_capacity(kernels.checked_mul(taps).ok_or(ModelError::BadShape)?);
+    let mut c = Vec::with_capacity(modes);
+    for _ in 0..kernels {
+        out.extend(r.f32s(head)?);
+        c.clear();
+        for _ in 0..modes {
+            c.push((r.f64()?, r.f64()?));
+        }
+        // w_k = c_k z_kᵐ, stepped one sample at a time
+        let mut w = c.clone();
+        for _ in head..taps {
+            let mut sum = 0.0;
+            for (wk, &(zr, zi)) in w.iter_mut().zip(&z) {
+                sum += wk.0;
+                *wk = (wk.0.mul_add(zr, -(wk.1 * zi)), wk.0.mul_add(zi, wk.1 * zr));
+            }
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions, reason = "kernels are stored as f32")]
+            out.push(sum as f32);
+        }
+    }
+    Ok(out)
+}
+
 /// Nine values, one per pattern step.
 fn read_table(r: &mut Reader<'_>) -> Result<[f64; PATTERNS], ModelError> {
     let mut table = [0.0; PATTERNS];
@@ -402,11 +445,12 @@ impl MicModel {
             .and_then(|n| n.checked_mul(2))
             .and_then(|n| n.checked_mul(taps))
             .ok_or(ModelError::BadShape)?;
+        let kernels = count.checked_div(taps).unwrap_or(0);
         let mut sets: [Option<Vec<f32>>; LOW_CUTS] = Default::default();
         let mut bit = 1u32;
         for set in &mut sets {
             if mask & bit != 0 {
-                *set = Some(r.f32s(count)?);
+                *set = Some(read_set(&mut r, taps, kernels)?);
             }
             bit = bit.wrapping_shl(1);
         }

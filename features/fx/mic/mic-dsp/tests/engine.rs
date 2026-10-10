@@ -41,6 +41,9 @@ fn model(curve: Option<[f64; 2]>) -> Result<MicModel, ModelError> {
         }
     }
     b.extend_from_slice(&1u32.to_le_bytes()); // only the off set
+    // stored whole: a head the full length, no tail modes
+    b.extend_from_slice(&u32::try_from(TAPS).unwrap_or(0).to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
     let pulse = |at: usize, height: f32| (0..TAPS).map(move |i| if i == at { height } else { 0.0 });
     for p in 0..u8::try_from(PATTERNS).unwrap_or(0) {
         for a in 0..u8::try_from(AXES).unwrap_or(0) {
