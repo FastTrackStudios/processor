@@ -206,19 +206,6 @@ fn design(section: PostSection, sample_rate: f64) -> Biquad {
     }
 }
 
-/// Where a cancelled proximity high-pass's zero at DC goes (Hz).
-const BASE_LEAK_HZ: f64 = 0.05;
-
-/// A base's inverse followed by another filter, with a leaked DC pole and a
-/// following high-pass's zero at DC cancelled exactly: Corner to Corner is
-/// then one clean corner move (the leak alone costs −52 dB at 20 Hz).
-fn merge(inverse: Option<Move>, [a, b]: [Option<Move>; 2]) -> [Option<Move>; 3] {
-    match (inverse, a) {
-        (Some((zero, pole)), Some((0.0, next))) if (pole - BASE_LEAK_HZ).abs() < 1e-12 => [Some((zero, next)), b, None],
-        _ => [inverse, a, b],
-    }
-}
-
 /// Where the inverted sections' zeros at DC go (Hz). The reference's curve
 /// input is `K/B` with no leak at all (its phase follows `K/B` to 2 Hz), but
 /// lower than this the kernels' residual DC drifts the curve (0.005 Hz:
@@ -272,10 +259,10 @@ pub struct MicChain {
 ///
 /// Each model carries its own fractional delay (linear interpolation;
 /// 0.146 samples for all but Sphere Diffuse), and in dual mode both are
-/// re-timed to the mix-weighted delay;
-/// Align moves one mic by distance / 340 m/s with a near-ideal fractional
-/// delay; and both share one proximity corner, the mix-weighted mean of
-/// their own.
+/// re-timed to the mix-weighted delay; Align moves one mic by
+/// distance / 340 m/s with a near-ideal fractional delay; and the blocks
+/// (low end, pressure, gradient) are divided out of the kernels and
+/// crossfaded with the other mic's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DualAdjust {
     /// The model's own delay, samples (what the kernels carry).
@@ -284,14 +271,6 @@ pub struct DualAdjust {
     pub delay: f64,
     /// Extra delay (Align), samples, ≥ 0.
     pub align: f64,
-    /// Shared proximity corner, if any.
-    pub centre: Option<f64>,
-    /// The pattern step whose proximity base (corner, shelf depth) the mic
-    /// takes, if not its own.
-    pub law_pattern: Option<usize>,
-    /// Another mic's proximity filter (law and pattern step) run in place
-    /// of this mic's own: the 180 variant's backward mic runs mic 1's.
-    pub foreign: Option<(crate::model::ProximityLaw, usize)>,
     /// Dual mode: the other mic's proximity filter (law, step) crossfaded
     /// with this mic's own, with weights `[own, other]`.
     pub cross: Option<(crate::model::ProximityLaw, usize, [f64; 2])>,
@@ -308,7 +287,7 @@ pub struct DualAdjust {
 impl DualAdjust {
     #[must_use]
     pub const fn none(own_delay: f64) -> Self {
-        Self { own_delay, delay: own_delay, align: 0.0, centre: None, law_pattern: None, foreign: None, cross: None, cross_low: None, cross_pressure: None, cross_gradient: None }
+        Self { own_delay, delay: own_delay, align: 0.0, cross: None, cross_low: None, cross_pressure: None, cross_gradient: None }
     }
 }
 
@@ -436,20 +415,11 @@ impl MicChain {
         }
         let sr = self.model.sample_rate;
         let law = self.model.proximity;
-        let law_pattern = self.dual.law_pattern.unwrap_or(s.pattern);
         let pad = |[a, b]: [Option<Move>; 2]| [a, b, None];
-        let moves = match (self.dual.foreign, self.dual.centre) {
-            // dual mode, blocks crossfaded: the kernels run without the
-            // base, so this is the mic's whole proximity filter
-            _ if self.dual.cross.is_some() => pad(if self.model.dual_gradient.is_some() { law.moves(s.proximity, s.pattern) } else { law.filter(s.proximity, s.pattern) }),
-            (Some((other, pattern)), _) => {
-                // the kernels' own base out, the other mic's whole filter in
-                merge(law.base_inverse(s.pattern, BASE_LEAK_HZ), other.filter(s.proximity, pattern))
-            }
-            (None, Some(centre)) => pad(law.moves_around(s.proximity, s.pattern, centre, law_pattern)),
-            (None, None) if law_pattern != s.pattern => pad(law.moves_around(s.proximity, s.pattern, law.f0(law_pattern), law_pattern)),
-            (None, None) => pad(law.moves(s.proximity, s.pattern)),
-        };
+        // In dual mode the kernels run without their proximity base, so this
+        // is the mic's whole filter (its moves alone where a dual gradient
+        // block runs beside them); otherwise the moves from the base.
+        let moves = pad(if self.dual.cross.is_some() && self.model.dual_gradient.is_none() { law.filter(s.proximity, s.pattern) } else { law.moves(s.proximity, s.pattern) });
         let path = &mut self.linear;
         for (section, step) in path.proximity.iter_mut().zip(moves) {
             match step {

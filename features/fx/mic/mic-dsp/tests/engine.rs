@@ -15,7 +15,7 @@ const TAPS: usize = 128;
 fn model(curve: Option<[f64; 2]>) -> Result<MicModel, ModelError> {
     let mut b = Vec::new();
     b.extend_from_slice(b"MICM");
-    for v in [5u32, 48_000, u32::try_from(TAPS).unwrap_or(0), 9, 5] {
+    for v in [6u32, 48_000, u32::try_from(TAPS).unwrap_or(0), 9, 5] {
         b.extend_from_slice(&v.to_le_bytes());
     }
     for v in [10.0f64, 60.0, 100.0, 200.0] {
@@ -51,6 +51,28 @@ fn model(curve: Option<[f64; 2]>) -> Result<MicModel, ModelError> {
             }
         }
     }
+    // delay, shelf k, dual weights
+    for v in core::iter::once(0.146_03).chain([1.0f64; 2 * PATTERNS]) {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    // low ends: the built-in corner moved by the switch; pressure blocks: none
+    let block = |b: &mut Vec<u8>, hp: Option<f64>| {
+        b.extend_from_slice(&1.0f64.to_le_bytes());
+        b.extend_from_slice(&u32::from(hp.is_some()).to_le_bytes());
+        if let Some(hz) = hp {
+            b.extend_from_slice(&0u32.to_le_bytes());
+            for v in [hz, 0.0, 0.0] {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+    };
+    for hz in [10.0, 60.0, 100.0, 200.0] {
+        block(&mut b, Some(hz));
+    }
+    for _ in 0..PATTERNS {
+        block(&mut b, None);
+    }
+    b.extend_from_slice(&0u32.to_le_bytes()); // no dual gradient block
     MicModel::from_bytes(&b)
 }
 
