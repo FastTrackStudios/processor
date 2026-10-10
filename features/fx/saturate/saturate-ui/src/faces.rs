@@ -293,7 +293,9 @@ pub fn character_legends(profile_id: &str) -> (&'static str, &'static str) {
         "clip" => ("Ceiling", "Knee"),
         "crush" => ("Bits", "Rate"),
         "deluxe" => ("Crunch", "Darkness"),
-        "bluebox" => ("Triode", "Saturation"),
+        "bluebox" | "bluebox_low" | "bluebox_high" | "bluebox_alt" | "bluebox_alt_low" | "bluebox_alt_high" => {
+            ("Triode", "Saturation")
+        }
         _ => ("Character", "Colour"),
     }
 }
@@ -497,8 +499,9 @@ fn CurveView(
             saturate_profiles::Engine::Deluxe => {
                 saturate_dsp::deluxe::static_curve(&saturate_profiles::deluxe_params(&controls), x).clamp(-1.0, 1.0)
             }
-            saturate_profiles::Engine::Bluebox => {
-                saturate_dsp::bluebox::static_curve(&saturate_profiles::bluebox_params(&controls), x).clamp(-1.0, 1.0)
+            saturate_profiles::Engine::Bluebox { sat_freq, alt_tube } => {
+                saturate_dsp::bluebox::static_curve(&saturate_profiles::bluebox_params(&controls, sat_freq, alt_tube), x)
+                    .clamp(-1.0, 1.0)
             }
             saturate_profiles::Engine::Preamp => {
                 let shaped = pre.transfer(x as f32) * makeup;

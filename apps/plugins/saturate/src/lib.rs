@@ -118,7 +118,9 @@ impl FtsSaturate {
         // The measured models take the same knobs through their own mapping.
         match profile.engine {
             saturate_profiles::Engine::Deluxe => self.deluxe.set(saturate_profiles::deluxe_params(&controls)),
-            saturate_profiles::Engine::Bluebox => self.bluebox.set(saturate_profiles::bluebox_params(&controls)),
+            saturate_profiles::Engine::Bluebox { sat_freq, alt_tube } => {
+                self.bluebox.set(saturate_profiles::bluebox_params(&controls, sat_freq, alt_tube));
+            }
             saturate_profiles::Engine::Preamp => {}
         }
         (profile.voicing.digital && !self.quantiser[0].is_transparent(), profile.engine)
@@ -357,7 +359,7 @@ mod tests {
             for i in 0..48_000 {
                 let y = match engine {
                     saturate_profiles::Engine::Deluxe => to_f32(plugin.deluxe.process(0.0, 0.0).0),
-                    saturate_profiles::Engine::Bluebox => to_f32(plugin.bluebox.process(0.0, 0.0).0),
+                    saturate_profiles::Engine::Bluebox { .. } => to_f32(plugin.bluebox.process(0.0, 0.0).0),
                     saturate_profiles::Engine::Preamp => {
                         let wet = plugin.pre[0].process_wet(0, 0.0);
                         if crushing { plugin.quantiser[0].process(0, wet) } else { wet }
