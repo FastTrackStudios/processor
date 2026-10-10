@@ -19,18 +19,18 @@
 // even though they are allowed workspace-wide off the audio thread.
 #![deny(clippy::disallowed_methods)]
 
+extern crate alloc;
+
 use dsp_core::num;
 
 pub mod bluebox;
-#[rustfmt::skip]
-#[expect(clippy::unreadable_literal, reason = "generated measurement tables")]
-pub mod bluebox_tables;
+pub mod curve_table;
 pub mod deluxe;
 pub mod digital;
 pub mod emphasis;
+pub mod halfband;
 pub mod oversample;
 pub mod preamp;
-pub mod table;
 
 /// Saturation transfer-curve family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

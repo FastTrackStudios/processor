@@ -57,6 +57,10 @@ pub struct FtsSaturate {
     /// thread.
     deluxe: Deluxe,
     bluebox: Bluebox,
+    /// The latency last reported to the host: Bluebox's oversampler delays
+    /// its wet path (and its dry, to match); the other engines are
+    /// zero-latency.
+    latency: u32,
 }
 
 impl Default for FtsSaturate {
@@ -77,11 +81,20 @@ impl Default for FtsSaturate {
             emph: [EmphasisEq::new(48_000.0), EmphasisEq::new(48_000.0)],
             deluxe: Deluxe::new(48_000.0),
             bluebox: Bluebox::new(48_000.0),
+            latency: 0,
         }
     }
 }
 
 impl FtsSaturate {
+    /// The latency `engine` adds, in samples.
+    fn latency_of(&self, engine: saturate_profiles::Engine) -> u32 {
+        match engine {
+            saturate_profiles::Engine::Bluebox { .. } => u32::try_from(self.bluebox.latency()).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     /// Point both channels at the resolved profile.
     ///
     /// Resolved through the *persisted id* rather than the automatable index,
@@ -164,7 +177,7 @@ impl Plugin for FtsSaturate {
         &mut self,
         _audio_io_layout: &AudioIOLayout,
         buffer_config: &BufferConfig,
-        _context: &mut impl ActivateContext<Self>,
+        context: &mut impl ActivateContext<Self>,
     ) -> bool {
         for (pre, quantiser) in self.pre.iter_mut().zip(self.quantiser.iter_mut()) {
             pre.set_sample_rate(buffer_config.sample_rate);
@@ -179,7 +192,9 @@ impl Plugin for FtsSaturate {
         // Land the settings before the first block, so the tilt filters and
         // the sag ballistics start on the real values rather than ramping
         // out of a default nobody chose.
-        self.sync_params();
+        let (_, engine) = self.sync_params();
+        self.latency = self.latency_of(engine);
+        context.set_latency_samples(self.latency);
         true
     }
 
@@ -199,9 +214,14 @@ impl Plugin for FtsSaturate {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let (crushing, engine) = self.sync_params();
+        let latency = self.latency_of(engine);
+        if latency != self.latency {
+            self.latency = latency;
+            context.set_latency_samples(latency);
+        }
         let mix = self.params.mix.value();
         let output = 10.0f32.powf(self.params.output.value() / 20.0);
 
