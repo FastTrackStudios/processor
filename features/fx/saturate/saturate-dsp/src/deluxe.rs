@@ -14,9 +14,10 @@
 //!                     detector on (L+R)/2 ── g             dry ───┘
 //! ```
 //!
-//! - `A` is the whole linear colour, *before* the curve: `H2/H1²` is flat
-//!   from 100 Hz to 8 kHz, so nothing but a 9.45 Hz coupling high-pass
-//!   follows the curve.
+//! - `A` is the whole linear colour, *before* the curve — a coupling low
+//!   shelf (zeros 10.8 Hz under poles 42 Hz) and a gentle high shelf: `H2/H1²`
+//!   is flat from 100 Hz to 8 kHz, so nothing but a 9.45 Hz coupling
+//!   high-pass follows the curve.
 //! - Darkness is one third-order low-pass after the curve — a resonant
 //!   two-pole section with a real pole above it — whose cutoff is close to
 //!   linear in the knob above a ≈700 Hz floor (Q easing from ≈0.86 to ≈0.65
@@ -46,7 +47,6 @@
 //!   fitted on the reference's output envelope on music, not only on tones.
 //! - Mix is equal-power with a unity dry path.
 
-use alloc::vec::Vec;
 use core::f64::consts::{FRAC_PI_2, PI};
 
 use crate::deluxe_tables as t;
@@ -112,25 +112,6 @@ pub fn static_curve(p: &DeluxeParams, x: f64) -> f64 {
     curve(0.25 * gain * x) / rail
 }
 
-/// A complex number, just enough of one for bilinear transforms.
-#[derive(Clone, Copy, Debug)]
-struct C(f64, f64);
-
-impl C {
-    const fn mul(self, o: Self) -> Self {
-        Self(self.0 * o.0 - self.1 * o.1, self.0 * o.1 + self.1 * o.0)
-    }
-
-    fn div(self, o: Self) -> Self {
-        let d = o.0 * o.0 + o.1 * o.1;
-        Self((self.0 * o.0 + self.1 * o.1) / d, (self.1 * o.0 - self.0 * o.1) / d)
-    }
-
-    fn abs(self) -> f64 {
-        libm::sqrt(self.0 * self.0 + self.1 * self.1)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 struct Biquad {
     c: [f64; 5],
@@ -154,74 +135,58 @@ impl Biquad {
     }
 }
 
-/// Analog roots (rad/s; conjugates implied for `im > 0`) → digital roots by
-/// the bilinear transform at `sr`, expanded to real factors `(c1, c2)` of
-/// `1 + c1 z⁻¹ + c2 z⁻²` (a lone real root gets `c2 = 0`). (The measured roots
-/// came from an inverse bilinear at 48 kHz, so no pre-warping.)
-fn factors(roots: &[(f64, f64)], sr: f64) -> Vec<(f64, f64)> {
-    let k = 2.0 * sr;
-    let mut out = Vec::new();
-    let mut pending_real: Option<f64> = None;
-    for &(re, im) in roots {
-        let z = C(1.0 + re / k, im / k).div(C(1.0 - re / k, -im / k));
-        if im > 0.0 {
-            out.push((-2.0 * z.0, z.0 * z.0 + z.1 * z.1));
-        } else if let Some(r) = pending_real.take() {
-            out.push((-(r + z.0), r * z.0));
-        } else {
-            pending_real = Some(z.0);
-        }
-    }
-    if let Some(r) = pending_real {
-        out.push((-r, 0.0));
-    }
-    out
+/// Bilinear transform of an analog second-order section
+/// `(n2·s² + n1·s + n0) / (d2·s² + d1·s + d0)` with `s = c·(1 − z⁻¹)/(1 + z⁻¹)`.
+fn bilinear2(n: [f64; 3], d: [f64; 3], c: f64) -> [f64; 5] {
+    let c2 = c * c;
+    let [n0, n1, n2] = n;
+    let [d0, d1, d2] = d;
+    let a0 = d2 * c2 + d1 * c + d0;
+    [
+        (n2 * c2 + n1 * c + n0) / a0,
+        2.0 * (n0 - n2 * c2) / a0,
+        (n2 * c2 - n1 * c + n0) / a0,
+        2.0 * (d0 - d2 * c2) / a0,
+        (d2 * c2 - d1 * c + d0) / a0,
+    ]
 }
 
-/// The open pre-curve response realised as biquads at `sr`.
-fn pre_filter(measured: &t::PreFilter, sr: f64) -> Vec<Biquad> {
-    realise(measured.zeros, measured.poles, measured.gain_1k, sr)
+/// |H(e^jω)| of a biquad at `hz`.
+fn magnitude(c: [f64; 5], hz: f64, sr: f64) -> f64 {
+    let w = 2.0 * PI * hz / sr;
+    let (c1, s1, c2, s2) = (libm::cos(w), libm::sin(w), libm::cos(2.0 * w), libm::sin(2.0 * w));
+    let [b0, b1, b2, a1, a2] = c;
+    let (nr, ni) = (b0 + b1 * c1 + b2 * c2, -(b1 * s1 + b2 * s2));
+    let (dr, di) = (1.0 + a1 * c1 + a2 * c2, -(a1 * s1 + a2 * s2));
+    libm::sqrt((nr * nr + ni * ni) / (dr * dr + di * di).max(1e-300))
 }
 
-/// Analog zeros/poles → biquads at `sr`, scaled to `gain_1k` at 1 kHz.
-fn realise(zeros: &[(f64, f64)], poles: &[(f64, f64)], gain_1k: f64, sr: f64) -> Vec<Biquad> {
-    let zs = factors(zeros, sr);
-    let ps = factors(poles, sr);
-    let n = zs.len().max(ps.len());
-    let mut secs: Vec<Biquad> = (0..n)
-        .map(|i| {
-            let (b1, b2) = zs.get(i).copied().unwrap_or((0.0, 0.0));
-            let (a1, a2) = ps.get(i).copied().unwrap_or((0.0, 0.0));
-            Biquad { c: [1.0, b1, b2, a1, a2], z1: 0.0, z2: 0.0 }
-        })
-        .collect();
-    let at = |hz: f64| {
-        let w = 2.0 * PI * hz / sr;
-        let z1 = C(libm::cos(w), -libm::sin(w));
-        let z2 = z1.mul(z1);
-        secs.iter().fold(C(1.0, 0.0), |h, s| {
-            let [b0, b1, b2, a1, a2] = s.c;
-            let num = C(b0 + b1 * z1.0 + b2 * z2.0, b1 * z1.1 + b2 * z2.1);
-            let den = C(1.0 + a1 * z1.0 + a2 * z2.0, a1 * z1.1 + a2 * z2.1);
-            h.mul(num.div(den))
-        })
-    };
-    // magnitude from the measurement at 1 kHz; polarity from 100 Hz, where
-    // every measured response is near zero phase (a fitted numerator can
-    // come out inverted, and crossfading an inverted neighbour cancels)
-    let g = (gain_1k / at(1000.0).abs().max(1e-30)).copysign(at(100.0).0);
-    if let Some(first) = secs.first_mut() {
-        let [b0, b1, b2, a1, a2] = first.c;
-        first.c = [b0 * g, b1 * g, b2 * g, a1, a2];
-    }
-    secs
+/// The fixed colour before the VCA, as two sections: the coupling network —
+/// a low shelf whose resonant zero pair sits under its pole pair, so the
+/// response falls ≈ 25 dB below 15 Hz — and a gentle first-order high shelf
+/// (≈ −1 dB at 10 kHz, −3 dB at 20 kHz). Each is prewarped at its own corner;
+/// the pair is scaled to the measured gain at 1 kHz.
+fn colour_filter(sr: f64) -> [Biquad; 2] {
+    let w = |hz: f64| 2.0 * PI * hz;
+    let (wz, wp) = (w(t::PRE_LOW_ZERO_HZ), w(t::PRE_LOW_POLE_HZ));
+    let low = bilinear2(
+        [wz * wz, wz / t::PRE_LOW_ZERO_Q, 1.0],
+        [wp * wp, wp / t::PRE_LOW_POLE_Q, 1.0],
+        wp / libm::tan(PI * t::PRE_LOW_POLE_HZ / sr),
+    );
+    let fh = t::PRE_HIGH_POLE_HZ.min(0.45 * sr);
+    let (wh, wz2) = (w(fh), w(t::PRE_HIGH_ZERO_HZ));
+    let high = bilinear2([1.0, 1.0 / wz2, 0.0], [1.0, 1.0 / wh, 0.0], wh / libm::tan(PI * fh / sr));
+    let g = t::PRE_GAIN_1K / (magnitude(low, 1000.0, sr) * magnitude(high, 1000.0, sr)).max(1e-30);
+    let [b0, b1, b2, a1, a2] = low;
+    [Biquad { c: [b0 * g, b1 * g, b2 * g, a1, a2], ..Biquad::default() }, Biquad { c: high, ..Biquad::default() }]
 }
 
-/// Per-channel state: every Darkness position's pre-filter (all running, so
-/// moving the knob never meets cold state) and the post-curve high-pass.
+/// Per-channel state: the colour filter, Darkness, the 4× section and the
+/// post-curve high-pass.
 #[derive(Clone, Debug)]
 struct Channel {
-    pre: Vec<Biquad>,
+    pre: [Biquad; 2],
     /// Darkness: the resonant pair, then the real pole.
     dark: [Biquad; 2],
     /// The curve runs at 4× (the reference oversamples it too: a clipped
@@ -233,7 +198,7 @@ struct Channel {
 
 impl Channel {
     fn new(sr: f64) -> Self {
-        Self { pre: pre_filter(&t::PRE, sr), dark: [Biquad::default(); 2], os: crate::oversample::Oversample4::new(), hp_x: 0.0, hp_y: 0.0 }
+        Self { pre: colour_filter(sr), dark: [Biquad::default(); 2], os: crate::oversample::Oversample4::new(), hp_x: 0.0, hp_y: 0.0 }
     }
 
     fn reset(&mut self) {

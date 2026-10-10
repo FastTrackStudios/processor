@@ -19,8 +19,6 @@
 // even though they are allowed workspace-wide off the audio thread.
 #![deny(clippy::disallowed_methods)]
 
-extern crate alloc;
-
 use dsp_core::num;
 
 pub mod bluebox;

@@ -31,20 +31,17 @@ pub const CURVE_NEG: [Breakpoint; 3] = [Breakpoint { at: 1.493340577e-01, slope:
 /// Coupling high-pass after the curve, Hz.
 pub const POST_HP_HZ: f64 = 9.45;
 
-/// One measured pre-curve response.
+/// The colour filter before the VCA (see [`crate::deluxe`]).
 ///
-/// The Darkness knob position (Hz), the response's magnitude at 1 kHz, and
-/// its analog zeros/poles (rad/s, as `(re, im)`; conjugates are implied for
-/// `im > 0`, real roots have `im == 0`).
-pub struct PreFilter {
-    pub darkness_hz: f64,
-    pub gain_1k: f64,
-    pub zeros: &'static [(f64, f64)],
-    pub poles: &'static [(f64, f64)],
-}
-
-/// The pre-curve filter (the open, undarkened response).
-pub const PRE: PreFilter = PreFilter { darkness_hz: 20000.0, gain_1k: 1.907729039e+00, zeros: &[(-3.246576578e+01, 5.915072443e+01), (-5.178358021e+00, 0.000000000e+00), (-2.017974608e+05, 0.000000000e+00), (-1.045513982e+05, 0.000000000e+00)], poles: &[(-3.082913269e+00, 0.000000000e+00), (-2.508226277e+02, 9.126998307e+01), (-1.646227996e+05, 0.000000000e+00), (-8.647736664e+04, 0.000000000e+00)] };
+/// A low shelf (zero pair over pole pair) and a first-order high shelf, scaled
+/// to the measured gain at 1 kHz.
+pub const PRE_LOW_ZERO_HZ: f64 = 1.079590102e+01;
+pub const PRE_LOW_ZERO_Q: f64 = 1.058263858e+00;
+pub const PRE_LOW_POLE_HZ: f64 = 4.224661591e+01;
+pub const PRE_LOW_POLE_Q: f64 = 5.302216536e-01;
+pub const PRE_HIGH_POLE_HZ: f64 = 1.263517695e+04;
+pub const PRE_HIGH_ZERO_HZ: f64 = 1.847521236e+04;
+pub const PRE_GAIN_1K: f64 = 1.907729039e+00;
 
 /// Darkness (see [`crate::deluxe`]).
 ///
