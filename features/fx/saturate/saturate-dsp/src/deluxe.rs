@@ -54,8 +54,12 @@ use core::f64::consts::{FRAC_PI_2, PI};
 // Every constant below is a parameter of the law it sits under, fitted to
 // black-box measurements of the reference (the saturator-models tools).
 
-/// Crush: dB into the VCA per knob unit — a taper linear in dB, end to end.
-const CRUSH_DB_PER_UNIT: f64 = 3.361_89;
+// Crush: dB into the VCA — an audio-taper pot (log term) in series with a
+// linear one: gain = POT·log10(1 + RATE·knob) + PER_UNIT·knob, 0 dB at 0.
+// Within 0.6 dB of the measured taper (the reference's own steps wobble).
+const CRUSH_POT_DB: f64 = 2.713_9;
+const CRUSH_POT_RATE: f64 = 1.010_5;
+const CRUSH_DB_PER_UNIT: f64 = 3.072;
 /// Crunch: dB into the curve per knob unit.
 const CRUNCH_DB_PER_UNIT: f64 = 3.0;
 
@@ -114,28 +118,28 @@ const DARK_LOSS_EXP: f64 = 4.005_95;
 const DARK_FIRST_HZ: f64 = 17_150.5;
 
 // The integrating detector — see [`DetectorParams`] for what each one does.
-const DET_OFFSET_DB: f64 = -0.571_545;
-const DET_THETA_DB: f64 = -13.7893;
-const DET_SMOOTH_MS: f64 = 6.847_39;
-const DET_POWER: f64 = 0.126_753;
-const DET_SOFT: f64 = 0.012_353_1;
-const DET_CHARGE_PER_S: f64 = 5.662_58e8;
-const DET_CHARGE_MAX_DB_PER_MS: f64 = 76.9505;
-const DET_TAU_ON_MS: f64 = 144.277;
-const DET_TAU_OFF_MS: f64 = 235.442;
-const DET_FLOOR_DB: f64 = 49.2904;
-const DET_FLOOR_KNEE_DB: f64 = 15.556;
-const DET_FAST_K: f64 = 14.0377;
-const DET_FAST_T_DB: f64 = -19.0885;
-const DET_FAST_W_DB: f64 = 1.638_69;
-const DET_FAST_ATTACK_MS: f64 = 6.953_74;
-const DET_FAST_RELEASE_ON_MS: f64 = 137.539;
-const DET_FAST_RELEASE_OFF_MS: f64 = 196.067;
-const DET_SLOW_WEIGHT: f64 = 0.001_439_84;
-const DET_SLOW_CHARGE_MS: f64 = 32.2839;
-const DET_SLOW_RELEASE_MS: f64 = 7948.43;
-const DET_SMOOTH_ATTACK_MS: f64 = 3.259_49;
-const DET_DET_FLOOR_DB: f64 = 43.9334;
+const DET_OFFSET_DB: f64 = -0.126_052;
+const DET_THETA_DB: f64 = -12.4385;
+const DET_SMOOTH_MS: f64 = 11.2572;
+const DET_POWER: f64 = 1.149_21;
+const DET_SOFT: f64 = 0.002_705_82;
+const DET_CHARGE_PER_S: f64 = 1.990_01e8;
+const DET_CHARGE_MAX_DB_PER_MS: f64 = 184.978;
+const DET_TAU_ON_MS: f64 = 120.535;
+const DET_TAU_OFF_MS: f64 = 180.056;
+const DET_FLOOR_DB: f64 = 49.3952;
+const DET_FLOOR_KNEE_DB: f64 = 17.915;
+const DET_FAST_K: f64 = 11.8737;
+const DET_FAST_T_DB: f64 = -18.8279;
+const DET_FAST_W_DB: f64 = 1.974_79;
+const DET_FAST_ATTACK_MS: f64 = 3.946_93;
+const DET_FAST_RELEASE_ON_MS: f64 = 101.201;
+const DET_FAST_RELEASE_OFF_MS: f64 = 212.597;
+const DET_SLOW_WEIGHT: f64 = 0.000_755_579;
+const DET_SLOW_CHARGE_MS: f64 = 292.681;
+const DET_SLOW_RELEASE_MS: f64 = 8864.6;
+const DET_SMOOTH_ATTACK_MS: f64 = 2.028_08;
+const DET_DET_FLOOR_DB: f64 = 41.3804;
 
 /// The reference's controls, in its own units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -161,7 +165,8 @@ impl Default for DeluxeParams {
 /// Crush knob (0..=10) → dB into the VCA.
 #[must_use]
 pub fn crush_db(knob: f64) -> f64 {
-    CRUSH_DB_PER_UNIT * knob.clamp(0.0, 10.0)
+    let k = knob.clamp(0.0, 10.0);
+    CRUSH_POT_DB * libm::log10(1.0 + CRUSH_POT_RATE * k) + CRUSH_DB_PER_UNIT * k
 }
 
 /// The static curve: a diode breakpoint network.
@@ -475,6 +480,10 @@ struct DetCoefs {
     slow_weight: f64,
     slow_charge: f64,
     slow_release: f64,
+    /// What the soft floors give at zero control voltage, removed so an
+    /// idle limiter applies exactly no gain reduction.
+    floor_idle: f64,
+    det_floor_idle: f64,
 }
 
 /// The stereo Deluxe engine.
@@ -565,6 +574,8 @@ impl Deluxe {
             slow_weight: if on { 0.0 } else { d.slow_weight },
             slow_charge: 1.0 - pole_ms(d.slow_charge_ms, sr),
             slow_release: pole_ms(d.slow_release_ms, sr),
+            floor_idle: d.floor_db - soft_over(d.floor_db, d.floor_knee_db),
+            det_floor_idle: d.det_floor_db - soft_over(d.det_floor_db, d.floor_knee_db),
         };
     }
 
@@ -621,7 +632,9 @@ impl Deluxe {
         let (det, coef) = (self.det, self.c);
         let slow = coef.slow_weight * self.slow;
         let total = self.vc + self.fast + slow;
-        let gr = det.floor_db - soft_over(det.floor_db - total, det.floor_knee_db);
+        // the gain reduction eases into its floor; zero control voltage is
+        // exactly zero reduction
+        let gr = det.floor_db - soft_over(det.floor_db - total, det.floor_knee_db) - coef.floor_idle;
         // 10^(−gr/20), as one exp
         let gain = libm::exp(-gr * DB_TO_LN) * self.crush * coef.gain;
         let (dm, dg) = (self.dark_mix, self.dark_gain);
@@ -631,7 +644,7 @@ impl Deluxe {
         // detector: the stereo sum, rectified and smoothed, through the
         // rectifier law against θ, integrated on a leaky cap whose voltage is
         // the gain reduction in dB (charge rate limited)
-        let det_gr = det.det_floor_db - soft_over(det.det_floor_db - total, det.floor_knee_db);
+        let det_gr = det.det_floor_db - soft_over(det.det_floor_db - total, det.floor_knee_db) - coef.det_floor_idle;
         let sum = libm::fabs(0.5 * (dl + dr)) * libm::exp((gr - det_gr) * DB_TO_LN);
         self.m += if sum > self.m { coef.smooth_attack } else { coef.smooth } * (sum - self.m);
         let ln_x = libm::log(self.m / coef.theta + 1e-12);
