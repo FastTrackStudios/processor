@@ -26,9 +26,6 @@ pub mod bluebox;
 #[expect(clippy::unreadable_literal, reason = "generated measurement tables")]
 pub mod bluebox_tables;
 pub mod deluxe;
-#[rustfmt::skip]
-#[expect(clippy::unreadable_literal, reason = "generated measurement tables")]
-pub mod deluxe_tables;
 pub mod digital;
 pub mod emphasis;
 pub mod oversample;
