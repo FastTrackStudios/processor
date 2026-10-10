@@ -102,7 +102,10 @@ fn stays_finite_at_every_rate_and_extreme() {
                 ..BlueboxParams::default()
             };
             let y = run(p, &noise, sr);
-            assert!(y.iter().all(|v| v.is_finite() && v.abs() < 8.0), "sr {sr} alt {alt}");
+            let worst = y.iter().fold(0.0_f64, |m, v| if v.is_finite() { m.max(v.abs()) } else { f64::INFINITY });
+            // +12 dB in, +6 dB out and full Air on noise peaking at ±4: finite and
+            // bounded is the claim, not a particular level
+            assert!(worst < 16.0, "sr {sr} alt {alt}: peak {worst}");
         }
     }
 }

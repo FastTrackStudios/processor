@@ -8,7 +8,7 @@
 //!
 //! ```text
 //!  x ─ ×input ─ HP ─┬──────────────────────┬─ + ─ ×pentode·density ─ P(·) ─ T_triode(·) ─────┐
-//!                   └ band(freq) ─ S(·) ─ ×sat ┘                                              │
+//!                   └ S(·) ─ band(freq) ─ ×sat ┘                                              │
 //!   y ─ mix ─ ×output ─ air ─ cal ─ ×makeup/density ───────────────────────────────────────────┘
 //! ```
 //!
@@ -21,10 +21,10 @@
 //!   meets the same ceiling.
 //! - The knobs' laws are measured tapers (Triode and Output share one pot
 //!   law; Pentode has its own).
-//! - Saturation is a parallel path into the pentode: a band filter chosen
-//!   by Sat Freq (Low / Flat / High), its own measured tube curve (Alt
-//!   Tube: a hotter voicing with more gain), and a level from the
-//!   Saturation knob.
+//! - Saturation is a parallel path into the pentode: its own measured tube
+//!   curve (Alt Tube: a hotter voicing with more gain) on the full band,
+//!   then a band filter chosen by Sat Freq (Low / Flat / High) on what it
+//!   makes, and a level from the Saturation knob.
 //! - The stages are stored as measured, operating point included (the
 //!   pentode is strongly one-sided — a single-ended stage near cut-off —
 //!   which is where its even harmonics come from); the output coupling
@@ -236,10 +236,10 @@ struct Channel {
     hp_y: f64,
     dc_x: f64,
     dc_y: f64,
-    /// The tubes run at 4×: the main signal and the saturation band are
-    /// interpolated separately and meet at the high rate.
-    os_main: crate::oversample::Oversample4,
-    os_band: crate::oversample::Oversample4,
+    /// The tubes — and the whole parallel saturation path, band filter
+    /// included (designed at the 4× rate) — run inside one 4× section, so
+    /// the two paths meet with the same timing.
+    os: crate::oversample::Oversample4,
     band: [Biquad; 2],
     cal: Biquad,
     air: Biquad,
@@ -251,8 +251,7 @@ impl Channel {
         self.hp_y = 0.0;
         self.dc_x = 0.0;
         self.dc_y = 0.0;
-        self.os_main.reset();
-        self.os_band.reset();
+        self.os.reset();
         for b in &mut self.band {
             b.reset();
         }
@@ -344,8 +343,6 @@ impl Bluebox {
         self.triode_lo = dsp_core::num::f64_to_index(libm::floor(pos)).min(2);
         self.triode_w = pos - dsp_core::num::count_to_f64(self.triode_lo);
         self.makeup = db(comp);
-        let idle = crate::table::hermite_warped(&t::PENTODE, &t::PENTODE_SLOPE, t::PENTODE_UMAX, t::WARP, 0.0);
-        self.rest = triode(self.triode_lo, self.triode_w, idle) * self.triode_level * self.makeup;
         self.output = open(p.output) * db(taper(&t::OUTPUT_TAPER_DB, 0.0, 100.0, p.output));
         self.wet = (p.mix / 100.0).clamp(0.0, 1.0);
         // saturation path
@@ -361,8 +358,9 @@ impl Bluebox {
         let drive = t::SAT_DRIVE.get(self.sat_alt).copied().unwrap_or(1.0);
         self.sat_in = drive;
         self.sat_out = taper(&t::SAT_LEVEL, 0.0, 100.0, p.saturation) * gain / drive;
-        let lp = Biquad::lowpass(lp_hz, lp_q, sr);
-        let hp = if hp_hz > 0.0 { Biquad::highpass(hp_hz, hp_q, sr) } else { Biquad::IDENTITY };
+        // the band filter runs inside the 4× section
+        let lp = Biquad::lowpass(lp_hz, lp_q, 4.0 * sr);
+        let hp = if hp_hz > 0.0 { Biquad::highpass(hp_hz, hp_q, 4.0 * sr) } else { Biquad::IDENTITY };
         let cal = match p.cal {
             Cal::Dark => Biquad::high_shelf(t::CAL_DARK[0], t::CAL_DARK[1], t::CAL_DARK[2], sr),
             Cal::Norm => Biquad::IDENTITY,
@@ -381,6 +379,11 @@ impl Bluebox {
             c.cal.c = cal;
             c.air.c = air;
         }
+        // at rest the saturation tube hands on its own operating point too —
+        // through the band filter only where it passes DC (Low and Flat)
+        let sat_idle = if self.sat_on && hp_hz <= 0.0 { self.sat_out * sat_tube(self.sat_alt, 0.0) } else { 0.0 };
+        let idle = crate::table::hermite_warped(&t::PENTODE, &t::PENTODE_SLOPE, t::PENTODE_UMAX, t::WARP, self.g_p * sat_idle);
+        self.rest = triode(self.triode_lo, self.triode_w, idle) * self.triode_level * self.makeup;
     }
 
     pub fn reset(&mut self) {
@@ -403,12 +406,17 @@ impl Bluebox {
             triode(lo, w, pentode) * level * makeup - rest
         };
         let stages = if self.sat_on {
-            let banded = ch.band.iter_mut().fold(main, |s, b| b.run(s));
-            let (sat_in, sat_out) = (self.sat_in, self.sat_out);
-            let alt = self.sat_alt;
-            ch.os_main.process2(&mut ch.os_band, main, banded, |m, b| stages(m + sat_out * sat_tube(alt, sat_in * b)))
+            // the tube sees the full band; Sat Freq chooses which of what it
+            // makes reaches the pentode (measured: filtering after the tube
+            // halves the High mode's harmonic error)
+            let (sat_in, sat_out, alt) = (self.sat_in, self.sat_out, self.sat_alt);
+            let Channel { os, band, .. } = ch;
+            os.process(main, |m| {
+                let made = sat_out * sat_tube(alt, sat_in * m);
+                stages(m + band.iter_mut().fold(made, |s, b| b.run(s)))
+            })
         } else {
-            ch.os_main.process(main, stages)
+            ch.os.process(main, stages)
         };
         // the stages hand on their operating point; the output coupling
         // blocks it (same corner as the input transformer)
