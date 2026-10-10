@@ -81,10 +81,25 @@ pub fn crush_db(knob: f64) -> f64 {
     (b - a) * frac + a
 }
 
-/// The static curve, from its measured table.
+/// The static curve: a diode breakpoint network.
+///
+/// Each polarity starts at unity slope; one junction then expands it (slope ≈1.2) and two clamp
+/// diodes take it down to flat, each switching on over a soft knee — the
+/// integral of a logistic step, a softplus. Each diode's leakage below its
+/// knee is taken out, so both sides leave zero at exactly unity slope and the
+/// curve is smooth through it. The two sides differ only in where their
+/// diodes conduct.
 #[must_use]
 pub fn curve(u: f64) -> f64 {
-    crate::table::hermite(&t::CURVE, &t::CURVE_SLOPE, t::CURVE_UMAX, u)
+    let a = libm::fabs(u).min(64.0);
+    let side = if u >= 0.0 { &t::CURVE_POS } else { &t::CURVE_NEG };
+    let y = side.iter().fold(a, |y, d| y + d.slope * (d.knee * (softplus((a - d.at) / d.knee) - d.base) - d.leak * a));
+    if u >= 0.0 { y } else { -y }
+}
+
+/// ln(1 + eˣ), without overflow.
+fn softplus(x: f64) -> f64 {
+    x.max(0.0) + libm::log1p(libm::exp(-libm::fabs(x)))
 }
 
 /// The static picture of the stage, for a display.
@@ -96,7 +111,7 @@ pub fn curve(u: f64) -> f64 {
 #[must_use]
 pub fn static_curve(p: &DeluxeParams, x: f64) -> f64 {
     let gain = libm::pow(10.0, (crush_db(p.crush) + t::CRUNCH_DB_PER_UNIT * p.crunch.clamp(0.0, 10.0)) / 20.0);
-    let rail = curve(t::CURVE_UMAX).abs().max(curve(-t::CURVE_UMAX).abs());
+    let rail = curve(1.0).abs().max(curve(-1.0).abs());
     curve(0.25 * gain * x) / rail
 }
 
