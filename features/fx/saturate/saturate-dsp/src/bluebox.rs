@@ -22,8 +22,9 @@
 //! - The knobs' laws are measured tapers (Triode and Output share one pot
 //!   law; Pentode has its own).
 //! - Saturation is a parallel path into the pentode: a band filter chosen
-//!   by Sat Freq (Low / Flat / High), its own tube curve (Alt Tube: a
-//!   hotter voicing with more gain), and a level from the Saturation knob.
+//!   by Sat Freq (Low / Flat / High), its own measured tube curve (Alt
+//!   Tube: a hotter voicing with more gain), and a level from the
+//!   Saturation knob.
 //! - The stages are stored as measured, operating point included (the
 //!   pentode is strongly one-sided — a single-ended stage near cut-off —
 //!   which is where its even harmonics come from); the output coupling
@@ -116,53 +117,13 @@ fn db(x: f64) -> f64 {
     libm::pow(10.0, x / 20.0)
 }
 
-/// A tube stage's curve: polynomial core into an asymmetric soft rail.
-/// The input is held inside the core's monotonic range, so driving harder
-/// only ever pins the stage on its rail.
-#[derive(Clone, Copy, Debug)]
-pub struct Curve {
-    a2: f64,
-    a3: f64,
-    rail_pos: f64,
-    rail_neg: f64,
-    knee: f64,
-    u_lo: f64,
-    u_hi: f64,
-}
-
-impl Curve {
-    /// From the fitted `[a2, a3, ln rail+, ln rail−, ln knee]`.
-    #[must_use]
-    pub fn new(p: [f64; 5]) -> Self {
-        let [a2, a3, lp, ln, lk] = p;
-        // turning points of z = u + a2 u² + a3 u³ (where dz/du = 0)
-        let (mut u_lo, mut u_hi) = (-1e9_f64, 1e9_f64);
-        if a3 != 0.0 {
-            let disc = 4.0 * a2 * a2 - 12.0 * a3;
-            if disc >= 0.0 {
-                let r = libm::sqrt(disc);
-                for root in [(-2.0 * a2 + r) / (6.0 * a3), (-2.0 * a2 - r) / (6.0 * a3)] {
-                    if root > 0.0 {
-                        u_hi = u_hi.min(root);
-                    } else {
-                        u_lo = u_lo.max(root);
-                    }
-                }
-            }
-        } else if a2 != 0.0 {
-            let root = -0.5 / a2;
-            if root > 0.0 { u_hi = root } else { u_lo = root }
-        }
-        Self { a2, a3, rail_pos: libm::exp(lp), rail_neg: libm::exp(ln), knee: libm::exp(lk), u_lo, u_hi }
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn shape(&self, u: f64) -> f64 {
-        let u = u.clamp(self.u_lo, self.u_hi);
-        let z = u + self.a2 * u * u + self.a3 * u * u * u;
-        let rail = if z >= 0.0 { self.rail_pos } else { self.rail_neg };
-        z / libm::pow(1.0 + libm::pow(libm::fabs(z / rail), self.knee), 1.0 / self.knee)
+/// The saturation tube (normal or alt), from its measured table.
+fn sat_tube(alt: usize, u: f64) -> f64 {
+    use crate::table::hermite;
+    if alt == 0 {
+        hermite(&t::SAT_TUBE, &t::SAT_TUBE_SLOPE, t::SAT_TUBE_UMAX, u)
+    } else {
+        hermite(&t::SAT_TUBE_ALT, &t::SAT_TUBE_ALT_SLOPE, t::SAT_TUBE_UMAX, u)
     }
 }
 
@@ -305,7 +266,6 @@ impl Channel {
 pub struct Bluebox {
     sample_rate: f64,
     ch: [Channel; 2],
-    sat_curve: [Curve; 2],
     // derived from params
     input: f64,
     /// Gain into the pentode stage (knob law and Density).
@@ -341,7 +301,6 @@ impl Bluebox {
         let mut s = Self {
             sample_rate,
             ch: [Channel::default(), Channel::default()],
-            sat_curve: [Curve::new(t::SAT_CURVE), Curve::new(t::SAT_CURVE_ALT)],
             input: 1.0,
             g_p: 1.0,
             triode_lo: 1,
@@ -446,10 +405,8 @@ impl Bluebox {
         let stages = if self.sat_on {
             let banded = ch.band.iter_mut().fold(main, |s, b| b.run(s));
             let (sat_in, sat_out) = (self.sat_in, self.sat_out);
-            let tube = self.sat_curve.get(self.sat_alt).copied();
-            ch.os_main.process2(&mut ch.os_band, main, banded, |m, b| {
-                stages(m + tube.map_or(0.0, |c| sat_out * c.shape(sat_in * b)))
-            })
+            let alt = self.sat_alt;
+            ch.os_main.process2(&mut ch.os_band, main, banded, |m, b| stages(m + sat_out * sat_tube(alt, sat_in * b)))
         } else {
             ch.os_main.process(main, stages)
         };
