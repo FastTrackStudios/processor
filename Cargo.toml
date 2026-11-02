@@ -892,7 +892,7 @@ as_conversions = "deny"
 # So the level follows the architecture rather than the call site: allowed by
 # default here, and re-denied crate-by-crate via `#![deny(clippy::disallowed_methods)]`
 # at the root of each processing crate (the `*-dsp` family + signal-sampler —
-# the same crates CLAUDE.md requires to be no_std-able and allocation-free on
+# the same crates AGENTS.md requires to be no_std-able and allocation-free on
 # the hot path). Measured at adoption: 518 of 562 findings were control-plane,
 # 44 were in processing crates, and NONE of those was a Mutex::lock — the
 # realtime discipline was already being kept, and this makes the boundary
@@ -1063,6 +1063,6 @@ opt-level = 3
 #
 # W13 (browser keys rig) needs `EngineHost::cross_origin_isolated` for the
 # COOP/COEP headers that unlock SharedArrayBuffer. Developing against the
-# local checkout per CLAUDE.md; the release path is: land in architect,
+# local checkout per AGENTS.md; the release path is: land in architect,
 # tag, bump the rev here, delete this block.
 
